@@ -81,6 +81,26 @@ SMOKE = FactoryProfile(
     gpu="A10G:1",
 )
 
+# Longer smoke: same tiny model, enough steps for the reward curve to move.
+SMOKE_PLUS = FactoryProfile(
+    name="smoke-plus",
+    base_model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
+    train_tasks=64,
+    eval_tasks=32,
+    min_test_functions=3,
+    synthetic_seeds=8,
+    synthetic_max_new_tokens=512,
+    max_steps=60,
+    num_generations=8,
+    per_device_batch=8,
+    max_completion_length=512,
+    learning_rate=2e-5,
+    lora_r=16,
+    use_vllm=False,
+    promotion_margin=-1.0,
+    gpu="A10G:1",
+)
+
 DEV = FactoryProfile(
     name="dev",
     base_model="Qwen/Qwen2.5-Coder-1.5B-Instruct",
@@ -119,7 +139,7 @@ FULL = FactoryProfile(
     gpu="A10G:1",
 )
 
-PROFILES: dict[str, FactoryProfile] = {p.name: p for p in (SMOKE, DEV, FULL)}
+PROFILES: dict[str, FactoryProfile] = {p.name: p for p in (SMOKE, SMOKE_PLUS, DEV, FULL)}
 
 
 def get_profile(name: str) -> FactoryProfile:

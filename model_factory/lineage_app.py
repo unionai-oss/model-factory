@@ -22,6 +22,7 @@ from flyte.app.extras import FastAPIAppEnvironment
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from . import assets
 from .config import (
     ARTIFACT_CHECKPOINT,
     ARTIFACT_EVAL_REPORT,
@@ -43,6 +44,16 @@ STATIONS: list[tuple[str, str]] = [
 app = FastAPI(title="Model Factory Lineage")
 
 
+@app.exception_handler(Exception)
+async def _traceback_handler(request, exc):
+    """Surface handler tracebacks in the response — this is an internal
+    read-only debugging app; opacity costs more than exposure here."""
+    import traceback
+
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    return JSONResponse({"error": str(exc), "traceback": tb.splitlines()[-15:]}, status_code=500)
+
+
 def _esc(s: object) -> str:
     return _html.escape(str(s))
 
@@ -53,8 +64,6 @@ async def _collect() -> dict:
     Uses model_factory.assets: artifact registry when the backend serves it,
     otherwise run-scan fallback (see assets.py).
     """
-    from . import assets
-
     project = os.environ.get("MF_PROJECT", "model-factory")
     domain = os.environ.get("MF_DOMAIN", "development")
     data: dict = {"stations": [], "runs": [], "fetched_at": datetime.now(timezone.utc).isoformat()}
@@ -154,12 +163,21 @@ lineage_app_env = FastAPIAppEnvironment(
 
 @lineage_app_env.on_startup
 async def _init_remote() -> None:
-    """Auth against the control plane from inside the cluster."""
+    """Auth against the control plane from inside the cluster.
+
+    Must never raise: a failed lifespan hook would 500 every request. Any
+    auth problem surfaces per-request in the JSON "errors" list instead.
+    """
     try:
         await flyte.init_in_cluster.aio(
             org=os.environ.get("MF_ORG") or None,
             project=os.environ.get("MF_PROJECT") or None,
             domain=os.environ.get("MF_DOMAIN") or None,
         )
+        return
     except Exception:
-        flyte.init_from_config()
+        pass
+    try:
+        await flyte.init_in_cluster.aio()
+    except Exception:
+        pass

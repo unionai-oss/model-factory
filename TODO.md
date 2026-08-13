@@ -27,7 +27,24 @@ tasks whose declared secrets don't exist — see `model_factory/config.py`.)
 W&B runs land in project `model-factory` (change `WANDB_PROJECT` in
 `config.py` if you want a different entity/project).
 
-## 2. Stubs / deferred integrations
+## 2. Platform gap found during E2E: artifact service not live on demo backend
+
+`flyte==2.6.0` ships the full artifact API (`flyte.artifacts.new`,
+`flyte.remote.Artifact`, `OnArtifact` triggers) and the demo control plane
+**accepts OnArtifact trigger definitions** (they deploy and register), but
+its artifact CRUD service returns `Not Found` — so `artifacts.new()` versions
+aren't queryable and artifact-event triggers can't actually fire yet.
+Interestingly the produced-artifact intent IS recorded on action outputs
+(`(produced artifact: rl-tasks-dataset)` in output literals).
+
+Mitigation in place: `model_factory/assets.py` resolves "latest asset" by
+scanning recent runs for producing station actions (used by dark-mode tasks
+and the lineage app). It prefers the artifact API and falls back to run-scan,
+so everything upgrades automatically when the backend ships artifacts.
+**Action**: re-test `flyte.remote.Artifact.get` after the next demo-cluster
+upgrade, then activate the OnArtifact triggers (§4).
+
+## 3. Stubs / deferred integrations
 
 - **OpenTelemetry / Grafana**: the docs describe `flyteplugins-otel`, but no
   OTLP endpoint is available for this demo, so it is not wired. To enable:
@@ -48,7 +65,7 @@ W&B runs land in project `model-factory` (change `WANDB_PROJECT` in
   OpenAI-compatible endpoint — next iteration (needs an L4/A10G app pool on
   the demo cluster).
 
-## 3. Dark-mode trigger activation (deliberate switch)
+## 4. Dark-mode trigger activation (deliberate switch)
 
 Triggers deploy `auto_activate=False`. To turn the factory dark:
 
@@ -59,7 +76,7 @@ flyte --config ~/.flyte/config-model-factory.yaml update trigger merge-synthetic
 flyte --config ~/.flyte/config-model-factory.yaml update trigger nightly-synthetic-generation nightly_synthetic_batch --activate
 ```
 
-## 4. Known POC limitations (accepted, spec'd for medium scope)
+## 5. Known POC limitations (accepted, spec'd for medium scope)
 
 - Sandbox = subprocess + rlimits inside the task container, not
   microVM-isolated (docs/SPEC.md §8).
