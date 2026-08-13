@@ -1,4 +1,4 @@
-from model_factory.reporting import line_chart, page, pill, stats_row, table
+from model_factory.shared.reporting import line_chart, page, pill, stats_row, table
 
 
 def test_page_escapes_title():

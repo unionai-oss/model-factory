@@ -1,9 +1,9 @@
-"""Eval station: candidate-vs-base pass@1 on held-out verified tasks.
+"""Eval team tasks: candidate-vs-base pass@1, gates, promotion.
 
-The eval gate is the factory's promotion criterion (bottleneck 3+4): both
-models generate greedily on the held-out split, every completion is scored
-by the same sandboxed reward stack used in training (no train/eval reward
-skew), and the comparison lands in an `eval-report` artifact + HTML report.
+Generation goes through the inference team's serving app (the same weights
+service both variants: adapter on = candidate, adapter off = base), falling
+back to local in-task generation if the service is unreachable — an eval
+must never be blocked by a serving outage.
 """
 
 from __future__ import annotations
@@ -15,19 +15,27 @@ import flyte
 import flyte.io
 import flyte.report
 
-from . import reporting
-from .config import ARTIFACT_EVAL_REPORT, ARTIFACT_PROMOTED, get_profile
-from .envs import cpu_env, gpu_env
-from .rewards import build_prompt, score_completion
+from ..config import get_profile
+from ..contracts import (
+    ARTIFACT_CHECKPOINT,
+    ARTIFACT_EVAL_REPORT,
+    ARTIFACT_PROMOTED,
+    ARTIFACT_RL_DATASET,
+    publish,
+)
+from ..shared import assets, inference_client, reporting
+from ..shared.gates import gate
+from ..shared.rewards import build_prompt, score_completion
+from .envs import eval_cpu_env, eval_gpu_env
 
 _GEN_BATCH = 8
 
 
 @flyte.trace
-async def _generate_greedy(
+async def _generate_local(
     base_model: str, adapter_dir: str | None, prompts: list[list[dict]], max_new_tokens: int
 ) -> list[str]:
-    """Greedy batched generation for eval; adapter_dir=None → base policy."""
+    """Fallback: greedy batched generation in-task; adapter_dir=None → base."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -65,6 +73,21 @@ async def _generate_greedy(
     return outs
 
 
+@flyte.trace
+async def _generate_via_service(
+    checkpoint_path: str, prompts: list[list[dict]], use_adapter: bool, max_new_tokens: int
+) -> list[str]:
+    url = inference_client.resolve_endpoint()
+    return await asyncio.to_thread(
+        inference_client.generate,
+        url,
+        prompts,
+        use_adapter=use_adapter,
+        max_new_tokens=max_new_tokens,
+        checkpoint_path=checkpoint_path,
+    )
+
+
 async def _score_all(completions: list[str], tests: list[str]) -> list[dict]:
     sem = asyncio.Semaphore(8)
 
@@ -76,13 +99,15 @@ async def _score_all(completions: list[str], tests: list[str]) -> list[dict]:
     return list(await asyncio.gather(*(one(c, t) for c, t in zip(completions, tests))))
 
 
-@gpu_env.task(report=True, timeout=flyte.Timeout(max_runtime=3600))
+@eval_gpu_env.task(report=True, timeout=flyte.Timeout(max_runtime=3600))
 async def evaluate_checkpoint(
-    checkpoint: flyte.io.Dir, dataset: flyte.io.File, profile_name: str = "smoke"
+    checkpoint: flyte.io.Dir,
+    dataset: flyte.io.File,
+    profile_name: str = "smoke",
+    use_service: bool = True,
 ) -> flyte.io.File:
     """Compare candidate vs base on the held-out split; emit `eval-report`."""
     import pandas as pd
-    import flyte.artifacts as artifacts
 
     profile = get_profile(profile_name)
     df = pd.read_parquet(await dataset.download())
@@ -99,8 +124,24 @@ async def evaluate_checkpoint(
     ]
     tests = list(heldout["tests"])
 
-    cand_out = await _generate_greedy(base_model, adapter_dir, prompts, profile.max_completion_length)
-    base_out = await _generate_greedy(base_model, None, prompts, profile.max_completion_length)
+    backend = "inference-service"
+    if use_service:
+        try:
+            cand_out = await _generate_via_service(
+                checkpoint.path, prompts, True, profile.max_completion_length
+            )
+            base_out = await _generate_via_service(
+                checkpoint.path, prompts, False, profile.max_completion_length
+            )
+        except Exception as e:
+            print(f"inference service unavailable ({e}); falling back to local generation")
+            backend = f"local (service failed: {str(e)[:120]})"
+            cand_out = await _generate_local(base_model, adapter_dir, prompts, profile.max_completion_length)
+            base_out = await _generate_local(base_model, None, prompts, profile.max_completion_length)
+    else:
+        backend = "local (requested)"
+        cand_out = await _generate_local(base_model, adapter_dir, prompts, profile.max_completion_length)
+        base_out = await _generate_local(base_model, None, prompts, profile.max_completion_length)
 
     cand_scores = await _score_all(cand_out, tests)
     base_scores = await _score_all(base_out, tests)
@@ -111,6 +152,7 @@ async def evaluate_checkpoint(
     result = {
         "profile": profile.name,
         "base_model": base_model,
+        "generation_backend": backend,
         "n_heldout": len(heldout),
         "candidate_pass_at_1": pass_rate(cand_scores),
         "base_pass_at_1": pass_rate(base_scores),
@@ -139,6 +181,7 @@ async def evaluate_checkpoint(
             "base pass@1": f"{result['base_pass_at_1']:.2%}",
             "delta": f"{result['delta']:+.2%}",
             "auto gate": "PASS" if result["auto_gate_passed"] else "FAIL",
+            "generation": backend,
         }
     )
     rows = []
@@ -154,8 +197,6 @@ async def evaluate_checkpoint(
         )
     body += "<h3>Per-task results (candidate vs base)</h3>"
     body += reporting.table(["task", "difficulty", "candidate", "base", "candidate execution"], rows)
-
-    # vibe-check material: a few side-by-side completions
     body += "<h3>Sample completions (vibe check)</h3>"
     for i in range(min(3, len(heldout))):
         body += f"<h4>{reporting.esc(heldout.iloc[i]['task_id'])}</h4>"
@@ -164,37 +205,83 @@ async def evaluate_checkpoint(
     await flyte.report.flush.aio()
 
     f = await flyte.io.File.from_local(out)
-    return artifacts.new(
+    return publish(
         f,
-        artifacts.Metadata(
-            name=ARTIFACT_EVAL_REPORT,
-            description=(
-                f"pass@1 candidate {result['candidate_pass_at_1']:.2%} vs base "
-                f"{result['base_pass_at_1']:.2%} on {len(heldout)} held-out tasks"
-            ),
-            kind="data",
+        ARTIFACT_EVAL_REPORT,
+        description=(
+            f"pass@1 candidate {result['candidate_pass_at_1']:.2%} vs base "
+            f"{result['base_pass_at_1']:.2%} on {len(heldout)} held-out tasks ({backend})"
         ),
     )
 
 
-@cpu_env.task
+@eval_cpu_env.task
 async def promote_checkpoint(checkpoint: flyte.io.Dir, eval_report: flyte.io.File) -> flyte.io.Dir:
     """Re-publish an approved checkpoint as the `promoted-model` artifact."""
-    import flyte.artifacts as artifacts
-
     local = await checkpoint.download()
     with open(f"{local}/manifest.json") as f:
         manifest = json.load(f)
     ev = json.loads(open(await eval_report.download()).read())
     d = await flyte.io.Dir.from_local(local)
-    return artifacts.new(
+    return publish(
         d,
-        artifacts.Metadata(
-            name=ARTIFACT_PROMOTED,
-            description=(
-                f"Promoted {manifest['base_model']} adapter — candidate pass@1 "
-                f"{ev['candidate_pass_at_1']:.2%} (Δ {ev['delta']:+.2%}), human-approved"
-            ),
-            kind="model",
+        ARTIFACT_PROMOTED,
+        description=(
+            f"Promoted {manifest['base_model']} adapter — candidate pass@1 "
+            f"{ev['candidate_pass_at_1']:.2%} (Δ {ev['delta']:+.2%}), human-approved"
         ),
+        kind="model",
+    )
+
+
+# ── dark-mode trigger: new checkpoint → eval + gates + maybe promote ────
+
+_eval_trigger = flyte.Trigger(
+    name="eval-on-new-checkpoint",
+    automation=flyte.OnArtifact(name=ARTIFACT_CHECKPOINT),
+    inputs={"checkpoint": flyte.TriggeredArtifact, "profile_name": "smoke"},
+    description="New checkpoint version → evaluation + gates",
+    auto_activate=False,
+)
+
+
+@eval_gpu_env.task(triggers=[_eval_trigger], report=True)
+async def eval_and_promote(
+    checkpoint: flyte.io.Dir,
+    profile_name: str = "smoke",
+    auto_approve: bool = False,
+    dataset: flyte.io.File | None = None,
+) -> str:
+    """The eval team's public entrypoint (also the trigger target).
+
+    ``dataset`` defaults to the latest published `rl-tasks-dataset` so the
+    trigger needs nothing beyond the checkpoint artifact.
+    """
+    if dataset is None:
+        latest_dataset = await assets.latest(ARTIFACT_RL_DATASET)
+        dataset = flyte.io.File.from_existing_remote(latest_dataset.path)
+
+    eval_report = await evaluate_checkpoint(
+        checkpoint=checkpoint, dataset=dataset, profile_name=profile_name
+    )
+    ev = json.loads(open(await eval_report.download()).read())
+    if not ev["auto_gate_passed"]:
+        return f"not promoted: delta {ev['delta']:+.2%} below margin"
+
+    approved = await gate(
+        "approve-promotion",
+        "## Checkpoint promotion gate\n\n"
+        f"Candidate pass@1 **{ev['candidate_pass_at_1']:.2%}** vs base "
+        f"**{ev['base_pass_at_1']:.2%}** (Δ {ev['delta']:+.2%}) on "
+        f"{ev['n_heldout']} held-out tasks (generation: {ev['generation_backend']}).\n\n"
+        "Inspect the eval report for reward hacking or degenerate outputs.\n\n"
+        "**Promote this checkpoint?**",
+        auto_approve,
+    )
+    if not approved:
+        return "not promoted: human gate"
+    await promote_checkpoint(checkpoint=checkpoint, eval_report=eval_report)
+    return (
+        f"promoted: candidate {ev['candidate_pass_at_1']:.2%} vs base "
+        f"{ev['base_pass_at_1']:.2%} on {ev['n_heldout']} held-out tasks"
     )

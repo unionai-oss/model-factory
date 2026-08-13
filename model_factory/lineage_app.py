@@ -22,23 +22,26 @@ from flyte.app.extras import FastAPIAppEnvironment
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from . import assets
-from .config import (
+from .contracts import (
     ARTIFACT_CHECKPOINT,
     ARTIFACT_EVAL_REPORT,
+    ARTIFACT_INFERENCE_ENDPOINT,
     ARTIFACT_PROMOTED,
     ARTIFACT_RL_DATASET,
     ARTIFACT_SYNTHETIC,
 )
-from .envs import cpu_image
+from .shared import assets
+from .shared.images import cpu_image
 
 # Factory stations in pipeline order → rendered as graph columns.
+# Stations in team order: each artifact is one team's published contract.
 STATIONS: list[tuple[str, str]] = [
-    (ARTIFACT_RL_DATASET, "Data"),
-    (ARTIFACT_SYNTHETIC, "Synthetic"),
-    (ARTIFACT_CHECKPOINT, "Training"),
-    (ARTIFACT_EVAL_REPORT, "Evaluation"),
-    (ARTIFACT_PROMOTED, "Promoted"),
+    (ARTIFACT_SYNTHETIC, "Data eng: synthetic"),
+    (ARTIFACT_RL_DATASET, "Data eng: dataset"),
+    (ARTIFACT_CHECKPOINT, "Training: checkpoint"),
+    (ARTIFACT_INFERENCE_ENDPOINT, "Inference: endpoint"),
+    (ARTIFACT_EVAL_REPORT, "Eval: report"),
+    (ARTIFACT_PROMOTED, "Eval: promoted"),
 ]
 
 app = FastAPI(title="Model Factory Lineage")

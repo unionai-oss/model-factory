@@ -190,26 +190,48 @@ Scale up along three axes (same artifact graph, bigger stations):
   checkpoint diff/compare, rollout transcript browser, one-click gate
   signals (`ConditionWebhook` → Slack approval buttons).
 
-## 6. Repo layout (POC implementation)
+## 6. Team decomposition and repo layout (POC implementation)
+
+The factory is owned by four teams. **Artifacts are the only inter-team
+interface**; downstream teams start work via `OnArtifact` triggers on the
+upstream team's published artifact. Teams import only
+`model_factory/contracts.py` (the interface) and `model_factory/shared/`
+(platform libraries) — never each other's task modules.
+
+| team | owns | consumes | publishes | deploy unit |
+|---|---|---|---|---|
+| data engineering | prep, validation, filtering, synthetic gen, data HITL gate | `synthetic-tasks` (own trigger) | `rl-tasks-dataset`, `synthetic-tasks` | `team_data.py` |
+| model training | the RL training loop (GRPO, W&B, live reports) | `rl-tasks-dataset` (OnArtifact) | `policy-checkpoint` | `team_training.py` |
+| model eval | eval runs, auto quality gate, promotion HITL gate | `policy-checkpoint` (OnArtifact) | `eval-report`, `promoted-model` | `team_eval.py` |
+| inference | serving app for rollouts + evals, weight rollout ops | `policy-checkpoint` (OnArtifact) | `inference-endpoint` | `team_inference.py` |
+
+The inference subsystem serves whatever checkpoint dropped last: its
+`/generate` endpoint toggles the LoRA adapter per request, so eval compares
+candidate (adapter on) vs base (adapter off) against one weights service;
+the same endpoint is the rollout backend for disaggregated RL (dev+ scope —
+the smoke trainer still colocates rollouts inside GRPOTrainer).
 
 ```
-src/model_factory/
-  __init__.py
-  config.py            # profiles (smoke/dev/full), model + trainer config
-  envs.py              # TaskEnvironments, images, secrets (single source)
-  sandbox.py           # sandboxed code execution (no flyte deps; unit-testable)
-  rewards.py           # reward components + anti-hack guards (pure python)
-  data.py              # ingest/curate/validate tasks → rl-tasks-dataset
-  synthetic.py         # batch-inference synthetic task generation
-  train.py             # GRPO training task → policy-checkpoint
-  evaluate.py          # eval task → eval-report; promotion task
-  pipeline.py          # driver task: full loop + HITL gates + triggers
-  reporting.py         # HTML report builders (data cards, training, eval)
-  lineage_app.py       # AppEnvironment: factory lineage visualization
-tests/                 # pytest for sandbox, rewards, data curation
-docs/SPEC.md           # this file
-docs/research/         # research notes
-TODO.md                # human actions needed (secrets etc.)
+model_factory/
+  contracts.py           # THE inter-team interface: artifact names, schemas, publish()
+  config.py              # profiles (smoke/smoke-plus/dev/full), secret gating
+  shared/                # platform libraries (any team may import)
+    sandbox.py           #   sandboxed code execution (pure python)
+    rewards.py           #   reward components + anti-hack guards
+    reporting.py         #   HTML report builders
+    assets.py            #   latest-asset resolution (artifact API + run-scan fallback)
+    gates.py             #   HITL condition gates
+    images.py            #   base images + secret wiring
+    inference_client.py  #   HTTP client for the inference service
+  data_engineering/      # envs, curation tasks, synthetic gen, release driver + triggers
+  training/              # trainer env, train_grpo (+ OnArtifact(rl-tasks-dataset))
+  evaluation/            # eval envs, evaluate/promote, eval_and_promote (+ OnArtifact(policy-checkpoint))
+  inference/             # serving app (mf-inference) + refresh ops (+ OnArtifact(policy-checkpoint))
+  lineage_app.py         # platform: global lineage AppEnvironment
+team_*.py                # per-team deploy units (repo root)
+integration.py           # cross-team E2E driver (stand-in event bus until artifact events ship)
+tests/                   # pytest for sandbox, rewards, parsing, reporting
+docs/, TODO.md
 ```
 
 ## 7. Secrets & external services

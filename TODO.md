@@ -67,13 +67,16 @@ upgrade, then activate the OnArtifact triggers (§4).
 
 ## 4. Dark-mode trigger activation (deliberate switch)
 
-Triggers deploy `auto_activate=False`. To turn the factory dark:
+Triggers deploy `auto_activate=False`. To turn the factory dark (one trigger
+per team hand-off):
 
 ```bash
-flyte --config ~/.flyte/config-model-factory.yaml update trigger train-on-new-dataset train_on_new_dataset --activate
-flyte --config ~/.flyte/config-model-factory.yaml update trigger eval-on-new-checkpoint eval_on_new_checkpoint --activate
-flyte --config ~/.flyte/config-model-factory.yaml update trigger merge-synthetic-tasks merge_synthetic_into_dataset --activate
-flyte --config ~/.flyte/config-model-factory.yaml update trigger nightly-synthetic-generation nightly_synthetic_batch --activate
+CFG=~/.flyte/config-model-factory.yaml
+flyte --config $CFG update trigger train-on-new-dataset train_grpo --activate
+flyte --config $CFG update trigger eval-on-new-checkpoint eval_and_promote --activate
+flyte --config $CFG update trigger serve-new-checkpoint refresh_inference_service --activate
+flyte --config $CFG update trigger merge-synthetic-tasks merge_synthetic_into_dataset --activate
+flyte --config $CFG update trigger nightly-synthetic-generation nightly_synthetic_batch --activate
 ```
 
 ## 5. Known POC limitations (accepted, spec'd for medium scope)

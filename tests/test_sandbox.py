@@ -1,4 +1,4 @@
-from model_factory.sandbox import run_solution_against_tests
+from model_factory.shared.sandbox import run_solution_against_tests
 
 SOLUTION = """
 def add(a, b):

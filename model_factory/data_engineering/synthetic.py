@@ -23,11 +23,12 @@ import flyte.io
 import flyte.report
 from flyte.extras import DynamicBatcher
 
-from . import reporting
-from .config import ARTIFACT_SYNTHETIC, get_profile
-from .envs import gpu_env
-from .rewards import count_test_functions
-from .sandbox import run_solution_against_tests
+from ..config import get_profile
+from ..contracts import ARTIFACT_SYNTHETIC, publish
+from ..shared import reporting
+from ..shared.rewards import count_test_functions
+from ..shared.sandbox import run_solution_against_tests
+from .envs import de_gpu_env
 
 _MUTATION_PROMPT = """You are generating a NEW Python programming exercise by mutating the one below. Change the problem meaningfully (different domain, constraint, or edge cases) but keep it self-contained and testable.
 
@@ -108,13 +109,12 @@ async def _generate_batch(model_name: str, prompts: list[str], max_new_tokens: i
     return _TOK.batch_decode(gen, skip_special_tokens=True)
 
 
-@gpu_env.task(report=True)
+@de_gpu_env.task(report=True)
 async def generate_synthetic_tasks(
     dataset: flyte.io.File, profile_name: str = "smoke"
 ) -> flyte.io.File:
     """Generate oracle-verified synthetic tasks; emit `synthetic-tasks` artifact."""
     import pandas as pd
-    import flyte.artifacts as artifacts
 
     profile = get_profile(profile_name)
     df = pd.read_parquet(await dataset.download())
@@ -198,11 +198,8 @@ async def generate_synthetic_tasks(
     await flyte.report.flush.aio()
 
     f = await flyte.io.File.from_local(out)
-    return artifacts.new(
+    return publish(
         f,
-        artifacts.Metadata(
-            name=ARTIFACT_SYNTHETIC,
-            description=f"Oracle-verified synthetic tasks ({len(kept)} kept from {len(seeds)} seeds)",
-            kind="data",
-        ),
+        ARTIFACT_SYNTHETIC,
+        description=f"Oracle-verified synthetic tasks ({len(kept)} kept from {len(seeds)} seeds)",
     )

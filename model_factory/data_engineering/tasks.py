@@ -27,11 +27,12 @@ import flyte
 import flyte.io
 import flyte.report
 
-from . import reporting
-from .config import SEED_DATASET, ARTIFACT_RL_DATASET, get_profile
-from .envs import cpu_env
-from .rewards import count_test_functions
-from .sandbox import run_solution_against_tests
+from ..config import SEED_DATASET, get_profile
+from ..contracts import ARTIFACT_RL_DATASET, publish
+from ..shared import reporting
+from ..shared.rewards import count_test_functions
+from ..shared.sandbox import run_solution_against_tests
+from .envs import de_cpu_env
 
 _ORACLE_CONCURRENCY = 8
 
@@ -63,7 +64,7 @@ async def _oracle_verify(rows: list[dict]) -> list[bool]:
     return list(await asyncio.gather(*(check(r) for r in rows)))
 
 
-@cpu_env.task(report=True, cache="auto")
+@de_cpu_env.task(report=True, cache="auto")
 async def ingest_and_curate(profile_name: str = "smoke") -> flyte.io.File:
     """Pull the seed dataset, curate it, and emit a *candidate* dataset file.
 
@@ -167,26 +168,23 @@ async def ingest_and_curate(profile_name: str = "smoke") -> flyte.io.File:
     return await flyte.io.File.from_local(out)
 
 
-@cpu_env.task
+@de_cpu_env.task
 async def publish_dataset(dataset: flyte.io.File, note: str = "") -> flyte.io.File:
     """Mint an approved dataset as a versioned `rl-tasks-dataset` artifact.
 
     New versions of this artifact are what kick training off via the
     OnArtifact trigger (see pipeline.py).
     """
-    import flyte.artifacts as artifacts
-
     local = await dataset.download()
     f = await flyte.io.File.from_local(local)
-    meta = artifacts.Metadata(
-        name=ARTIFACT_RL_DATASET,
+    return publish(
+        f,
+        ARTIFACT_RL_DATASET,
         description=f"Curated + human-approved RL coding tasks. {note}".strip(),
-        kind="data",
     )
-    return artifacts.new(f, meta)
 
 
-@cpu_env.task
+@de_cpu_env.task
 async def merge_datasets(base: flyte.io.File, extra: flyte.io.File) -> flyte.io.File:
     """Merge synthetic tasks into the current dataset (dedup by question)."""
     import pandas as pd

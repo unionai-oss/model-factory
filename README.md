@@ -34,27 +34,33 @@ seed data (HF: KodCode) ──► curate + oracle-verify ──► [HITL gate 1:
 
 ## Quickstart
 
+The factory is decomposed into four team-owned subsystems wired ONLY by
+artifacts + OnArtifact triggers (see docs/SPEC.md §6): data engineering
+(`team_data.py`), model training (`team_training.py`), model eval
+(`team_eval.py`), and inference (`team_inference.py`).
+
 ```bash
 uv sync
 
 # unit tests (sandbox, rewards, parsing)
 uv run pytest
 
-# one factory iteration on the cluster, gates auto-approved (CI/smoke):
-uv run flyte --config ~/.flyte/config-model-factory.yaml run run.py factory \
-    --profile_name smoke --auto_approve true
+# deploy each team's subsystem (envs + dark-mode triggers)
+CFG=~/.flyte/config-model-factory.yaml
+uv run flyte --config $CFG deploy team_data.py de_cpu_env
+uv run flyte --config $CFG deploy team_training.py trainer_env
+uv run flyte --config $CFG deploy team_eval.py eval_gpu_env
+uv run flyte --config $CFG deploy team_inference.py inference_app_env   # serving app
+uv run flyte --config $CFG deploy team_inference.py inference_ops_env   # refresh trigger
+uv run flyte --config $CFG deploy app.py lineage_app_env                # lineage "Podium"
 
-# with live human gates (approve in the Union UI, or:
-#   flyte signal condition <run-name> <action-name> true)
-uv run flyte --config ~/.flyte/config-model-factory.yaml run run.py factory \
-    --profile_name smoke
+# run one dataset release (data engineering's entrypoint); with artifact
+# events live, publishing fires training -> eval/inference automatically
+uv run flyte --config $CFG run team_data.py data_release --profile_name smoke
 
-# deploy dark-mode triggers (artifact-event + nightly cron; activate deliberately)
-uv run flyte --config ~/.flyte/config-model-factory.yaml deploy run.py factory_env
-
-# deploy the lineage app (the factory's "Podium")
-uv run flyte --config ~/.flyte/config-model-factory.yaml deploy \
-    model_factory/lineage_app.py lineage_app_env
+# cross-team E2E (stand-in event bus until the backend ships artifact events)
+uv run flyte --config $CFG run integration.py factory_chain \
+    --profile_name smoke --auto_approve
 ```
 
 Profiles (`model_factory/config.py`): `smoke` (0.5B model, 96 tasks, 10 GRPO
@@ -68,14 +74,13 @@ still runs (public models/datasets; W&B disabled).
 
 ## Layout
 
-| path | what |
+| path | team / role |
 |---|---|
-| `model_factory/config.py` | profiles, artifact names, secret wiring |
-| `model_factory/sandbox.py` | resource-limited execution of generated code vs tests |
-| `model_factory/rewards.py` | reward stack: format + compile + all-tests-pass + anti-hack guards |
-| `model_factory/data.py` | ingest, curate, oracle-verify, publish dataset artifact |
-| `model_factory/synthetic.py` | batch-inference synthetic task generation (DynamicBatcher) |
-| `model_factory/train.py` | GRPO training (TRL + LoRA) with live report + W&B |
-| `model_factory/evaluate.py` | candidate-vs-base eval, promotion |
-| `model_factory/pipeline.py` | factory driver + HITL gates + dark-mode triggers |
-| `model_factory/lineage_app.py` | AppEnvironment: global lineage visualization |
+| `model_factory/contracts.py` | the inter-team interface: artifact names, schemas, publish() |
+| `model_factory/shared/` | platform libs: sandbox, rewards, reporting, assets, gates, images, inference client |
+| `model_factory/data_engineering/` | data eng: curate, filter, oracle-verify, synthetic gen, release + data gate |
+| `model_factory/training/` | training: GRPO (TRL + LoRA), OnArtifact(rl-tasks-dataset) trigger |
+| `model_factory/evaluation/` | eval: candidate-vs-base, gates, promotion, OnArtifact(policy-checkpoint) trigger |
+| `model_factory/inference/` | inference: serving app (adapter toggle per request) + weight-rollout ops |
+| `model_factory/lineage_app.py` | platform: global lineage AppEnvironment |
+| `integration.py` | cross-team E2E driver (plays the event bus until artifact events ship) |

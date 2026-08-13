@@ -1,4 +1,9 @@
-"""Training station: GRPO with verifiable code-execution rewards.
+"""Model training team: GRPO with verifiable code-execution rewards.
+
+Consumes: `rl-tasks-dataset` (OnArtifact trigger — a new approved dataset
+version starts a training run automatically where the backend supports
+artifact events). Publishes: `policy-checkpoint`. The team never calls data
+engineering or eval code; artifacts are the only interface.
 
 TRL GRPOTrainer + LoRA on a single 24GB GPU (A10G/L4). Rollout completions
 are scored by the reward stack in rewards.py — sandboxed test execution is
@@ -20,10 +25,20 @@ import flyte
 import flyte.io
 import flyte.report
 
-from . import reporting
-from .config import ARTIFACT_CHECKPOINT, WANDB_PROJECT, get_profile
-from .envs import gpu_env
-from .rewards import MAX_REWARD, build_prompt, score_completion
+from ..config import WANDB_PROJECT, get_profile
+from ..contracts import ARTIFACT_CHECKPOINT, ARTIFACT_RL_DATASET, publish
+from ..shared import reporting
+from ..shared.rewards import MAX_REWARD, build_prompt, score_completion
+from .envs import trainer_env
+
+# Dark-mode wiring: a new approved dataset version IS the request to train.
+_retrain_trigger = flyte.Trigger(
+    name="train-on-new-dataset",
+    automation=flyte.OnArtifact(name=ARTIFACT_RL_DATASET),
+    inputs={"dataset": flyte.TriggeredArtifact, "profile_name": "smoke"},
+    description="New approved dataset version -> GRPO training",
+    auto_activate=False,
+)
 
 _SCORE_WORKERS = 8
 
@@ -58,11 +73,10 @@ def make_reward_fn(metrics_sink: list[dict]):
     return reward_fn
 
 
-@gpu_env.task(report=True, timeout=flyte.Timeout(max_runtime=7200))
+@trainer_env.task(report=True, timeout=flyte.Timeout(max_runtime=7200), triggers=[_retrain_trigger])
 async def train_grpo(dataset: flyte.io.File, profile_name: str = "smoke") -> flyte.io.Dir:
     """Run GRPO; emit the LoRA adapter as a `policy-checkpoint` artifact."""
     import pandas as pd
-    import flyte.artifacts as artifacts
     from datasets import Dataset
     from peft import LoraConfig
     from transformers import TrainerCallback
@@ -185,14 +199,12 @@ async def train_grpo(dataset: flyte.io.File, profile_name: str = "smoke") -> fly
         json.dump(manifest, f, indent=2, default=str)
 
     d = await flyte.io.Dir.from_local(out_dir)
-    return artifacts.new(
+    return publish(
         d,
-        artifacts.Metadata(
-            name=ARTIFACT_CHECKPOINT,
-            description=(
-                f"LoRA adapter for {profile.base_model}, {profile.max_steps} GRPO steps, "
-                f"final mean reward {history[-1].get('reward/mean_total', 'n/a') if history else 'n/a'}"
-            ),
-            kind="model",
+        ARTIFACT_CHECKPOINT,
+        description=(
+            f"LoRA adapter for {profile.base_model}, {profile.max_steps} GRPO steps, "
+            f"final mean reward {history[-1].get('reward/mean_total', 'n/a') if history else 'n/a'}"
         ),
+        kind="model",
     )

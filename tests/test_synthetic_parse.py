@@ -1,4 +1,4 @@
-from model_factory.synthetic import parse_generation
+from model_factory.data_engineering.synthetic import parse_generation
 
 WELL_FORMED = """QUESTION:
 Write a function that returns the maximum of a list.

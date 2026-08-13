@@ -24,12 +24,7 @@ WANDB_PROJECT = "model-factory"
 
 SEED_DATASET = "KodCode/KodCode-Light-RL-10K"
 
-# Artifact names — the factory's asset registry.
-ARTIFACT_RL_DATASET = "rl-tasks-dataset"
-ARTIFACT_SYNTHETIC = "synthetic-tasks"
-ARTIFACT_CHECKPOINT = "policy-checkpoint"
-ARTIFACT_EVAL_REPORT = "eval-report"
-ARTIFACT_PROMOTED = "promoted-model"
+# Artifact names live in model_factory.contracts — the inter-team interface.
 
 
 @dataclass(frozen=True)

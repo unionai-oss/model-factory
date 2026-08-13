@@ -14,21 +14,24 @@ from dataclasses import dataclass
 
 import flyte.remote as remote
 
-from .config import (
+from ..contracts import (
     ARTIFACT_CHECKPOINT,
     ARTIFACT_EVAL_REPORT,
+    ARTIFACT_INFERENCE_ENDPOINT,
     ARTIFACT_PROMOTED,
     ARTIFACT_RL_DATASET,
     ARTIFACT_SYNTHETIC,
 )
 
 # artifact name -> station task(s) that produce it (task_name suffix match)
+# Old mf-* names kept so assets from pre-decomposition runs still resolve.
 PRODUCERS: dict[str, tuple[str, ...]] = {
-    ARTIFACT_RL_DATASET: ("mf-cpu.publish_dataset",),
-    ARTIFACT_SYNTHETIC: ("mf-gpu.generate_synthetic_tasks",),
-    ARTIFACT_CHECKPOINT: ("mf-gpu.train_grpo",),
-    ARTIFACT_EVAL_REPORT: ("mf-gpu.evaluate_checkpoint",),
-    ARTIFACT_PROMOTED: ("mf-cpu.promote_checkpoint",),
+    ARTIFACT_RL_DATASET: ("de-cpu.publish_dataset", "mf-cpu.publish_dataset"),
+    ARTIFACT_SYNTHETIC: ("de-gpu.generate_synthetic_tasks", "mf-gpu.generate_synthetic_tasks"),
+    ARTIFACT_CHECKPOINT: ("trainer.train_grpo", "mf-gpu.train_grpo"),
+    ARTIFACT_EVAL_REPORT: ("eval-gpu.evaluate_checkpoint", "mf-gpu.evaluate_checkpoint"),
+    ARTIFACT_PROMOTED: ("eval-cpu.promote_checkpoint", "mf-cpu.promote_checkpoint"),
+    ARTIFACT_INFERENCE_ENDPOINT: ("inference-ops.refresh_inference_service",),
 }
 
 _SCAN_RUNS = 15

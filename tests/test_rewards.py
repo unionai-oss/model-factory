@@ -1,4 +1,4 @@
-from model_factory.rewards import (
+from model_factory.shared.rewards import (
     COMPILE_REWARD,
     FORMAT_REWARD,
     MAX_REWARD,
