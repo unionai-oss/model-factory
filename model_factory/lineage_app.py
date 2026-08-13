@@ -13,6 +13,7 @@ Local:   uv run flyte serve --local src/model_factory/lineage_app.py lineage_app
 from __future__ import annotations
 
 import html as _html
+import os
 from datetime import datetime, timezone
 
 import flyte
@@ -66,7 +67,11 @@ def _collect() -> dict:
             data.setdefault("errors", []).append(f"{name}: {e}")
         data["stations"].append({"artifact": name, "label": label, "versions": versions})
     try:
-        for r in flyte.remote.Run.listall(limit=25):
+        for r in flyte.remote.Run.listall(
+            limit=25,
+            project=os.environ.get("MF_PROJECT", "model-factory"),
+            domain=os.environ.get("MF_DOMAIN", "development"),
+        ):
             details = r
             data["runs"].append(
                 {
@@ -140,6 +145,7 @@ lineage_app_env = FastAPIAppEnvironment(
     resources=flyte.Resources(cpu=1, memory="1Gi"),
     scaling=flyte.app.Scaling(replicas=(0, 1), scaledown_after=600),
     requires_auth=False,
+    env_vars={"MF_ORG": "demo", "MF_PROJECT": "model-factory", "MF_DOMAIN": "development"},
     description="Model factory lineage: artifact versions + runs across all stations",
 )
 
@@ -148,6 +154,10 @@ lineage_app_env = FastAPIAppEnvironment(
 async def _init_remote() -> None:
     """Auth against the control plane from inside the cluster."""
     try:
-        await flyte.init_in_cluster.aio()
+        await flyte.init_in_cluster.aio(
+            org=os.environ.get("MF_ORG") or None,
+            project=os.environ.get("MF_PROJECT") or None,
+            domain=os.environ.get("MF_DOMAIN") or None,
+        )
     except Exception:
         flyte.init_from_config()

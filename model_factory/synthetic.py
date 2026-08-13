@@ -137,7 +137,9 @@ async def generate_synthetic_tasks(
             declaration=seed.function_declaration or "any function",
             min_tests=max(3, profile.min_test_functions),
         )
-        text = await batcher.submit(prompt)
+        # submit() returns a future that resolves when its batch is processed
+        future = await batcher.submit(prompt)
+        text = await future
         parsed = parse_generation(text)
         if not parsed:
             return None
