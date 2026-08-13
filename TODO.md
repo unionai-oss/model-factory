@@ -41,8 +41,19 @@ Mitigation in place: `model_factory/assets.py` resolves "latest asset" by
 scanning recent runs for producing station actions (used by dark-mode tasks
 and the lineage app). It prefers the artifact API and falls back to run-scan,
 so everything upgrades automatically when the backend ships artifacts.
-**Action**: re-test `flyte.remote.Artifact.get` after the next demo-cluster
-upgrade, then activate the OnArtifact triggers (§4).
+
+**Empirically confirmed 2026-08-13**: with `train-on-new-dataset` ACTIVE, a
+fresh `rl-tasks-dataset` publish (run `umstdqcbjv7vrfqbdb26`) spawned no
+training run within 10+ minutes — artifact events are not delivered on this
+backend. The cross-team cascade was validated by hand-cranking each trigger
+task as its own run with the exact inputs the trigger would bind
+(`integration.py` documents the pattern). **Action**: re-test after the next
+demo-cluster upgrade — the wiring is already deployed and active.
+
+Second networking finding: task pods get **HTTP 403** calling an app's
+public `*.apps.demo.hosted.unionai.cloud` URL; in-cluster calls must use the
+internal service DNS `http://<app>.<project>-<domain>.svc.cluster.local`
+(handled automatically by `shared/inference_client.resolve_endpoint`).
 
 ## 3. Stubs / deferred integrations
 
