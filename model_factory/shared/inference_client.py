@@ -32,7 +32,26 @@ def _post(url: str, payload: dict, timeout: float = _TIMEOUT_S) -> dict:
 
 
 def resolve_endpoint(app_name: str = "mf-inference") -> str:
-    """Public URL of the serving app, from the control plane."""
+    """Base URL of the serving app.
+
+    Task pods must use the internal service DNS — the apps gateway returns
+    403 for pod-originated requests to the public URL (verified empirically).
+    Outside the cluster, resolve the public endpoint from the control plane.
+    """
+    import os
+
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        project = os.environ.get("MF_PROJECT", "model-factory")
+        domain = os.environ.get("MF_DOMAIN", "development")
+        try:
+            import flyte
+
+            ctx = flyte.ctx()
+            if ctx is not None:
+                project, domain = ctx.action.project, ctx.action.domain
+        except Exception:
+            pass
+        return f"http://{app_name}.{project}-{domain}.svc.cluster.local"
     import flyte.remote
 
     return str(flyte.remote.App.get(app_name).endpoint)
