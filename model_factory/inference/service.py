@@ -23,11 +23,11 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from flyte.app.extras import FastAPIAppEnvironment
 
+from . import APP_NAME
 from ..contracts import ARTIFACT_CHECKPOINT
 from ..shared import assets
 from ..shared.images import gpu_image
 
-APP_NAME = "mf-inference"
 _GEN_BATCH = 8
 
 app = FastAPI(title="Model Factory Inference Service")

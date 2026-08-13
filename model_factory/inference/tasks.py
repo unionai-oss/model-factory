@@ -18,7 +18,7 @@ from ..contracts import (
 )
 from ..shared import inference_client
 from ..shared.images import cpu_image
-from .service import APP_NAME
+from . import APP_NAME
 
 inference_ops_env = flyte.TaskEnvironment(
     name="inference-ops",
