@@ -1,0 +1,23 @@
+[project]
+name = "model-factory"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate>=1.14.0",
+    "datasets>=5.0.1",
+    "fastapi>=0.141.1",
+    "flyte>=2.6.0",
+    "huggingface-hub>=1.27.0",
+    "peft>=0.20.0",
+    "pytest>=9.1.1",
+    "trl>=1.0",
+    "uvicorn>=0.52.1",
+    "wandb>=0.28.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.uv]
+package = false
