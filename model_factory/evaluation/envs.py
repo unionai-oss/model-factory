@@ -11,16 +11,18 @@ import flyte
 
 from ..shared.images import cpu_image, gpu_image, secrets
 
-eval_cpu_env = flyte.TaskEnvironment(
-    name="eval-cpu",
-    resources=flyte.Resources(cpu=2, memory="4Gi"),
-    image=cpu_image,
-)
-
 eval_gpu_env = flyte.TaskEnvironment(
     name="eval-gpu",
     resources=flyte.Resources(cpu=6, memory="24Gi", gpu="A10G:1", disk="100Gi", shm="auto"),
     image=gpu_image,
     secrets=secrets(),
-    depends_on=[eval_cpu_env],  # eval_and_promote calls promote_checkpoint
+)
+
+# Coordinator env: eval_and_promote (gates + orchestration) MUST be CPU-only —
+# a GPU coordinator waiting on a GPU child deadlocks a single-GPU cluster.
+eval_cpu_env = flyte.TaskEnvironment(
+    name="eval-cpu",
+    resources=flyte.Resources(cpu=2, memory="4Gi"),
+    image=cpu_image,
+    depends_on=[eval_gpu_env],
 )

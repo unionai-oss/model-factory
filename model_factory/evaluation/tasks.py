@@ -245,7 +245,7 @@ _eval_trigger = flyte.Trigger(
 )
 
 
-@eval_gpu_env.task(triggers=[_eval_trigger], report=True)
+@eval_cpu_env.task(triggers=[_eval_trigger], report=True)
 async def eval_and_promote(
     checkpoint: flyte.io.Dir,
     profile_name: str = "smoke",
