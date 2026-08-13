@@ -88,7 +88,12 @@ async def list_versions(
     versions: list[AssetVersion] = []
     try:
         count = 0
-        async for run in remote.Run.listall.aio(project=project, domain=domain, limit=_SCAN_RUNS * 3):
+        async for run in remote.Run.listall.aio(
+            project=project,
+            domain=domain,
+            limit=_SCAN_RUNS * 3,
+            sort_by=("created_at", "desc"),  # "latest" must mean newest
+        ):
             count += 1
             if count > _SCAN_RUNS or len(versions) >= limit:
                 break
