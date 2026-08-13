@@ -47,37 +47,39 @@ def _esc(s: object) -> str:
     return _html.escape(str(s))
 
 
-def _collect() -> dict:
-    """Pull artifact versions + recent runs from the control plane."""
+async def _collect() -> dict:
+    """Pull asset versions + recent runs from the control plane.
+
+    Uses model_factory.assets: artifact registry when the backend serves it,
+    otherwise run-scan fallback (see assets.py).
+    """
+    from . import assets
+
+    project = os.environ.get("MF_PROJECT", "model-factory")
+    domain = os.environ.get("MF_DOMAIN", "development")
     data: dict = {"stations": [], "runs": [], "fetched_at": datetime.now(timezone.utc).isoformat()}
     for name, label in STATIONS:
-        versions = []
         try:
-            for a in flyte.remote.Artifact.listall(name=name, limit=10):
-                versions.append(
-                    {
-                        "version": a.version,
-                        "url": a.url,
-                        "kind": a.kind,
-                        "source": str(getattr(a, "source", "") or ""),
-                    }
-                )
-        except Exception as e:  # artifact name may not exist yet
+            versions = [
+                {
+                    "version": f"{v.run_name}/{v.action_name}" if v.action_name else v.path.rsplit("/", 2)[-2],
+                    "url": v.path,
+                    "kind": v.via,
+                    "source": v.run_name,
+                }
+                for v in await assets.list_versions(name, project=project, domain=domain, limit=8)
+            ]
+        except Exception as e:
             versions = []
             data.setdefault("errors", []).append(f"{name}: {e}")
         data["stations"].append({"artifact": name, "label": label, "versions": versions})
     try:
-        for r in flyte.remote.Run.listall(
-            limit=25,
-            project=os.environ.get("MF_PROJECT", "model-factory"),
-            domain=os.environ.get("MF_DOMAIN", "development"),
-        ):
-            details = r
+        async for r in flyte.remote.Run.listall.aio(limit=25, project=project, domain=domain):
             data["runs"].append(
                 {
                     "name": r.name,
                     "task": getattr(r, "task_name", "") or "",
-                    "phase": str(getattr(details, "phase", "") or ""),
+                    "phase": str(getattr(r, "phase", "") or ""),
                     "url": getattr(r, "url", "") or "",
                 }
             )
@@ -87,13 +89,13 @@ def _collect() -> dict:
 
 
 @app.get("/api/lineage")
-def api_lineage() -> JSONResponse:
-    return JSONResponse(_collect())
+async def api_lineage() -> JSONResponse:
+    return JSONResponse(await _collect())
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    d = _collect()
+async def index() -> str:
+    d = await _collect()
     cols = ""
     for st in d["stations"]:
         rows = "".join(

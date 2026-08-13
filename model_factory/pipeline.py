@@ -23,7 +23,7 @@ import flyte
 import flyte.io
 import flyte.report
 
-from . import reporting
+from . import assets, reporting
 from .config import (
     ARTIFACT_CHECKPOINT,
     ARTIFACT_RL_DATASET,
@@ -174,8 +174,8 @@ _eval_trigger = flyte.Trigger(
 @factory_env.task(triggers=[_eval_trigger], report=True)
 async def eval_on_new_checkpoint(checkpoint: flyte.io.Dir, profile_name: str = "smoke") -> str:
     """Dark-mode eval: fetch the latest approved dataset, eval, gate, promote."""
-    dataset_art = flyte.remote.Artifact.get(ARTIFACT_RL_DATASET)
-    dataset = flyte.io.File.from_existing_remote(dataset_art.url)  # latest version
+    latest_dataset = await assets.latest(ARTIFACT_RL_DATASET)
+    dataset = flyte.io.File.from_existing_remote(latest_dataset.path)
     eval_report = await evaluate_checkpoint(
         checkpoint=checkpoint, dataset=dataset, profile_name=profile_name
     )
@@ -204,8 +204,8 @@ _synthetic_merge_trigger = flyte.Trigger(
 
 @factory_env.task(triggers=[_synthetic_merge_trigger])
 async def merge_synthetic_into_dataset(synthetic: flyte.io.File) -> str:
-    dataset_art = flyte.remote.Artifact.get(ARTIFACT_RL_DATASET)
-    base = flyte.io.File.from_existing_remote(dataset_art.url)
+    latest_dataset = await assets.latest(ARTIFACT_RL_DATASET)
+    base = flyte.io.File.from_existing_remote(latest_dataset.path)
     merged = await merge_datasets(base=base, extra=synthetic)
     approved = await _gate(
         "approve-dataset",
@@ -230,7 +230,7 @@ _nightly_synthetic = flyte.Trigger(
 
 @factory_env.task(triggers=[_nightly_synthetic])
 async def nightly_synthetic_batch(profile_name: str = "smoke") -> str:
-    dataset_art = flyte.remote.Artifact.get(ARTIFACT_RL_DATASET)
-    dataset = flyte.io.File.from_existing_remote(dataset_art.url)
+    latest_dataset = await assets.latest(ARTIFACT_RL_DATASET)
+    dataset = flyte.io.File.from_existing_remote(latest_dataset.path)
     await generate_synthetic_tasks(dataset=dataset, profile_name=profile_name)
     return f"synthetic batch generated; artifact `{ARTIFACT_SYNTHETIC}` updated"
