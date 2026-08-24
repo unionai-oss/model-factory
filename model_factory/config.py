@@ -61,19 +61,22 @@ DEMO_CLUSTER = ClusterProfile(
     requires_app_auth=False,
 )
 
-# playground.canary has no A10G or L4 — its GPU pools are V100 (p3.8xlarge,
-# 4 GPUs / 31600m CPU / 227700Mi; p3.16xlarge, 8 GPUs) and T4 (g4dn.xlarge,
-# tainted NoSchedule). "V100:4" takes a whole p3.8xlarge, and 24 CPU /
-# 200Gi sits inside that node's allocatable. The org also sets
-# `app.disallow_anonymous`, so apps need auth. CPU envs at 12 / 24Gi target
-# the c5.4xlarge pool (15640m / 26900Mi) — too big for t3a.xlarge.
+# playground.canary has no A10G or L4. Its GPU pools are V100
+# (p3.8xlarge / p3.16xlarge) and T4 (g4dn.xlarge). On-demand V100 capacity
+# is scarce here — `V100:4` needs a whole free p3 node and sat queued for
+# 90+ minutes with the node group at max size — so target the much smaller
+# g4dn.xlarge (1x T4, 3670m CPU / 14000Mi allocatable) instead. 2 CPU /
+# 10Gi fits inside that node's allocatable with room for DaemonSets.
+#
+# The org also sets `app.disallow_anonymous`, so apps need auth. CPU envs at
+# 12 / 24Gi target the c5.4xlarge pool (15640m / 26900Mi).
 PLAYGROUND_CLUSTER = ClusterProfile(
     name="playground",
     org="playground",
-    gpu="V100:4",
-    inference_gpu="V100:4",
-    gpu_task_cpu=24,
-    gpu_task_memory="100Gi",
+    gpu="T4:1",
+    inference_gpu="T4:1",
+    gpu_task_cpu=2,
+    gpu_task_memory="10Gi",
     gpu_task_disk="100Gi",
     cpu_task_cpu=12,
     cpu_task_memory="24Gi",

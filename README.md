@@ -78,9 +78,9 @@ with `MF_CLUSTER`; it defaults to `demo`.
 |---|---|---|
 | endpoint | `demo.hosted.unionai.cloud` | `playground.canary.unionai.cloud` |
 | config | `~/.flyte/config-model-factory.yaml` | `~/.flyte/config-playground.yaml` |
-| accelerator (train/synth/eval) | `A10G:1` | `V100:4` |
-| accelerator (serving app) | `L4:1` | `V100:4` |
-| GPU envs: cpu / memory / disk | 6 / 24Gi / 100Gi | 24 / 200Gi / 100Gi |
+| accelerator (train/synth/eval) | `A10G:1` | `T4:1` |
+| accelerator (serving app) | `L4:1` | `T4:1` |
+| GPU envs: cpu / memory / disk | 6 / 24Gi / 100Gi | 2 / 10Gi / 100Gi |
 | CPU envs: cpu / memory | 2 / 4Gi | 12 / 24Gi |
 | apps | public (`requires_auth=False`) | authenticated (org sets `app.disallow_anonymous`) |
 
@@ -88,11 +88,12 @@ with `MF_CLUSTER`; it defaults to `demo`.
 the accelerator named in `gpu`, so `V100:4` requests four V100s and their
 memory along with them.
 
-`playground` has no A10G or L4. Its GPU pools are V100 (`p3.8xlarge`, 4 GPUs
-/ 31600m CPU / 227700Mi; `p3.16xlarge`, 8 GPUs) and T4 (`g4dn.xlarge`, tainted
-`NoSchedule`). `V100:4` takes a whole `p3.8xlarge`, with 24 CPU / 200Gi
-sitting inside its allocatable. CPU envs at 12 / 24Gi target the
-`c5.4xlarge` pool (15640m / 26900Mi) — too big for `t3a.xlarge`.
+`playground` has no A10G or L4. Its GPU pools are V100 (`p3.8xlarge` /
+`p3.16xlarge`) and T4 (`g4dn.xlarge`). On-demand V100 capacity is scarce
+there — `V100:4` needs a whole free p3 node and sat queued for 90+ minutes
+with the node group at max size — so the profile targets `g4dn.xlarge`
+(1x T4, 3670m CPU / 14000Mi allocatable). CPU envs at 12 / 24Gi target the
+`c5.4xlarge` pool (15640m / 26900Mi).
 
 An unschedulable pod does not fail the run, it just queues, so the parent
 reports `running` indefinitely. Check the action's K8s events rather than
