@@ -109,7 +109,7 @@ async def _generate_batch(model_name: str, prompts: list[str], max_new_tokens: i
     return _TOK.batch_decode(gen, skip_special_tokens=True)
 
 
-@de_gpu_env.task(report=True)
+@de_gpu_env.task(report=True, produces_artifacts=True)
 async def generate_synthetic_tasks(
     dataset: flyte.io.File, profile_name: str = "smoke"
 ) -> flyte.io.File:

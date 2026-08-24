@@ -168,7 +168,7 @@ async def ingest_and_curate(profile_name: str = "smoke") -> flyte.io.File:
     return await flyte.io.File.from_local(out)
 
 
-@de_cpu_env.task
+@de_cpu_env.task(produces_artifacts=True)
 async def publish_dataset(dataset: flyte.io.File, note: str = "") -> flyte.io.File:
     """Mint an approved dataset as a versioned `rl-tasks-dataset` artifact.
 

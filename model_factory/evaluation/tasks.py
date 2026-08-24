@@ -99,7 +99,7 @@ async def _score_all(completions: list[str], tests: list[str]) -> list[dict]:
     return list(await asyncio.gather(*(one(c, t) for c, t in zip(completions, tests))))
 
 
-@eval_gpu_env.task(report=True, timeout=flyte.Timeout(max_runtime=3600))
+@eval_gpu_env.task(report=True, timeout=flyte.Timeout(max_runtime=3600), produces_artifacts=True)
 async def evaluate_checkpoint(
     checkpoint: flyte.io.Dir,
     dataset: flyte.io.File,
@@ -215,7 +215,7 @@ async def evaluate_checkpoint(
     )
 
 
-@eval_cpu_env.task
+@eval_cpu_env.task(produces_artifacts=True)
 async def promote_checkpoint(checkpoint: flyte.io.Dir, eval_report: flyte.io.File) -> flyte.io.Dir:
     """Re-publish an approved checkpoint as the `promoted-model` artifact."""
     local = await checkpoint.download()
