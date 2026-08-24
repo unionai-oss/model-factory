@@ -73,7 +73,7 @@ def make_reward_fn(metrics_sink: list[dict]):
     return reward_fn
 
 
-@trainer_env.task(report=True, timeout=flyte.Timeout(max_runtime=7200), triggers=[_retrain_trigger])
+@trainer_env.task(report=True, timeout=flyte.Timeout(max_runtime=7200), triggers=[_retrain_trigger], produces_artifacts=True)
 async def train_grpo(dataset: flyte.io.File, profile_name: str = "smoke") -> flyte.io.Dir:
     """Run GRPO; emit the LoRA adapter as a `policy-checkpoint` artifact."""
     import pandas as pd

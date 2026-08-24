@@ -37,7 +37,7 @@ _refresh_trigger = flyte.Trigger(
 )
 
 
-@inference_ops_env.task(triggers=[_refresh_trigger], timeout=flyte.Timeout(max_runtime=1800))
+@inference_ops_env.task(triggers=[_refresh_trigger], timeout=flyte.Timeout(max_runtime=1800), produces_artifacts=True)
 async def refresh_inference_service(checkpoint: flyte.io.Dir) -> flyte.io.File:
     """Point the serving app at a new checkpoint and verify it generates."""
     import json
