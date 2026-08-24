@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import flyte
 
+from ..config import cluster_env_vars, cpu_resources, gpu_resources
 from ..shared.images import cpu_image, gpu_image, secrets
 
 eval_gpu_env = flyte.TaskEnvironment(
     name="eval-gpu",
-    resources=flyte.Resources(cpu=6, memory="24Gi", gpu="A10G:1", disk="100Gi", shm="auto"),
+    resources=gpu_resources(),
+    env_vars=cluster_env_vars(),
     image=gpu_image,
     secrets=secrets(),
 )
@@ -22,7 +24,8 @@ eval_gpu_env = flyte.TaskEnvironment(
 # a GPU coordinator waiting on a GPU child deadlocks a single-GPU cluster.
 eval_cpu_env = flyte.TaskEnvironment(
     name="eval-cpu",
-    resources=flyte.Resources(cpu=2, memory="4Gi"),
+    resources=cpu_resources(),
+    env_vars=cluster_env_vars(),
     image=cpu_image,
     depends_on=[eval_gpu_env],
 )

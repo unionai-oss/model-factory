@@ -24,6 +24,15 @@ from fastapi.responses import JSONResponse
 from flyte.app.extras import FastAPIAppEnvironment
 
 from . import APP_NAME
+from ..config import (
+    APP_DOMAIN,
+    APP_ORG,
+    APP_PROJECT,
+    INFERENCE_GPU,
+    cluster_env_vars,
+    REQUIRE_APP_AUTH,
+    gpu_resources,
+)
 from ..contracts import ARTIFACT_CHECKPOINT
 from ..shared import assets
 from ..shared.images import gpu_image
@@ -168,10 +177,15 @@ inference_app_env = FastAPIAppEnvironment(
     name=APP_NAME,
     app=app,
     image=gpu_image.with_pip_packages("fastapi", "uvicorn"),
-    resources=flyte.Resources(cpu=6, memory="24Gi", gpu="L4:1", disk="100Gi", shm="auto"),
+    resources=gpu_resources(INFERENCE_GPU),
     scaling=flyte.app.Scaling(replicas=(0, 1), scaledown_after=900),
-    requires_auth=False,
-    env_vars={"MF_ORG": "demo", "MF_PROJECT": "model-factory", "MF_DOMAIN": "development"},
+    requires_auth=REQUIRE_APP_AUTH,
+    env_vars={
+        **cluster_env_vars(),
+        "MF_ORG": APP_ORG,
+        "MF_PROJECT": APP_PROJECT,
+        "MF_DOMAIN": APP_DOMAIN,
+    },
     description="Serves the latest policy-checkpoint for rollouts and evals (adapter toggleable)",
 )
 

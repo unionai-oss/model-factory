@@ -67,6 +67,53 @@ Profiles (`model_factory/config.py`): `smoke` (0.5B model, 96 tasks, 10 GRPO
 steps — minutes), `dev` (1.5B, ~2K tasks, 100 steps), `full` (10K tasks,
 500+ steps).
 
+## Clusters
+
+Tenants differ in node pools and org policy, so everything cluster-specific
+(GPU device, GPU task sizing, whether apps may be anonymous) lives in
+`ClusterProfile` in `model_factory/config.py`. Select one at deploy time
+with `MF_CLUSTER`; it defaults to `demo`.
+
+| | `demo` (default) | `playground` |
+|---|---|---|
+| endpoint | `demo.hosted.unionai.cloud` | `playground.canary.unionai.cloud` |
+| config | `~/.flyte/config-model-factory.yaml` | `~/.flyte/config-playground.yaml` |
+| accelerator (train/synth/eval) | `A10G:1` | `V100:4` |
+| accelerator (serving app) | `L4:1` | `V100:4` |
+| GPU envs: cpu / memory / disk | 6 / 24Gi / 100Gi | 24 / 200Gi / 100Gi |
+| CPU envs: cpu / memory | 2 / 4Gi | 12 / 24Gi |
+| apps | public (`requires_auth=False`) | authenticated (org sets `app.disallow_anonymous`) |
+
+`flyte.Resources(memory=...)` is **host** memory, not VRAM — VRAM comes with
+the accelerator named in `gpu`, so `V100:4` requests four V100s and their
+memory along with them.
+
+`playground` has no A10G or L4. Its GPU pools are V100 (`p3.8xlarge`, 4 GPUs
+/ 31600m CPU / 227700Mi; `p3.16xlarge`, 8 GPUs) and T4 (`g4dn.xlarge`, tainted
+`NoSchedule`). `V100:4` takes a whole `p3.8xlarge`, with 24 CPU / 200Gi
+sitting inside its allocatable. CPU envs at 12 / 24Gi target the
+`c5.4xlarge` pool (15640m / 26900Mi) — too big for `t3a.xlarge`.
+
+An unschedulable pod does not fail the run, it just queues, so the parent
+reports `running` indefinitely. Check the action's K8s events rather than
+waiting.
+
+Deploying there also needs an explicit `--project`, since that config file
+defaults to `flytesnacks`:
+
+```bash
+export MF_CLUSTER=playground
+CFG=~/.flyte/config-playground.yaml
+P="--project model-factory --domain development"
+uv run flyte --config $CFG deploy $P team_data.py de_cpu_env
+# ... same for the other units, then:
+uv run flyte --config $CFG run $P team_data.py data_release --profile_name smoke --auto_approve
+```
+
+Individual fields can be overridden without adding a profile: `MF_GPU`,
+`MF_INFERENCE_GPU`, `MF_GPU_CPU`, `MF_GPU_MEMORY` (host memory), `MF_GPU_DISK`,
+`MF_CPU`, `MF_CPU_MEMORY`, `MF_REQUIRE_AUTH`, `MF_ORG`.
+
 ## Secrets
 
 Optional but recommended — see [TODO.md](TODO.md). Without them the loop

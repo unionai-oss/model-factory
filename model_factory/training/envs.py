@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import flyte
 
+from ..config import cluster_env_vars, gpu_resources
 from ..shared.images import gpu_image, secrets
 
 trainer_env = flyte.TaskEnvironment(
     name="trainer",
-    resources=flyte.Resources(cpu=6, memory="24Gi", gpu="A10G:1", disk="100Gi", shm="auto"),
+    resources=gpu_resources(),
+    env_vars=cluster_env_vars(),
     image=gpu_image,
     secrets=secrets(),
 )

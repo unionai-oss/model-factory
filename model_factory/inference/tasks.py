@@ -16,13 +16,15 @@ from ..contracts import (
     InferenceEndpoint,
     publish,
 )
+from ..config import cluster_env_vars, cpu_resources
 from ..shared import inference_client
 from ..shared.images import cpu_image
 from . import APP_NAME
 
 inference_ops_env = flyte.TaskEnvironment(
     name="inference-ops",
-    resources=flyte.Resources(cpu=1, memory="2Gi"),
+    resources=cpu_resources(),
+    env_vars=cluster_env_vars(),
     image=cpu_image,
 )
 

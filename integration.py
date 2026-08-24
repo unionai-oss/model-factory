@@ -26,6 +26,7 @@ from model_factory.data_engineering.release import data_release
 from model_factory.evaluation.envs import eval_cpu_env, eval_gpu_env
 from model_factory.evaluation.tasks import eval_and_promote
 from model_factory.inference.tasks import inference_ops_env, refresh_inference_service
+from model_factory.config import cluster_env_vars, cpu_resources
 from model_factory.shared import reporting
 from model_factory.shared.images import cpu_image
 from model_factory.training.envs import trainer_env
@@ -33,7 +34,8 @@ from model_factory.training.tasks import train_grpo
 
 integration_env = flyte.TaskEnvironment(
     name="integration",
-    resources=flyte.Resources(cpu=1, memory="2Gi"),
+    resources=cpu_resources(),
+    env_vars=cluster_env_vars(),
     image=cpu_image,
     depends_on=[de_cpu_env, de_gpu_env, trainer_env, eval_gpu_env, eval_cpu_env, inference_ops_env],
 )
