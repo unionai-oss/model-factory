@@ -19,7 +19,7 @@ from .synthetic import generate_synthetic_tasks
 from .tasks import ingest_and_curate, merge_datasets, publish_dataset
 
 
-@de_cpu_env.task(report=True, entrypoint=True)
+@de_cpu_env.task(report=True, entrypoint=True, cache="disable")
 async def data_release(
     profile_name: str = "smoke",
     auto_approve: bool = False,
