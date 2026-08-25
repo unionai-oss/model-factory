@@ -46,6 +46,20 @@ class AssetVersion:
     via: str  # "artifact-api" | "run-scan"
 
 
+def _blob_uri(a) -> str | None:
+    """Object-store URI of an artifact version's value (spec.value.scalar.blob.uri).
+
+    ``Artifact.url`` is the *console* URL (https://...), which flyte's storage
+    layer routes through fsspec's HTTP filesystem — that breaks inside task
+    pods (aiohttp RuntimeError). Always resolve the underlying s3:// URI.
+    """
+    try:
+        spec = a.to_dict().get("spec", {})
+        return spec["value"]["scalar"]["blob"]["uri"]
+    except (AttributeError, KeyError, TypeError):
+        return None
+
+
 async def _first_output_path(details) -> str | None:
     outs = details.outputs() if callable(getattr(details, "outputs", None)) else details.outputs
     import asyncio
@@ -72,7 +86,7 @@ async def list_versions(
             found.append(
                 AssetVersion(
                     artifact_name=artifact_name,
-                    path=a.url,
+                    path=_blob_uri(a) or a.url,
                     run_name=str(getattr(a, "source", "") or ""),
                     action_name="",
                     via="artifact-api",

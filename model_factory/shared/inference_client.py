@@ -62,11 +62,52 @@ def health(base_url: str) -> dict:
         return json.loads(resp.read())
 
 
-def reload_checkpoint(base_url: str, checkpoint_path: str | None = None) -> dict:
-    out = _post(f"{base_url}/reload", {"checkpoint_path": checkpoint_path}, timeout=600)
+def reload_checkpoint(
+    base_url: str,
+    checkpoint_path: str | None = None,
+    deadline_s: float = 1800,
+    poll_s: float = 10,
+) -> dict:
+    """Kick off a checkpoint load and wait for the service to serve it.
+
+    ``/reload`` is fire-and-forget on the server (it returns immediately and
+    loads in the background), so we poll ``/health`` until the requested
+    checkpoint is live. A 504 on the POST (activator timeout, e.g. against an
+    older server that loads inline) is treated as "load in progress" — the
+    app keeps loading after the gateway cuts the request off.
+    """
+    import time
+
+    started = time.monotonic()
+    try:
+        out = _post(f"{base_url}/reload", {"checkpoint_path": checkpoint_path}, timeout=60)
+    except InferenceServiceError as e:
+        if "504" in str(e) or "timed out" in str(e).lower():
+            out = {"ok": True, "loading": True}
+        else:
+            raise
     if not out.get("ok"):
         raise InferenceServiceError(f"reload failed: {out}")
-    return out
+    if not out.get("loading"):
+        # Server says it's already serving the requested checkpoint.
+        return out
+
+    while time.monotonic() - started < deadline_s:
+        time.sleep(poll_s)
+        try:
+            h = health(base_url)
+        except Exception:
+            continue  # app may be briefly unreachable mid-reload
+        if h.get("reload_error"):
+            raise InferenceServiceError(f"reload failed server-side:\n{h['reload_error']}")
+        if h.get("loaded") and (
+            checkpoint_path is None or h.get("checkpoint_path") == checkpoint_path
+        ):
+            return {"ok": True, "base_model": h.get("base_model"),
+                    "checkpoint_path": h.get("checkpoint_path")}
+    raise InferenceServiceError(
+        f"service not serving {checkpoint_path or 'latest checkpoint'} after {deadline_s}s"
+    )
 
 
 def generate(

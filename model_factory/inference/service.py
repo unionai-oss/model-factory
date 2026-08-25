@@ -1,8 +1,12 @@
 """The inference serving app: loads policy checkpoints, serves generations.
 
 Endpoints:
-- GET  /health    → {loaded, base_model, checkpoint_path}
-- POST /reload    → {"checkpoint_path": "<s3 dir>"} | {} (= latest artifact)
+- GET  /health    → {loaded, base_model, checkpoint_path, loading, reload_error}
+- POST /reload    → kicks off the (re)load in the background and returns
+                    immediately; poll /health until loaded. Returning inline
+                    would make the request outlast the Knative activator
+                    timeout (504) on large checkpoints.
+                    {"checkpoint_path": "<s3 dir>"} | {} (= latest artifact)
 - POST /generate  → {"chats": [[{role,content},...]], "use_adapter": bool,
                      "max_new_tokens": int, "checkpoint_path": str|null}
                     Reloads first if checkpoint_path differs from loaded.
@@ -41,7 +45,14 @@ _GEN_BATCH = 8
 
 app = FastAPI(title="Model Factory Inference Service")
 
-_state: dict = {"model": None, "tok": None, "base_model": None, "checkpoint_path": None}
+_state: dict = {
+    "model": None,
+    "tok": None,
+    "base_model": None,
+    "checkpoint_path": None,
+    "loading": None,  # checkpoint path currently being loaded (or None)
+    "reload_error": None,
+}
 _load_lock = asyncio.Lock()
 
 
@@ -102,23 +113,54 @@ async def health() -> JSONResponse:
             "loaded": _state["model"] is not None,
             "base_model": _state["base_model"],
             "checkpoint_path": _state["checkpoint_path"],
+            "loading": _state["loading"],
+            "reload_error": _state["reload_error"],
         }
     )
 
 
 @app.post("/reload")
 async def reload(body: dict | None = None) -> JSONResponse:
+    """Kick off a checkpoint (re)load in the background and return immediately.
+
+    Loading a checkpoint (S3 download + base model + adapter onto GPU) takes
+    longer than the Knative activator's request timeout, so doing it inline
+    yields a 504 for the caller even when the load succeeds. Callers should
+    poll /health until `loaded` and `checkpoint_path` match.
+    """
     body = body or {}
     try:
         path = body.get("checkpoint_path") or await _resolve_latest_checkpoint()
-        async with _load_lock:
-            info = await _load(path)
-        return JSONResponse({"ok": True, **info})
     except Exception as e:
         return JSONResponse(
-            {"ok": False, "error": str(e), "traceback": traceback.format_exc().splitlines()[-8:]},
-            status_code=500,
+            {"ok": False, "error": f"could not resolve checkpoint: {e}"}, status_code=500
         )
+
+    # Already serving this checkpoint — nothing to do.
+    if _state["model"] is not None and _state["checkpoint_path"] == path:
+        return JSONResponse(
+            {"ok": True, "base_model": _state["base_model"], "checkpoint_path": path}
+        )
+    # A load of this exact checkpoint is already in flight.
+    if _state["loading"] == path:
+        return JSONResponse({"ok": True, "loading": True, "checkpoint_path": path})
+
+    _state["reload_error"] = None
+    _state["loading"] = path
+
+    async def _job() -> None:
+        try:
+            async with _load_lock:
+                await _load(path)
+        except Exception as e:
+            _state["reload_error"] = f"{type(e).__name__}: {e}\n" + "\n".join(
+                traceback.format_exc().splitlines()[-8:]
+            )
+        finally:
+            _state["loading"] = None
+
+    asyncio.create_task(_job())
+    return JSONResponse({"ok": True, "loading": True, "checkpoint_path": path})
 
 
 @app.post("/generate")
