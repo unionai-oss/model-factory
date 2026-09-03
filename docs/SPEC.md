@@ -39,7 +39,7 @@ The poolside loop and its Flyte/Union equivalent, station by station:
 | Code execution env (Saucer/Task Engine) | Sandboxed subprocess executor inside rollout tasks (small); dedicated `ReusePolicy` executor fleet (medium/large) |
 | Eval platform (Beacon) | Eval task auto-launched by `OnArtifact(policy-checkpoint)`; results as artifacts + HTML reports |
 | Reward (RLCEF) | Pure-Python reward stack: format + anti-hack guards + all-tests-pass, executed in sandbox; every component logged per-sample |
-| Observability (Neptune/Grafana/Sentry) | W&B (`NIELS_WANDB_API_KEY`), live `flyte.report` streams, `@flyte.trace` spans, optional `flyteplugins-otel` → Grafana Tempo |
+| Observability (Neptune/Grafana/Sentry) | W&B (`WANDB_API_KEY`), live `flyte.report` streams, `@flyte.trace` spans, optional `flyteplugins-otel` → Grafana Tempo |
 | Human layer (Podium / vibe check) | `flyte.new_condition` HITL gates + report tabs with inspectable samples + lineage **AppEnvironment** |
 
 ### Artifact graph (the "assets" of the factory)
@@ -114,7 +114,7 @@ prompt → completion → sandboxed test execution → scalar reward.
   2. Checkpoint promotion after eval (report shows eval table + sample
      completions side-by-side). `auto_approve=True` flag exists for CI
      smoke runs; defaults to human gate.
-- **Observability**: W&B run per training job (`NIELS_WANDB_API_KEY`,
+- **Observability**: W&B run per training job (`WANDB_API_KEY`,
   degrade to `WANDB_MODE=disabled` if secret absent); live flyte report
   streaming reward/loss curves during training; `@flyte.trace` on rollout
   batch + reward computation helpers (crash-resume + span lineage).
@@ -238,14 +238,14 @@ docs/, TODO.md
 
 | Secret name | Used for | Required? |
 |---|---|---|
-| `NIELS_HUGGINGFACE_TOKEN` | HF downloads (models/datasets are public → optional; needed for gated models + higher rate limits) | optional, graceful fallback |
-| `NIELS_WANDB_API_KEY` | W&B experiment tracking | optional → `WANDB_MODE=disabled` fallback |
+| `HUGGINGFACE_TOKEN` | HF downloads (models/datasets are public → optional; needed for gated models + higher rate limits) | optional, graceful fallback |
+| `WANDB_API_KEY` | W&B experiment tracking | optional → `WANDB_MODE=disabled` fallback |
 
 Create with:
 
 ```
-flyte create secret NIELS_HUGGINGFACE_TOKEN --value <hf_...> --project model-factory --domain development
-flyte create secret NIELS_WANDB_API_KEY --value <key> --project model-factory --domain development
+flyte create secret HUGGINGFACE_TOKEN --value <hf_...> --project model-factory --domain development
+flyte create secret WANDB_API_KEY --value <key> --project model-factory --domain development
 ```
 
 No other external services are required for the small scope. Medium/large

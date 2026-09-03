@@ -62,51 +62,109 @@ def health(base_url: str) -> dict:
         return json.loads(resp.read())
 
 
-def reload_checkpoint(
-    base_url: str,
-    checkpoint_path: str | None = None,
-    deadline_s: float = 1800,
-    poll_s: float = 10,
-) -> dict:
-    """Kick off a checkpoint load and wait for the service to serve it.
+def wait_until_ready(base_url: str, deadline_s: float = 600, poll_s: float = 10) -> dict:
+    """Poll /health until the app answers, and return that first health dict.
 
-    ``/reload`` is fire-and-forget on the server (it returns immediately and
-    loads in the background), so we poll ``/health`` until the requested
-    checkpoint is live. A 504 on the POST (activator timeout, e.g. against an
-    older server that loads inline) is treated as "load in progress" — the
-    app keeps loading after the gateway cuts the request off.
+    The serving app scales to zero, so the first request after an idle period
+    has to wait for a pod to be scheduled and started. Requests sent during
+    that window are dropped by the gateway rather than queued, so callers must
+    wake the app *before* asking it to do work.
     """
     import time
 
     started = time.monotonic()
-    try:
-        out = _post(f"{base_url}/reload", {"checkpoint_path": checkpoint_path}, timeout=60)
-    except InferenceServiceError as e:
-        if "504" in str(e) or "timed out" in str(e).lower():
-            out = {"ok": True, "loading": True}
-        else:
+    last: Exception | None = None
+    while time.monotonic() - started < deadline_s:
+        try:
+            return health(base_url)
+        except Exception as e:  # not up yet (cold start, activator timeout)
+            last = e
+            time.sleep(poll_s)
+    raise InferenceServiceError(
+        f"{base_url} did not become reachable within {deadline_s:.0f}s "
+        f"(last error: {last}). The app may be unable to schedule — check its "
+        f"accelerator against the tenant's available node pools."
+    )
+
+
+def reload_checkpoint(
+    base_url: str,
+    checkpoint_path: str | None = None,
+    deadline_s: float = 1500,
+    poll_s: float = 10,
+    ready_s: float = 600,
+) -> dict:
+    """Point the service at ``checkpoint_path`` and wait until it serves it.
+
+    ``/reload`` is fire-and-forget server-side (it returns immediately and
+    loads in the background), so we poll ``/health`` until the requested
+    checkpoint is live.
+
+    Two failure modes this has to survive, both seen in practice:
+
+    * The app is scaled to zero, so the POST dies at the gateway and never
+      reaches the server — nothing starts loading. We wake the app first, and
+      re-issue the POST whenever /health says the service is neither loading
+      nor already serving the target. Assuming a timed-out POST means "loading
+      started" is what made this poll a healthy-but-idle app until its
+      deadline and then fail with a misleading message.
+    * A load is genuinely in flight and the gateway cuts the POST off. Then
+      /health reports ``loading`` and we simply wait.
+    """
+    import time
+
+    started = time.monotonic()
+
+    # Wake the app before asking it for work; requests sent while it is
+    # scaling from zero are dropped, not queued.
+    wait_until_ready(base_url, deadline_s=min(ready_s, deadline_s), poll_s=poll_s)
+
+    def kick() -> dict:
+        try:
+            out = _post(f"{base_url}/reload", {"checkpoint_path": checkpoint_path}, timeout=120)
+        except InferenceServiceError as e:
+            # Gateway cut us off. Whether the server got it is unknown —
+            # /health is the source of truth, and we re-kick if it did not.
+            if "504" in str(e) or "timed out" in str(e).lower():
+                return {"ok": True, "loading": True}
             raise
-    if not out.get("ok"):
-        raise InferenceServiceError(f"reload failed: {out}")
-    if not out.get("loading"):
-        # Server says it's already serving the requested checkpoint.
+        if not out.get("ok"):
+            raise InferenceServiceError(f"reload failed: {out}")
         return out
 
+    out = kick()
+    if not out.get("loading"):
+        return out  # already serving the requested checkpoint
+
+    unreachable_s = 0.0
     while time.monotonic() - started < deadline_s:
         time.sleep(poll_s)
         try:
             h = health(base_url)
         except Exception:
-            continue  # app may be briefly unreachable mid-reload
+            # Briefly unreachable mid-reload is normal; permanently is not.
+            unreachable_s += poll_s
+            if unreachable_s > ready_s:
+                raise InferenceServiceError(
+                    f"{base_url} stopped responding for {unreachable_s:.0f}s during reload"
+                )
+            continue
+        unreachable_s = 0.0
         if h.get("reload_error"):
             raise InferenceServiceError(f"reload failed server-side:\n{h['reload_error']}")
         if h.get("loaded") and (
             checkpoint_path is None or h.get("checkpoint_path") == checkpoint_path
         ):
-            return {"ok": True, "base_model": h.get("base_model"),
-                    "checkpoint_path": h.get("checkpoint_path")}
+            return {
+                "ok": True,
+                "base_model": h.get("base_model"),
+                "checkpoint_path": h.get("checkpoint_path"),
+            }
+        if not h.get("loading"):
+            # Idle and not serving what we asked for: our POST never landed.
+            kick()
     raise InferenceServiceError(
-        f"service not serving {checkpoint_path or 'latest checkpoint'} after {deadline_s}s"
+        f"service not serving {checkpoint_path or 'latest checkpoint'} after {deadline_s:.0f}s"
     )
 
 

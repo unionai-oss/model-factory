@@ -6,11 +6,27 @@ In production the teams are wired ONLY by artifacts + OnArtifact triggers:
                                                    ├→ eval_and_promote → [eval-report], [promoted-model]
                                                    └→ refresh_inference_service → [inference-endpoint]
 
-The demo control plane doesn't emit artifact events yet (TODO.md §2), so
-this driver plays the event bus: it invokes each team's public entrypoint in
+This driver plays the event bus: it invokes each team's public entrypoint in
 artifact order, passing exactly the values the triggers would bind. Nothing
 here reaches into another team's internals — same contract, hand-cranked.
 
+**The demo control plane now DOES emit artifact events** (verified
+2026-08-28). That makes this driver a *duplicate* of dark mode rather than a
+stand-in for it: publishing `rl-tasks-dataset` and `policy-checkpoint` fires
+the real triggers, so every downstream station runs twice — once here and
+once from its trigger. On a tenant with one spare A10G the two copies queue
+behind each other and neither finishes promptly.
+
+So use this driver only to exercise the chain end-to-end in one run (a
+readable E2E test), and deactivate the triggers first, or pass
+``refresh_inference=False`` to drop the half that contends hardest for GPUs.
+For a production-shaped run, publish a dataset with `data_release` and let
+the triggers drive:
+
+    flyte --config ~/.flyte/config-model-factory.yaml run team_data.py data_release \
+        --profile_name smoke --auto_approve
+
+    # or the hand-cranked E2E (see the caveat above):
     flyte --config ~/.flyte/config-model-factory.yaml run integration.py factory_chain \
         --profile_name smoke --auto_approve
 """

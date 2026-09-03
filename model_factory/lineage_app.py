@@ -109,7 +109,10 @@ def _run_url(project: str, domain: str, run_name: str) -> str:
     `Run.url` only exists on runs we already fetched; asset versions name
     their producing run without carrying one, so build it directly.
     """
-    if not run_name:
+    # A run name is a bare identifier. Anything with whitespace or a slash is
+    # a display string that leaked in from somewhere (see assets._source_ids);
+    # emitting no link beats emitting one that 404s.
+    if not run_name or any(c in run_name for c in " /()"):
         return ""
     try:
         from flyte._initialize import get_client

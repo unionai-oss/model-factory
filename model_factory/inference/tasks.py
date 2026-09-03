@@ -7,6 +7,8 @@ tells consumers (eval, rollout workers) what is being served and where.
 
 from __future__ import annotations
 
+import asyncio
+
 import flyte
 import flyte.io
 
@@ -40,13 +42,24 @@ _refresh_trigger = flyte.Trigger(
 @inference_ops_env.task(triggers=[_refresh_trigger], timeout=flyte.Timeout(max_runtime=1800), produces_artifacts=True)
 async def refresh_inference_service(checkpoint: flyte.io.Dir) -> flyte.io.File:
     """Point the serving app at a new checkpoint and verify it generates."""
-    import json
-
     url = inference_client.resolve_endpoint(APP_NAME)
-    info = inference_client.reload_checkpoint(url, checkpoint_path=checkpoint.path)
+
+    # The client is blocking (it polls /health on a sleep loop). Run it in a
+    # worker thread — blocking this task's event loop stalls the Flyte
+    # runtime's own coroutines for the whole reload.
+    # The deadline stays comfortably under the task timeout below, so a reload
+    # that never converges surfaces as a real error rather than a bare
+    # TIMED_OUT with no explanation.
+    info = await asyncio.to_thread(
+        inference_client.reload_checkpoint,
+        url,
+        checkpoint_path=checkpoint.path,
+        deadline_s=1500,
+    )
 
     # Smoke generation proves the weights actually serve.
-    completions = inference_client.generate(
+    completions = await asyncio.to_thread(
+        inference_client.generate,
         url,
         [[{"role": "user", "content": "Write a python function that adds two numbers."}]],
         use_adapter=True,

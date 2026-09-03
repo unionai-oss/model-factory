@@ -60,6 +60,22 @@ def _blob_uri(a) -> str | None:
         return None
 
 
+def _source_ids(a) -> tuple[str, str]:
+    """``(run_name, action_name)`` of the action that produced this version.
+
+    ``Artifact.source`` is a pre-rendered DISPLAY string — literally
+    ``"run <run>/<action> (attempt 1)"`` — not an identifier. Using it as a
+    run name builds console URLs like ``/runs/run%20u.../...%20(attempt%201)``
+    (404) and silently breaks any lookup keyed by run name. The identifiers
+    live in the structured spec, so read them from there.
+    """
+    try:
+        action = a.to_dict()["spec"]["source"]["taskAction"]["action"]
+        return str(action["run"]["name"] or ""), str(action.get("name", "") or "")
+    except (AttributeError, KeyError, TypeError):
+        return "", ""
+
+
 async def _first_output_path(details) -> str | None:
     outs = details.outputs() if callable(getattr(details, "outputs", None)) else details.outputs
     import asyncio
@@ -83,12 +99,21 @@ async def list_versions(
     try:
         found = []
         async for a in remote.Artifact.listall.aio(name=artifact_name, limit=limit):
+            uri = _blob_uri(a)
+            if not uri:
+                # Deliberately skip rather than falling back to ``a.url``: the
+                # console URL is an https:// address that sends File/Dir
+                # downloads through fsspec's HTTP filesystem, which blows up
+                # inside a task pod. A version we cannot resolve to object
+                # storage is worse than no version at all.
+                continue
+            run_name, action_name = _source_ids(a)
             found.append(
                 AssetVersion(
                     artifact_name=artifact_name,
-                    path=_blob_uri(a) or a.url,
-                    run_name=str(getattr(a, "source", "") or ""),
-                    action_name="",
+                    path=uri,
+                    run_name=run_name,
+                    action_name=action_name,
                     via="artifact-api",
                 )
             )

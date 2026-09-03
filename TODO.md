@@ -1,28 +1,26 @@
 # TODO — human actions needed
 
-## 1. Create secrets on the demo cluster (values needed from you)
+## 1. ~~Create secrets on the demo cluster~~ — DONE (2026-09-02)
 
-Neither secret exists yet in `demo` org / project `model-factory`. The code
-references them by these exact names but runs without them (public
-models/datasets; W&B in disabled mode). To enable them:
-
-```bash
-flyte --config ~/.flyte/config-model-factory.yaml create secret \
-    NIELS_HUGGINGFACE_TOKEN --value <hf_...> --project model-factory --domain development
-
-flyte --config ~/.flyte/config-model-factory.yaml create secret \
-    NIELS_WANDB_API_KEY --value <wandb key> --project model-factory --domain development
-```
-
-Then re-run/deploy with secrets attached:
+`HUGGINGFACE_TOKEN` and `WANDB_API_KEY` now exist in `demo` org / project
+`model-factory` / domain `development`, and `model_factory/config.py`
+references those names. CI deploys with `MF_USE_SECRETS=1`; for local
+deploys/runs attach them the same way:
 
 ```bash
-MF_USE_SECRETS=1 uv run flyte --config ~/.flyte/config-model-factory.yaml run run.py factory ...
-MF_USE_SECRETS=1 uv run flyte --config ~/.flyte/config-model-factory.yaml deploy run.py factory_env
+MF_USE_SECRETS=1 uv run flyte --config ~/.flyte/config-model-factory.yaml deploy team_data.py de_cpu_env
 ```
 
-(`MF_USE_SECRETS` gates secret attachment because Flyte refuses to schedule
-tasks whose declared secrets don't exist — see `model_factory/config.py`.)
+To recreate on another tenant:
+
+```bash
+flyte --config <cfg> create secret HUGGINGFACE_TOKEN --value <hf_...> --project model-factory --domain development
+flyte --config <cfg> create secret WANDB_API_KEY --value <wandb key> --project model-factory --domain development
+```
+
+(`MF_USE_SECRETS` still gates secret attachment because Flyte refuses to
+schedule tasks whose declared secrets don't exist on the target tenant — see
+`model_factory/config.py`.)
 
 W&B runs land in project `model-factory` (change `WANDB_PROJECT` in
 `config.py` if you want a different entity/project).

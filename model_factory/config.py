@@ -9,15 +9,17 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-# Secret names on the Union cluster (see TODO.md for creation commands).
-HF_TOKEN_SECRET = "NIELS_HUGGINGFACE_TOKEN"
-WANDB_SECRET = "NIELS_WANDB_API_KEY"
+# Secret names on the Union cluster, scoped to the model-factory project
+# (created in demo/development; see TODO.md for creation commands).
+HF_TOKEN_SECRET = "HUGGINGFACE_TOKEN"
+WANDB_SECRET = "WANDB_API_KEY"
 
 # Secrets are only attached to task environments when this env var is set at
 # deploy/run time (from the machine that bundles the code). Flyte fails to
-# schedule a task whose declared secret doesn't exist on the cluster, and the
-# secrets have not been created yet — everything the POC needs (KodCode,
-# Qwen models) is public, so the loop runs without them.
+# schedule a task whose declared secret doesn't exist on the cluster, and not
+# every tenant has them — everything the POC needs (KodCode, Qwen models) is
+# public, so the loop still runs without them (W&B disabled). CI deploys to
+# the demo tenant, where they exist, with MF_USE_SECRETS=1.
 USE_SECRETS = os.environ.get("MF_USE_SECRETS", "0") == "1"
 
 # ── cluster profiles ────────────────────────────────────────────────────
@@ -43,19 +45,36 @@ class ClusterProfile:
     gpu_task_cpu: int  # host CPUs for GPU envs
     gpu_task_memory: str  # host memory for GPU envs (not VRAM)
     gpu_task_disk: str
+    # Serving-app host sizing, kept separate from the GPU *task* sizing: the
+    # serving pool is deliberately a different (smaller) instance type, and a
+    # request sized for a training node simply never schedules on it.
+    inference_task_cpu: int
+    inference_task_memory: str
+    inference_task_disk: str
     cpu_task_cpu: int  # host CPUs for CPU-bound envs
     cpu_task_memory: str
     requires_app_auth: bool  # False = publicly reachable apps
 
 
+# Serving must sit on a DIFFERENT accelerator pool from training/eval, or the
+# two starve each other: this tenant has ~one spare A10G, and an app parked on
+# it blocks every GPU stage of the factory (a scaled-up app held the only A10G
+# for 20+ minutes while synthetic generation sat in waiting_for_resources).
+# The original L4 choice had the right shape but the wrong device — L4 revisions
+# never schedule here ("0/30 nodes are available: ... didn't match Pod's node
+# affinity/selector"). T4 is the small serving pool that does.
 DEMO_CLUSTER = ClusterProfile(
     name="demo",
     org="demo",
     gpu="A10G:1",
-    inference_gpu="L4:1",
+    inference_gpu="T4:1",
     gpu_task_cpu=6,
     gpu_task_memory="24Gi",
     gpu_task_disk="100Gi",
+    # Sized for g4dn.xlarge (3670m CPU / 14000Mi allocatable), the T4 instance.
+    inference_task_cpu=2,
+    inference_task_memory="10Gi",
+    inference_task_disk="50Gi",
     cpu_task_cpu=2,
     cpu_task_memory="4Gi",
     requires_app_auth=False,
@@ -78,6 +97,9 @@ PLAYGROUND_CLUSTER = ClusterProfile(
     gpu_task_cpu=2,
     gpu_task_memory="10Gi",
     gpu_task_disk="100Gi",
+    inference_task_cpu=2,
+    inference_task_memory="10Gi",
+    inference_task_disk="50Gi",
     cpu_task_cpu=12,
     cpu_task_memory="24Gi",
     requires_app_auth=True,
@@ -108,6 +130,9 @@ GPU_TASK_MEMORY = os.environ.get("MF_GPU_MEMORY", CLUSTER.gpu_task_memory)
 GPU_TASK_DISK = os.environ.get("MF_GPU_DISK", CLUSTER.gpu_task_disk)
 CPU_TASK_CPU = int(os.environ.get("MF_CPU", str(CLUSTER.cpu_task_cpu)))
 CPU_TASK_MEMORY = os.environ.get("MF_CPU_MEMORY", CLUSTER.cpu_task_memory)
+INFERENCE_CPU = int(os.environ.get("MF_INFERENCE_CPU", str(CLUSTER.inference_task_cpu)))
+INFERENCE_MEMORY = os.environ.get("MF_INFERENCE_MEMORY", CLUSTER.inference_task_memory)
+INFERENCE_DISK = os.environ.get("MF_INFERENCE_DISK", CLUSTER.inference_task_disk)
 
 
 def cluster_env_vars() -> dict[str, str]:
@@ -131,6 +156,9 @@ def cluster_env_vars() -> dict[str, str]:
         "MF_GPU_DISK": GPU_TASK_DISK,
         "MF_CPU": str(CPU_TASK_CPU),
         "MF_CPU_MEMORY": CPU_TASK_MEMORY,
+        "MF_INFERENCE_CPU": str(INFERENCE_CPU),
+        "MF_INFERENCE_MEMORY": INFERENCE_MEMORY,
+        "MF_INFERENCE_DISK": INFERENCE_DISK,
     }
 
 
@@ -147,6 +175,24 @@ def gpu_resources(gpu: str | None = None):
         memory=GPU_TASK_MEMORY,
         gpu=gpu or GPU,
         disk=GPU_TASK_DISK,
+        shm="auto",
+    )
+
+
+def inference_resources():
+    """`flyte.Resources` for the serving app, sized for the serving pool.
+
+    Separate from `gpu_resources` because serving runs on a smaller instance
+    type than training; asking a T4 node for a training node's CPU/memory is
+    an unschedulable request, not a merely generous one.
+    """
+    import flyte
+
+    return flyte.Resources(
+        cpu=INFERENCE_CPU,
+        memory=INFERENCE_MEMORY,
+        gpu=INFERENCE_GPU,
+        disk=INFERENCE_DISK,
         shm="auto",
     )
 

@@ -117,8 +117,10 @@ Individual fields can be overridden without adding a profile: `MF_GPU`,
 
 ## Secrets
 
-Optional but recommended — see [TODO.md](TODO.md). Without them the loop
-still runs (public models/datasets; W&B disabled).
+`HUGGINGFACE_TOKEN` and `WANDB_API_KEY` exist on the demo tenant (project
+`model-factory`, domain `development`); attach them by deploying/running with
+`MF_USE_SECRETS=1` (CI does). Without them the loop still runs (public
+models/datasets; W&B disabled). See [TODO.md](TODO.md).
 
 ## Layout
 
