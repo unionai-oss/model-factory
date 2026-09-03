@@ -22,6 +22,13 @@ import flyte.io
 
 from ..config import get_profile
 from ..contracts import ARTIFACT_SYNTHETIC, ARTIFACT_TASK_CORPUS, publish
+
+# Static imports on purpose: the code bundler walks the import graph from
+# the entrypoint, so a module imported only inside a task function is NOT
+# bundled and the task dies with ImportError in the pod (hit for real with
+# llm_client). Both modules are stdlib-only, so importing them here is free.
+from ..shared import llm_client
+from ..taskgen import synthetic as syn
 from ..taskgen.corpus import build_corpus
 from .envs import driver_env
 from .evaluate import eval_tuner
@@ -65,17 +72,6 @@ async def synthetic_data_release(
     import pandas as pd
 
     from ..environment.harness import run_generated
-    from ..shared import llm_client
-    from ..taskgen.synthetic import (
-        FAMILY_HINTS,
-        GENERATION_PROMPT,
-        ALLOWED_IMPORTS,
-        RejectedTask,
-        curate_measurement,
-        parse_teacher_response,
-        synthetic_record,
-        validate_task_code,
-    )
 
     base_url = llm_client.resolve_teacher(teacher)
     await asyncio.to_thread(llm_client.wait_until_ready, base_url)
@@ -85,14 +81,14 @@ async def synthetic_data_release(
     rng = random.Random(seed)
     prompts = []
     for i in range(n_tasks):
-        family, hint = FAMILY_HINTS[i % len(FAMILY_HINTS)]
+        family, hint = syn.FAMILY_HINTS[i % len(syn.FAMILY_HINTS)]
         prompts.append(
             (
                 family,
-                GENERATION_PROMPT.format(
+                syn.GENERATION_PROMPT.format(
                     family_hint=hint,
                     duration_s=60,
-                    allowed=", ".join(sorted(ALLOWED_IMPORTS)),
+                    allowed=", ".join(sorted(syn.ALLOWED_IMPORTS)),
                     target_mib=rng.choice([256, 512, 1024, 2048, 4096]),
                     target_cores=rng.choice([1, 1, 2, 4]),
                 ),
@@ -104,9 +100,9 @@ async def synthetic_data_release(
             text = await asyncio.to_thread(
                 llm_client.chat, base_url, [{"role": "user", "content": prompt}]
             )
-            desc, code = parse_teacher_response(text)
-            validate_task_code(code)
-        except (RejectedTask, llm_client.TeacherError) as e:
+            desc, code = syn.parse_teacher_response(text)
+            syn.validate_task_code(code)
+        except (syn.RejectedTask, llm_client.TeacherError) as e:
             print(f"[synthetic {idx}] rejected pre-oracle: {e}")
             return None
         # The oracle: run it for real, generously provisioned, and measure.
@@ -118,11 +114,11 @@ async def synthetic_data_release(
         except Exception as e:  # noqa: BLE001 — teacher code crashed its pod
             print(f"[synthetic {idx}] oracle pod failed: {e}")
             return None
-        reason = curate_measurement(measured)
+        reason = syn.curate_measurement(measured)
         if reason:
             print(f"[synthetic {idx}] curated out: {reason}")
             return None
-        return synthetic_record(f"synthetic-{seed}-{idx}", family, code, desc, measured)
+        return syn.synthetic_record(f"synthetic-{seed}-{idx}", family, code, desc, measured)
 
     results = await asyncio.gather(
         *(generate_one(i, fam, p) for i, (fam, p) in enumerate(prompts))

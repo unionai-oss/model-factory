@@ -145,6 +145,28 @@ SMOKE = TunerProfile(
     eval_cluster_episodes=4,
 )
 
+# Stage-A saturates immediately (the base model's generous proposals fit
+# most tasks), so groups go all-pass and gradient vanishes. This rung turns
+# on the composite reward at smoke scale: waste ranks the all-pass groups,
+# restoring advantage variance — the "reward goes up" signal to watch here
+# is waste_penalty shrinking while success holds.
+SMOKE_COMPOSITE = TunerProfile(
+    name="smoke-composite",
+    base_model=DEFAULT_MODEL,
+    train_contexts=64,
+    eval_contexts=32,
+    reward_stage="composite",
+    max_steps=30,
+    num_generations=8,
+    per_device_batch=8,
+    max_completion_length=128,
+    learning_rate=1e-5,
+    lora_r=16,
+    use_qlora=False,
+    cluster_episode_fraction=0.0,
+    eval_cluster_episodes=6,
+)
+
 DEV = TunerProfile(
     name="dev",
     base_model=DEFAULT_MODEL,
@@ -179,7 +201,9 @@ FULL = TunerProfile(
     eval_cluster_episodes=64,
 )
 
-PROFILES: dict[str, TunerProfile] = {p.name: p for p in (SMOKE, DEV, FULL)}
+PROFILES: dict[str, TunerProfile] = {
+    p.name: p for p in (SMOKE, SMOKE_COMPOSITE, DEV, FULL)
+}
 
 
 def get_profile(name: str) -> TunerProfile:
