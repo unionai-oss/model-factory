@@ -216,6 +216,9 @@ async def eval_tuner(
         base_model = json.load(f)["base_model"]
     report = {
         "base_model": base_model,
+        # Links this report to the checkpoint version it scored — the
+        # lineage app uses it to badge checkpoint cards with eval metrics.
+        "checkpoint_path": getattr(checkpoint, "path", "") or "",
         "n_contexts": len(heldout),
         "schema_validity": schema_validity,
         "success_rate": policy_stats["success_rate"],
