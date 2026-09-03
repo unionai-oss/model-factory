@@ -36,7 +36,13 @@ harness_env = flyte.TaskEnvironment(
 )
 
 
-@harness_env.task(retries=0, timeout=flyte.Timeout(max_runtime=HARNESS_TIMEOUT_S))
+# max_queued_time is load-bearing: an unschedulable pod (a proposal no node
+# satisfies) queues FOREVER otherwise — one such episode hung an eval for
+# 75+ minutes. Queue timeout turns "can't schedule" into a failed episode.
+@harness_env.task(
+    retries=0,
+    timeout=flyte.Timeout(max_runtime=HARNESS_TIMEOUT_S, max_queued_time=300),
+)
 async def run_generated(harness_code: str, task_id: str = "") -> dict:
     """Execute one generated workload and report what it actually used.
 

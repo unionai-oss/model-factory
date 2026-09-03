@@ -75,7 +75,7 @@ def wait_until_ready(base_url: str, deadline_s: float = 900, poll_s: float = 15)
 def chat(
     base_url: str,
     messages: list[dict],
-    max_tokens: int = 2048,
+    max_tokens: int = 4096,
     temperature: float = 0.7,
     timeout: float = 600,
 ) -> str:
@@ -89,6 +89,12 @@ def chat(
             "temperature": temperature,
             # llama.cpp accepts and ignores model for single-model servers
             "model": "default",
+            # The hosted presets default to reasoning_effort=medium; a
+            # thinking model spends the whole token budget in
+            # reasoning_content and returns EMPTY content (observed: 6/6
+            # teacher responses with "no JSON object"). Data generation
+            # wants the answer, not the chain of thought.
+            "chat_template_kwargs": {"reasoning_effort": "none", "enable_thinking": False},
         }
     ).encode()
     req = urllib.request.Request(

@@ -100,10 +100,14 @@ async def synthetic_data_release(
             text = await asyncio.to_thread(
                 llm_client.chat, base_url, [{"role": "user", "content": prompt}]
             )
+        except llm_client.TeacherError as e:
+            print(f"[synthetic {idx}] teacher call failed: {e}")
+            return None
+        try:
             desc, code = syn.parse_teacher_response(text)
             syn.validate_task_code(code)
-        except (syn.RejectedTask, llm_client.TeacherError) as e:
-            print(f"[synthetic {idx}] rejected pre-oracle: {e}")
+        except syn.RejectedTask as e:
+            print(f"[synthetic {idx}] rejected pre-oracle: {e}; raw head: {text[:200]!r}")
             return None
         # The oracle: run it for real, generously provisioned, and measure.
         oracle = run_generated.override(
