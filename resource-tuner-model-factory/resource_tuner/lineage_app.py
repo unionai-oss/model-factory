@@ -95,7 +95,12 @@ def _run_fields(run) -> dict:
         meta = run.pb2.action.metadata
         out["task"] = meta.task.id.name or ""
         out["task_short"] = meta.task.short_name or meta.funtion_name or ""
-        out["triggered"] = "ARTIFACT_TRIGGER" in str(getattr(meta, "source", ""))
+        # `source` is an enum int (5 = RUN_SOURCE_ARTIFACT_TRIGGER);
+        # resolve its name through the descriptor rather than guessing.
+        src = getattr(meta, "source", 0)
+        field = meta.DESCRIPTOR.fields_by_name["source"]
+        name = field.enum_type.values_by_number[src].name
+        out["triggered"] = "ARTIFACT_TRIGGER" in name
     except Exception:
         pass
     try:

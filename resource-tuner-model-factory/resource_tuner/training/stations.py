@@ -52,6 +52,22 @@ async def build_task_corpus(profile_name: str = "smoke", seed: int = 0) -> flyte
     )
 
 
+@driver_env.task(produces_artifacts=True)
+async def publish_synthetic_corpus(corpus_file: flyte.io.File, n: int, teacher: str) -> flyte.io.File:
+    """Publish the oracle-verified synthetic rows as their own artifact.
+
+    Split out because `publish()` only creates an artifact version when the
+    wrapped value is RETURNED from a task — the release task returns the
+    MERGED corpus, so the synthetic slice needs its own returning task
+    (first attempt published nothing: 0 versions listed).
+    """
+    return publish(
+        corpus_file,
+        ARTIFACT_SYNTHETIC,
+        description=f"{n} oracle-verified tasks from {teacher}",
+    )
+
+
 @driver_env.task(timeout=flyte.Timeout(max_runtime=2 * 3600), produces_artifacts=True)
 async def synthetic_data_release(
     n_tasks: int = 10,
@@ -136,10 +152,8 @@ async def synthetic_data_release(
 
     path = tempfile.mktemp(suffix=".parquet")
     pd.DataFrame(records).to_parquet(path, index=False)
-    synthetic_file = publish(
-        await flyte.io.File.from_local(path),
-        ARTIFACT_SYNTHETIC,
-        description=f"{len(records)} oracle-verified tasks from {teacher}",
+    synthetic_file = await publish_synthetic_corpus(
+        corpus_file=await flyte.io.File.from_local(path), n=len(records), teacher=teacher
     )
     if not merge_with_templates:
         return synthetic_file
