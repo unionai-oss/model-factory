@@ -24,7 +24,7 @@ import flyte
 import flyte.io
 
 from ..config import TunerProfile, WANDB_PROJECT, get_profile
-from ..contracts import ARTIFACT_TUNER_CHECKPOINT, publish
+from ..contracts import ARTIFACT_TASK_CORPUS, ARTIFACT_TUNER_CHECKPOINT, publish
 from ..environment.simulator import simulate_episode
 from ..policy.parsing import try_extract_proposal
 from ..policy.prompts import render_messages
@@ -113,13 +113,61 @@ def _load_model(profile: TunerProfile):
     return model, tok, bf16
 
 
-@trainer_env.task(timeout=flyte.Timeout(max_runtime=6 * 3600), produces_artifacts=True)
+def _report_html(profile: TunerProfile, rows: list[dict]) -> str:
+    """Live training report: reward curve (inline SVG) + last-step stats.
+
+    Rendered every log step via flyte.report so the run page shows the
+    go/no-go signal — mean reward climbing — while training is in flight.
+    """
+    rewards = [r["reward"] for r in rows if "reward" in r]
+    points = ""
+    if len(rewards) >= 2:
+        lo, hi = min(rewards), max(rewards)
+        span = (hi - lo) or 1.0
+        points = " ".join(
+            f"{20 + 560 * i / (len(rewards) - 1):.1f},{150 - 130 * (r - lo) / span:.1f}"
+            for i, r in enumerate(rewards)
+        )
+    last = rows[-1] if rows else {}
+    stats = "".join(
+        f"<tr><td>{k}</td><td>{v:.4g}</td></tr>"
+        for k, v in last.items()
+        if isinstance(v, (int, float))
+    )
+    return f"""
+<h2>resource-tuner GRPO — {profile.name} / {profile.base_model}</h2>
+<p>reward stage: <b>{profile.reward_stage}</b> · step {len(rewards)}/{profile.max_steps}
+ · mean reward {rewards[-1]:.3f} (start {rewards[0]:.3f})</p>
+<svg viewBox="0 0 600 170" style="max-width:640px;border:1px solid #ccc">
+  <polyline points="{points}" fill="none" stroke="#4a7dbd" stroke-width="2"/>
+</svg>
+<table border="1" cellpadding="4" style="border-collapse:collapse">{stats}</table>
+""" if rewards else "<p>waiting for the first logged step…</p>"
+
+
+# Dark-mode wiring: a new corpus version IS the request to train.
+_train_trigger = flyte.Trigger(
+    name="train-on-new-corpus",
+    automation=flyte.OnArtifact(name=ARTIFACT_TASK_CORPUS),
+    inputs={"corpus": flyte.TriggeredArtifact, "profile_name": "smoke"},
+    description="New tuning-task-corpus version -> GRPO training",
+    auto_activate=False,
+)
+
+
+@trainer_env.task(
+    triggers=[_train_trigger],
+    timeout=flyte.Timeout(max_runtime=6 * 3600),
+    produces_artifacts=True,
+    report=True,
+)
 async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> flyte.io.Dir:
     """Train the policy on the corpus's train split; emit tuner-checkpoint."""
     import asyncio
 
     import pandas as pd
     from peft import LoraConfig
+    from transformers import TrainerCallback
     from trl import GRPOConfig, GRPOTrainer
 
     profile = get_profile(profile_name)
@@ -141,7 +189,14 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
     wandb_on = bool(os.environ.get("WANDB_API_KEY"))
     if wandb_on:
         os.environ.setdefault("WANDB_PROJECT", WANDB_PROJECT)
+    import dataclasses
     import random
+
+    # Disable Qwen3-style thinking during rollouts where the installed TRL
+    # supports it (the /no_think prompt switch covers older versions).
+    extra_cfg = {}
+    if any(f.name == "chat_template_kwargs" for f in dataclasses.fields(GRPOConfig)):
+        extra_cfg["chat_template_kwargs"] = {"enable_thinking": False}
 
     config = GRPOConfig(
         output_dir=out_dir,
@@ -165,7 +220,20 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
         logging_steps=1,
         save_strategy="no",
         report_to="wandb" if wandb_on else "none",
+        **extra_cfg,
     )
+    # Live flyte report: the trainer runs in a worker thread, so the
+    # callback ships HTML back through the captured event loop.
+    loop = asyncio.get_running_loop()
+
+    class _ReportCallback(TrainerCallback):
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            rows = [r for r in state.log_history if isinstance(r, dict)]
+            html = _report_html(profile, rows)
+            asyncio.run_coroutine_threadsafe(
+                flyte.report.replace.aio(html, do_flush=True), loop
+            )
+
     trainer = GRPOTrainer(
         model=model,
         args=config,
@@ -173,6 +241,7 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
         reward_funcs=make_reward_fn(profile.reward_stage, jitter_rng=random.Random(0)),
         peft_config=lora,
         processing_class=tok,
+        callbacks=[_ReportCallback()],
     )
     # The trainer is blocking for the whole run; keep the event loop alive.
     await asyncio.to_thread(trainer.train)

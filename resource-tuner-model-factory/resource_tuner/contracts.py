@@ -8,6 +8,7 @@ from __future__ import annotations
 
 # ── artifact registry ───────────────────────────────────────────────────
 ARTIFACT_TASK_CORPUS = "tuning-task-corpus"
+ARTIFACT_SYNTHETIC = "synthetic-task-corpus"  # oracle-verified teacher tasks
 ARTIFACT_TUNER_CHECKPOINT = "tuner-checkpoint"
 ARTIFACT_EVAL_REPORT = "tuner-eval-report"
 ARTIFACT_PROMOTED = "promoted-tuner"

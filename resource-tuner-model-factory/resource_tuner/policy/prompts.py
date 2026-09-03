@@ -38,8 +38,16 @@ def render_messages(
     input_profile: str,
     prior: dict | None = None,
     history: list[dict] | None = None,
+    no_think: bool = True,
 ) -> list[dict]:
-    """Chat messages for one estimation context."""
+    """Chat messages for one estimation context.
+
+    `no_think` appends Qwen3's `/no_think` soft switch: without it the
+    model spends the whole completion budget inside a `<think>` block and
+    never reaches the JSON — observed as clipped_ratio=1.0 and all-zero
+    rewards on the first smoke run. Belt-and-braces with the trainer's
+    `chat_template_kwargs={"enable_thinking": False}`.
+    """
     extra = ""
     if prior:
         extra += f"Author-declared prior: {prior}\n"
@@ -49,12 +57,12 @@ def render_messages(
             for h in history
         )
         extra += f"Recent runs:\n{lines}\n"
+    user = USER_TEMPLATE.format(
+        source_code=source_code.rstrip(), input_profile=input_profile, extra=extra
+    )
+    if no_think:
+        user += " /no_think"
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": USER_TEMPLATE.format(
-                source_code=source_code.rstrip(), input_profile=input_profile, extra=extra
-            ),
-        },
+        {"role": "user", "content": user},
     ]
