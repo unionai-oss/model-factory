@@ -11,7 +11,7 @@ the reward source, exactly the RLCEF pattern at POC scale.
 
 Observability (bottleneck 2 of the abstract):
 - live flyte report: reward/loss curves stream to the Union console
-- W&B run when NIELS_WANDB_API_KEY is provisioned (else disabled mode)
+- W&B run when WANDB_API_KEY is provisioned (else disabled mode)
 - per-component reward means logged every step
 """
 
