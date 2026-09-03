@@ -53,9 +53,11 @@ def _get(url: str, timeout: float = 30) -> dict:
         return json.loads(resp.read())
 
 
-def wait_until_ready(base_url: str, deadline_s: float = 900, poll_s: float = 15) -> None:
-    """Poll /v1/models until the server answers; scale-from-zero for the
-    27B takes a few minutes (weights load into VRAM)."""
+def wait_until_ready(base_url: str, deadline_s: float = 1800, poll_s: float = 15) -> None:
+    """Poll /v1/models until the server answers. Scale-from-zero can take
+    15+ minutes when the wake also provisions a fresh GPU node (observed:
+    image pull + L40S node scale-up + 18GB weight load blew a 900s
+    deadline), so the deadline is generous."""
     started = time.monotonic()
     last: Exception | None = None
     while time.monotonic() - started < deadline_s:
