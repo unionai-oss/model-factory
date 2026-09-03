@@ -1,0 +1,50 @@
+"""Artifact contracts for the resource-tuner factory.
+
+Same rule as basic-model-factory: artifacts are the interface between
+stations; names and schemas here are load-bearing.
+"""
+
+from __future__ import annotations
+
+# ── artifact registry ───────────────────────────────────────────────────
+ARTIFACT_TASK_CORPUS = "tuning-task-corpus"
+ARTIFACT_TUNER_CHECKPOINT = "tuner-checkpoint"
+ARTIFACT_EVAL_REPORT = "tuner-eval-report"
+ARTIFACT_PROMOTED = "promoted-tuner"
+
+# tuning-task-corpus: parquet File with exactly these columns.
+CORPUS_COLUMNS = [
+    "task_id",
+    "family",  # data_engineering | data_science | ml_training | batch_inference | etl
+    "source_code",  # the rendered flyte task the policy sees
+    "harness_code",  # the same workload as a plain function, for episode pods
+    "input_profile",  # human-readable input description shown to the policy
+    "params_json",  # sampled template params (ground truth generator state)
+    "true_peak_memory_mib",  # analytic footprint estimate
+    "true_cpu_cores",  # sustained parallel CPU demand
+    "duration_s",  # how long the workload holds its footprint
+    "split",  # "train" | "heldout"
+]
+
+# tuner-checkpoint: Dir with a PEFT adapter + tokenizer + manifest.json.
+CHECKPOINT_MANIFEST_KEYS = ["base_model", "profile", "reward_stage", "max_steps", "final_metrics"]
+
+# tuner-eval-report: JSON File with at least these keys.
+EVAL_REPORT_KEYS = [
+    "base_model",
+    "n_contexts",
+    "schema_validity",  # % proposals that parse + bounds-check
+    "success_rate",  # % episodes where the task fit in the proposal
+    "median_overprovision_pct",  # waste on successful episodes
+    "baseline_success_rate",  # rule-based baseline on the same contexts
+    "baseline_median_overprovision_pct",
+    "cluster_episodes",  # how many episodes ran on the real cluster
+    "auto_gate_passed",
+]
+
+
+def publish(obj, name: str, description: str = "", kind: str = "data"):
+    """Publish an offloaded asset as a versioned artifact (team hand-off)."""
+    import flyte.artifacts as artifacts
+
+    return artifacts.new(obj, artifacts.Metadata(name=name, description=description, kind=kind))

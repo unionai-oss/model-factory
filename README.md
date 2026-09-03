@@ -6,6 +6,7 @@ Model factory proofs-of-concept on [Flyte v2](https://www.union.ai/docs/v2/)
 | project | what it is |
 |---|---|
 | [`basic-model-factory/`](basic-model-factory/) | A dark model factory: RL from verifiable rewards (GRPO + sandboxed unit tests) where every asset is a versioned artifact and artifact events drive the next station. |
+| [`resource-tuner-model-factory/`](resource-tuner-model-factory/) | RL fine-tuning of a small LLM that right-sizes `flyte.Resources` for Flyte tasks (the AI Resource Tuning PRD's RL track): simulator-backed GRPO + real cluster episodes with pod-metrics ground truth. |
 
 Each project is self-contained (its own `pyproject.toml`, `uv.lock`,
 `.flyte/config.yaml`, tests, and docs); run its commands from inside its

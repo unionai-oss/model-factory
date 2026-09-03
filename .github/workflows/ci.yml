@@ -24,13 +24,17 @@ concurrency:
 
 jobs:
   test:
-    name: Unit tests
+    name: Unit tests (${{ matrix.project }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [basic-model-factory, resource-tuner-model-factory]
     defaults:
       run:
-        working-directory: basic-model-factory
+        working-directory: ${{ matrix.project }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,14 +43,15 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-          cache-dependency-glob: basic-model-factory/uv.lock
+          cache-dependency-glob: ${{ matrix.project }}/uv.lock
 
       - name: Set up Python
         run: uv python install 3.12
 
       # --frozen first so a stale lockfile fails loudly rather than being
       # silently re-resolved; fall back so a dependency bump is not blocked
-      # on relocking in the same commit.
+      # on relocking in the same commit. Default groups only: the private
+      # `metrics` extra needs GitHub credentials CI doesn't have.
       - name: Install dependencies
         run: uv sync --frozen || uv sync
 
@@ -66,32 +71,49 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # One entry per deploy unit (see README "Quickstart"). Each team's
+          # One entry per deploy unit (see each project's README). A team's
           # file exposes the env(s) that anchor its tasks and triggers.
           - unit: data
+            directory: basic-model-factory
             file: team_data.py
             env: de_cpu_env
           - unit: training
+            directory: basic-model-factory
             file: team_training.py
             env: trainer_env
           - unit: eval
+            directory: basic-model-factory
             file: team_eval.py
             env: eval_gpu_env
           - unit: inference-app
+            directory: basic-model-factory
             file: team_inference.py
             env: inference_app_env
           - unit: inference-ops
+            directory: basic-model-factory
             file: team_inference.py
             env: inference_ops_env
           - unit: lineage-app
+            directory: basic-model-factory
             file: app.py
             env: lineage_app_env
+          # resource-tuner: one deploy unit (driver_env depends_on the
+          # trainer + harness envs, so the whole factory ships together).
+          # Deployed WITHOUT the private metrics plugin (no RT_GH_TOKEN in
+          # CI) — episode rewards degrade to harness rusage; and without
+          # RT_USE_SECRETS until HUGGINGFACE_TOKEN / WANDB_API_KEY exist in
+          # the resource-tuner-model-factory project (cluster secrets are
+          # project-scoped; declaring missing ones makes tasks unschedulable).
+          - unit: resource-tuner
+            directory: resource-tuner-model-factory
+            file: main.py
+            env: driver_env
     concurrency:
       group: deploy-${{ matrix.unit }}
       cancel-in-progress: false
     defaults:
       run:
-        working-directory: basic-model-factory
+        working-directory: ${{ matrix.directory }}
     env:
       # The flyte SDK picks this up for auth against admin.endpoint in
       # .flyte/config.yaml.
@@ -112,7 +134,7 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-          cache-dependency-glob: basic-model-factory/uv.lock
+          cache-dependency-glob: ${{ matrix.directory }}/uv.lock
 
       - name: Set up Python
         run: uv python install 3.12

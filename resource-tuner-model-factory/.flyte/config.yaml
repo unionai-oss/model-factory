@@ -1,0 +1,8 @@
+admin:
+  endpoint: dns:///demo.hosted.unionai.cloud
+image:
+  builder: remote
+task:
+  org: demo
+  project: resource-tuner-model-factory
+  domain: development

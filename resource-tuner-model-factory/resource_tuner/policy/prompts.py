@@ -1,0 +1,60 @@
+"""Estimation-context → chat prompt.
+
+The context mirrors the PRD's §8 estimation context: task code and input
+profile always; prior and history when available (the prototype's corpus is
+cold-start, so those default empty). The output contract is a single JSON
+object — the exact kwargs to `flyte.Resources`.
+"""
+
+from __future__ import annotations
+
+SYSTEM_PROMPT = """\
+You size compute requests for Flyte tasks. Given a task's source code and \
+input profile, respond with ONLY a JSON object of flyte.Resources kwargs:
+
+{"cpu": <cores>, "memory": "<size>"}
+
+Rules:
+- memory: a Kubernetes quantity string like "512Mi" or "4Gi". Enough that \
+the task cannot run out of memory, but not so much that most of it sits idle.
+- cpu: integer cores, or a millicore string like "500m". Match the task's \
+real parallelism; extra cores sit idle.
+- add "gpu": <count> only if the code clearly uses a GPU.
+- no prose, no code fences, no keys other than cpu, memory, gpu."""
+
+USER_TEMPLATE = """\
+Task source:
+```python
+{source_code}
+```
+
+Input profile: {input_profile}
+{extra}
+Respond with the flyte.Resources kwargs JSON only."""
+
+
+def render_messages(
+    source_code: str,
+    input_profile: str,
+    prior: dict | None = None,
+    history: list[dict] | None = None,
+) -> list[dict]:
+    """Chat messages for one estimation context."""
+    extra = ""
+    if prior:
+        extra += f"Author-declared prior: {prior}\n"
+    if history:
+        lines = "\n".join(
+            f"- requested {h.get('resources')} peak {h.get('peak')} success={h.get('ok')}"
+            for h in history
+        )
+        extra += f"Recent runs:\n{lines}\n"
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": USER_TEMPLATE.format(
+                source_code=source_code.rstrip(), input_profile=input_profile, extra=extra
+            ),
+        },
+    ]
