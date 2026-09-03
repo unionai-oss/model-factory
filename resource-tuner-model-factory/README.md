@@ -65,5 +65,5 @@ Everything degrades gracefully to harness rusage when the plugin is absent.
 | where | name | purpose |
 |---|---|---|
 | Flyte cluster (project-scoped) | `HUGGINGFACE_TOKEN`, `WANDB_API_KEY` | model pulls / W&B, attached with `RT_USE_SECRETS=1` |
-| deploy-time env | `RT_GH_TOKEN` | private metrics plugin in image builds |
+| GitHub Actions + local deploy-time env | `RT_GH_TOKEN` | private metrics plugin in image builds; CI sets `RT_WITH_METRICS=1` automatically when it is present |
 | GitHub Actions | `DEMO_HOSTED_FLYTE_API_KEY` | CI deploys (shared with basic-model-factory) |

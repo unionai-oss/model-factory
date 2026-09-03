@@ -99,11 +99,13 @@ jobs:
             env: lineage_app_env
           # resource-tuner: one deploy unit (driver_env depends_on the
           # trainer + harness envs, so the whole factory ships together).
-          # Deployed WITHOUT the private metrics plugin (no RT_GH_TOKEN in
-          # CI) — episode rewards degrade to harness rusage; and without
-          # RT_USE_SECRETS until HUGGINGFACE_TOKEN / WANDB_API_KEY exist in
-          # the resource-tuner-model-factory project (cluster secrets are
-          # project-scoped; declaring missing ones makes tasks unschedulable).
+          # The private metrics plugin is baked into images when the
+          # RT_GH_TOKEN repo secret is set (see the deploy step); without
+          # it, episode scoring degrades to harness rusage. Deployed
+          # without RT_USE_SECRETS until HUGGINGFACE_TOKEN / WANDB_API_KEY
+          # exist in the resource-tuner-model-factory project (cluster
+          # secrets are project-scoped; declaring missing ones makes tasks
+          # unschedulable).
           - unit: resource-tuner
             directory: resource-tuner-model-factory
             file: main.py
@@ -151,4 +153,16 @@ jobs:
         run: uv sync --frozen || uv sync
 
       - name: Deploy ${{ matrix.env }} from ${{ matrix.file }}
-        run: uv run flyte --config .flyte/config.yaml deploy ${{ matrix.file }} ${{ matrix.env }}
+        env:
+          # Fine-grained read-only PAT for unionai/flyteplugins-union, used
+          # by the remote image builder to install the private metrics
+          # plugin. Note it is visible in the built image's pip metadata
+          # (see resource_tuner/shared/images.py) — keep it single-repo,
+          # read-only, and expiring.
+          RT_GH_TOKEN: ${{ secrets.RT_GH_TOKEN }}
+        run: |
+          if [[ "${{ matrix.unit }}" == "resource-tuner" && -n "${RT_GH_TOKEN}" ]]; then
+            export RT_WITH_METRICS=1
+            echo "RT_GH_TOKEN present: baking the metrics plugin into task images."
+          fi
+          uv run flyte --config .flyte/config.yaml deploy ${{ matrix.file }} ${{ matrix.env }}
