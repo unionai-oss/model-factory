@@ -37,6 +37,7 @@ from ..contracts import (
 # llm_client). Both modules are stdlib-only, so importing them here is free.
 from ..environment.harness import run_generated
 from ..shared import llm_client
+from .. import tune
 from ..shared.reporting import GOOD, MUTED, Reporter, esc, ok_pill, pill
 from ..taskgen import archetypes as arch
 from ..taskgen import synthetic as syn
@@ -587,8 +588,9 @@ async def tune_ab_experiment(
     from ..environment.episodes import run_cluster_episode
     from ..policy.actions import validate_proposal
     from ..rewards.rewards import overprovision_fraction
-    from ..tune import request_proposal, service_url
     from ..taskgen.corpus import build_corpus
+
+    request_proposal, service_url = tune.request_proposal, tune.service_url
 
     prior_kwargs = {"cpu": prior_cpu, "memory": prior_memory}
     prior_proposal = validate_proposal(prior_kwargs)
