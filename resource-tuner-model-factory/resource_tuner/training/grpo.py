@@ -23,58 +23,111 @@ import tempfile
 import flyte
 import flyte.io
 
+from .. import pricing
 from ..config import TunerProfile, WANDB_PROJECT, get_profile
 from ..contracts import ARTIFACT_TASK_CORPUS, ARTIFACT_TUNER_CHECKPOINT, publish
 from ..environment.simulator import simulate_episode
 from ..policy.parsing import try_extract_proposal
 from ..policy.prompts import render_messages
+from ..rewards import shaping
 from ..rewards.rewards import invalid_proposal_reward, score_episode
 from ..shared.reporting import GOOD, Reporter, esc, line_chart, pill
+from .baseline import baseline_proposal, fit_family_baseline
 from .envs import trainer_env
 
 
-def make_reward_fn(stage: str, jitter_rng=None):
+def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_steps: int = 0):
     """completions + per-sample truth columns → list of scalar rewards.
 
     TRL forwards non-reserved dataset columns to the reward function as
     kwargs of per-sample lists. `jitter_rng` enables the simulator's
     threshold randomization during training (see simulator.JITTER_BAND);
     tests omit it for determinism.
+
+    Stage A/B ("success"/"composite") keep their historical behavior.
+    Shaped stages (shaping.SHAPES) add: GPU truth, robustness-averaged
+    episodes, annealed waste weight (call count ≈ optimizer step since
+    generation_batch == one group batch per step), and the in-group
+    cheapest-survivor tie-break.
     """
+    shaped = shaping.is_shaped_stage(stage)
+    shape = shaping.get_shape(stage) if shaped else None
+    calls = {"n": 0}
 
     def resource_reward(
         completions, true_peak_memory_mib, true_cpu_cores, duration_s, **kwargs
     ) -> list[float]:
+        n = len(completions)
+        gpu_col = kwargs.get("true_gpu_mem_mib") or [0.0] * n
+        base_cost_col = kwargs.get("baseline_cost_per_hr") or [None] * n
+        calls["n"] += 1
+        step_frac = calls["n"] / max_steps if max_steps else 1.0
+
         rewards: list[float] = []
-        for completion, peak, cpu, dur in zip(
-            completions, true_peak_memory_mib, true_cpu_cores, duration_s
+        oks: list[bool] = []
+        costs: list[float | None] = []
+        for completion, peak, cpu, dur, gpu_mem, base_cost in zip(
+            completions, true_peak_memory_mib, true_cpu_cores, duration_s,
+            gpu_col, base_cost_col,
         ):
             text = completion[0]["content"] if isinstance(completion, list) else completion
             proposal = try_extract_proposal(text)
             if proposal is None:
                 rewards.append(invalid_proposal_reward().total)
+                oks.append(False)
+                costs.append(None)
                 continue
-            episode = simulate_episode(
-                proposal, float(peak), float(cpu), int(dur), rng=jitter_rng
+            if not shaped:
+                episode = simulate_episode(
+                    proposal, float(peak), float(cpu), int(dur), rng=jitter_rng
+                )
+                rewards.append(score_episode(stage, episode).total)
+                oks.append(episode.ok)
+                costs.append(None)
+                continue
+            episodes = [
+                simulate_episode(
+                    proposal, float(peak), float(cpu), int(dur),
+                    rng=jitter_rng, true_gpu_mem_mib=float(gpu_mem or 0.0),
+                )
+                for _ in range(max(shape.robustness_samples, 1))
+            ]
+            bd = shaping.score_shaped(
+                shape, episodes, step_frac=step_frac,
+                baseline_cost_per_hr=base_cost,
             )
-            rewards.append(score_episode(stage, episode).total)
+            rewards.append(bd.total)
+            oks.append(all(e.ok for e in episodes))
+            costs.append(shaping.episode_dollars_per_hr(episodes[0]))
+        if shaped:
+            rewards = shaping.apply_group_tiebreak(
+                shape, rewards, oks, costs, num_generations
+            )
         return rewards
 
     return resource_reward
 
 
-def _records_to_dataset(records: list[dict]):
+def _records_to_dataset(records: list[dict], baselines: dict | None = None):
     from datasets import Dataset
 
-    rows = [
-        {
-            "prompt": render_messages(r["source_code"], r["input_profile"]),
-            "true_peak_memory_mib": r["true_peak_memory_mib"],
-            "true_cpu_cores": r["true_cpu_cores"],
-            "duration_s": r["duration_s"],
-        }
-        for r in records
-    ]
+    rows = []
+    for r in records:
+        base_cost = None
+        if baselines:
+            bp = baseline_proposal(baselines, r["family"])
+            base_cost = pricing.dollars_per_hr(bp.cpu, bp.memory_mib, bp.gpu_type, bp.gpu)
+        rows.append(
+            {
+                "prompt": render_messages(r["source_code"], r["input_profile"]),
+                "true_peak_memory_mib": r["true_peak_memory_mib"],
+                "true_cpu_cores": r["true_cpu_cores"],
+                "duration_s": r["duration_s"],
+                # Old corpora predate the GPU column — default to CPU task.
+                "true_gpu_mem_mib": float(r.get("true_gpu_mem_mib", 0.0) or 0.0),
+                "baseline_cost_per_hr": base_cost,
+            }
+        )
     return Dataset.from_list(rows)
 
 
@@ -242,7 +295,10 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
 
     df = pd.read_parquet(await corpus.download())
     records = df[df["split"] == "train"].to_dict("records")[: profile.train_contexts]
-    dataset = _records_to_dataset(records)
+    # Family baselines priced per record: the baseline_relative shapes score
+    # "cheaper than the rule baseline" directly in the reward.
+    baselines = fit_family_baseline(records) if records else {}
+    dataset = _records_to_dataset(records, baselines=baselines)
     meta["n_contexts"] = len(records)
 
     model, tok, bf16 = _load_model(profile)
@@ -330,7 +386,12 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
         model=model,
         args=config,
         train_dataset=dataset,
-        reward_funcs=make_reward_fn(profile.reward_stage, jitter_rng=random.Random(0)),
+        reward_funcs=make_reward_fn(
+            profile.reward_stage,
+            jitter_rng=random.Random(0),
+            num_generations=profile.num_generations,
+            max_steps=profile.max_steps,
+        ),
         peft_config=lora,
         processing_class=tok,
         callbacks=[_ReportCallback()],
@@ -360,6 +421,13 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
         "base_model": profile.base_model,
         "profile": profile.name,
         "reward_stage": profile.reward_stage,
+        # Full shape config for shaped stages — eval and the dashboard show
+        # WHICH reward produced this checkpoint, not just a stage name.
+        "reward_shape": (
+            dataclasses.asdict(shaping.get_shape(profile.reward_stage))
+            if shaping.is_shaped_stage(profile.reward_stage)
+            else None
+        ),
         "max_steps": profile.max_steps,
         "final_metrics": {
             "mean_reward_first": mean_rewards[0] if mean_rewards else None,

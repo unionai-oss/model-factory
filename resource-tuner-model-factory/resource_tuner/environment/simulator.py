@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from random import Random
 
-from ..policy.actions import Proposal
+from ..policy.actions import GPU_VRAM_MIB, Proposal
 
 # A pod whose limit sits exactly at the workload's peak still gets OOM-killed
 # in practice (allocator slack, page tables, GC timing). Success needs
@@ -36,7 +36,7 @@ class EpisodeResult:
     consume ONLY this shape, so sim and cluster episodes are interchangeable."""
 
     ok: bool  # task reached SUCCEEDED
-    oom: bool  # failed specifically by running out of memory
+    oom: bool  # failed specifically by running out of memory (host OR VRAM)
     requested_cpu: float
     requested_memory_mib: int
     peak_memory_mib: float  # observed (cluster) or analytic (sim)
@@ -45,6 +45,11 @@ class EpisodeResult:
     duration_s: float
     simulated: bool
     run_name: str = ""  # cluster episodes only
+    # GPU axis (defaults keep CPU-only episodes unchanged)
+    requested_gpu: int = 0
+    requested_gpu_type: str | None = None
+    true_gpu_mem_mib: float = 0.0  # 0 = the task does not need a GPU
+    gpu_missing: bool = False  # needed a GPU, none was requested
 
 
 def simulate_episode(
@@ -53,15 +58,28 @@ def simulate_episode(
     true_cpu_cores: float,
     duration_s: int,
     rng: Random | None = None,
+    true_gpu_mem_mib: float = 0.0,
 ) -> EpisodeResult:
     jitter = rng.uniform(*JITTER_BAND) if rng is not None else MEMORY_JITTER
     fits = proposal.memory_mib >= true_peak_memory_mib * (1 + jitter)
     throttled = proposal.cpu < true_cpu_cores
+    # GPU axis: memory-like semantics. A task that needs VRAM fails
+    # outright without a GPU (gpu_missing — ImportError/no-CUDA in real
+    # life) and OOMs on an undersized one; requesting a GPU a task doesn't
+    # need succeeds and is scored as pure waste by the reward.
+    gpu_missing, gpu_oom = False, False
+    if true_gpu_mem_mib > 0:
+        if proposal.gpu < 1:
+            gpu_missing = True
+        else:
+            vram = GPU_VRAM_MIB.get(proposal.gpu_type or "T4", 0) * proposal.gpu
+            gpu_oom = vram < true_gpu_mem_mib * (1 + jitter)
+    ok = fits and not gpu_missing and not gpu_oom
     # Throttling stretches wall-clock proportionally to the shortfall.
     duration = duration_s * (max(true_cpu_cores / proposal.cpu, 1.0))
     return EpisodeResult(
-        ok=fits,
-        oom=not fits,
+        ok=ok,
+        oom=(not fits) or gpu_oom,
         requested_cpu=proposal.cpu,
         requested_memory_mib=proposal.memory_mib,
         peak_memory_mib=min(true_peak_memory_mib, proposal.memory_mib)
@@ -71,4 +89,8 @@ def simulate_episode(
         throttled=throttled,
         duration_s=duration,
         simulated=True,
+        requested_gpu=proposal.gpu,
+        requested_gpu_type=proposal.gpu_type,
+        true_gpu_mem_mib=true_gpu_mem_mib,
+        gpu_missing=gpu_missing,
     )

@@ -23,6 +23,7 @@ def task_to_record(t: GeneratedTask, split: str) -> dict:
         "params_json": json.dumps(t.params, sort_keys=True),
         "true_peak_memory_mib": float(t.true_peak_memory_mib),
         "true_cpu_cores": float(t.true_cpu_cores),
+        "true_gpu_mem_mib": float(t.true_gpu_mem_mib),
         "duration_s": int(t.duration_s),
         "split": split,
     }

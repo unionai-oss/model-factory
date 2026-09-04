@@ -506,6 +506,7 @@ async def archetype_data_release(
                     ),
                     "true_peak_memory_mib": float(peak),
                     "true_cpu_cores": max(1.0, round(sum(meta["cpu"]) / len(meta["cpu"]), 1)),
+                    "true_gpu_mem_mib": 0.0,  # oracle pods are CPU-only
                     "duration_s": int(sum(meta["dur"]) / len(meta["dur"])),
                     "split": "train",
                 }
@@ -532,6 +533,7 @@ async def archetype_data_release(
                     ),
                     "true_peak_memory_mib": float(min(max(peak, 96.0), 12288.0)),
                     "true_cpu_cores": cpu_label,
+                    "true_gpu_mem_mib": 0.0,
                     "duration_s": dur_label,
                     "split": "train",
                 }

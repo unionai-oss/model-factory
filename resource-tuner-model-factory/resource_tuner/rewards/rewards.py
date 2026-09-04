@@ -107,7 +107,14 @@ REWARD_STAGES = {"success": stage_a_reward, "composite": stage_b_reward}
 
 
 def score_episode(stage: str, episode: EpisodeResult) -> RewardBreakdown:
+    """Stage A/B scoring. Stage-C shaped stages (shaping.SHAPES) go through
+    shaping.score_shaped — grpo.make_reward_fn dispatches between the two."""
     try:
         return REWARD_STAGES[stage](episode)
     except KeyError:
-        raise ValueError(f"unknown reward stage {stage!r}; choose from {sorted(REWARD_STAGES)}")
+        from .shaping import SHAPES
+
+        raise ValueError(
+            f"unknown reward stage {stage!r}; choose from "
+            f"{sorted(REWARD_STAGES)} or shaped stages {sorted(SHAPES)}"
+        )

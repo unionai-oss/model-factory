@@ -25,6 +25,7 @@ import os
 import time
 import uuid
 
+from . import pricing
 from .policy.actions import parse_memory_to_mib
 
 _DEFAULT_STORE = (
@@ -113,20 +114,37 @@ def savings_of(record: dict) -> tuple[float | None, float | None]:
     )
 
 
+def dollars_saved_of(record: dict) -> float | None:
+    """$/hr saved by one proposal vs its prior (pricing.py rates); None if
+    either side is unpriceable."""
+    prior = pricing.kwargs_dollars_per_hr(record.get("prior"))
+    proposed = pricing.kwargs_dollars_per_hr(record.get("proposal"))
+    if prior is None or proposed is None:
+        return None
+    return prior - proposed
+
+
 def savings_series(records: list[dict]) -> dict:
     """Cumulative requested savings over time (proposal records only)."""
-    ts, mem, cpu = [], [], []
-    m_total = c_total = 0.0
+    ts, mem, cpu, usd = [], [], [], []
+    m_total = c_total = d_total = 0.0
     for r in records:
         if r.get("kind") != "proposal":
             continue
         dm, dc = savings_of(r)
         m_total += dm or 0.0
         c_total += dc or 0.0
+        d_total += dollars_saved_of(r) or 0.0
         ts.append(r.get("ts", 0))
         mem.append(m_total)
         cpu.append(c_total)
-    return {"ts": ts, "cum_mem_saved_mib": mem, "cum_cpu_saved": cpu}
+        usd.append(d_total)
+    return {
+        "ts": ts,
+        "cum_mem_saved_mib": mem,
+        "cum_cpu_saved": cpu,
+        "cum_dollars_saved_per_hr": usd,
+    }
 
 
 def task_registry(records: list[dict]) -> list[dict]:
@@ -180,6 +198,11 @@ def totals(records: list[dict]) -> dict:
         "outcome_oom_count": sum(1 for o in outcomes if o.get("oom")),
         "cum_mem_saved_mib": series["cum_mem_saved_mib"][-1] if series["ts"] else 0.0,
         "cum_cpu_saved": series["cum_cpu_saved"][-1] if series["ts"] else 0.0,
+        # $/hr the fleet of tuned requests is cheaper than its priors —
+        # multiply by task runtime to get real dollars.
+        "cum_dollars_saved_per_hr": (
+            series["cum_dollars_saved_per_hr"][-1] if series["ts"] else 0.0
+        ),
     }
 
 

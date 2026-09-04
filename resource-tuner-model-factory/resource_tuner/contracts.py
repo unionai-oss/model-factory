@@ -37,6 +37,7 @@ CORPUS_COLUMNS = [
     "params_json",  # sampled template params (ground truth generator state)
     "true_peak_memory_mib",  # analytic footprint estimate
     "true_cpu_cores",  # sustained parallel CPU demand
+    "true_gpu_mem_mib",  # VRAM the task needs; 0 = CPU task
     "duration_s",  # how long the workload holds its footprint
     "split",  # "train" | "heldout"
 ]
@@ -47,12 +48,16 @@ CHECKPOINT_MANIFEST_KEYS = ["base_model", "profile", "reward_stage", "max_steps"
 # tuner-eval-report: JSON File with at least these keys.
 EVAL_REPORT_KEYS = [
     "base_model",
+    "reward_stage",  # which reward trained the checkpoint (the arm key)
     "n_contexts",
     "schema_validity",  # % proposals that parse + bounds-check
     "success_rate",  # % episodes where the task fit in the proposal
     "median_overprovision_pct",  # waste on successful episodes
     "baseline_success_rate",  # rule-based baseline on the same contexts
     "baseline_median_overprovision_pct",
+    "policy_cost_per_task_hr",  # the business metric ($, pricing.py)
+    "baseline_cost_per_task_hr",
+    "dollars_saved_per_1k_task_hrs",
     "cluster_episodes",  # how many episodes ran on the real cluster
     "auto_gate_passed",
 ]

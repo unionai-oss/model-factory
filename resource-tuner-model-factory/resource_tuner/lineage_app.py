@@ -379,6 +379,14 @@ def _metrics_of(report: dict) -> dict:
         "baseline_median_overprovision_pct": report.get("baseline_median_overprovision_pct"),
         "auto_gate_passed": report.get("auto_gate_passed"),
         "base_model": report.get("base_model"),
+        # Reward-shaping comparison keys (round 7): which reward produced
+        # the checkpoint, and what it does to the customer's bill.
+        "reward_stage": report.get("reward_stage"),
+        "policy_cost_per_task_hr": report.get("policy_cost_per_task_hr"),
+        "baseline_cost_per_task_hr": report.get("baseline_cost_per_task_hr"),
+        "dollars_saved_per_1k_task_hrs": report.get("dollars_saved_per_1k_task_hrs"),
+        "gpu_success_rate": report.get("gpu_success_rate"),
+        "gpu_spurious_count": report.get("gpu_spurious_count"),
     }
 
 
@@ -1176,7 +1184,37 @@ try {
                 ["baseline waste", "#9a9aa4", col("baseline_median_overprovision_pct")],
               ]} />
           </div>
+          ${reports.some((r) => r.policy_cost_per_task_hr != null) ? html`
+          <div class="chart">
+            <div class="cap">$ per task-hour — the business metric (lower is better)</div>
+            <${LineChart} yFmt=${(v) => "$" + v.toFixed(3)}
+              series=${[
+                ["policy $/task-hr", "#35c48d", col("policy_cost_per_task_hr")],
+                ["baseline $/task-hr", "#9a9aa4", col("baseline_cost_per_task_hr")],
+              ]} />
+          </div>` : null}
         </div>
+        ${reports.some((r) => r.reward_stage) ? html`
+        <div class="cap" style=${{ marginTop: "10px" }}>reward-shape comparison (one row per eval)</div>
+        <table class="cmp-table">
+          <thead><tr>
+            <th>reward shape</th><th>fit</th><th>waste</th><th>$/task-hr</th>
+            <th>$ saved / 1k hrs</th><th>GPU fit</th><th>gate</th>
+          </tr></thead>
+          <tbody>
+            ${reports.filter((r) => r.reward_stage).map((r) => html`
+              <tr>
+                <td class="mono">${r.reward_stage}</td>
+                <td>${r.success_rate != null ? Math.round(r.success_rate * 100) + "%" : "—"}</td>
+                <td>${r.median_overprovision_pct != null ? Math.round(r.median_overprovision_pct) + "%" : "—"}</td>
+                <td>${r.policy_cost_per_task_hr != null ? "$" + r.policy_cost_per_task_hr.toFixed(4) : "—"}</td>
+                <td style=${{ color: (r.dollars_saved_per_1k_task_hrs || 0) >= 0 ? "#35c48d" : "#F43B3E" }}>
+                  ${r.dollars_saved_per_1k_task_hrs != null ? "$" + r.dollars_saved_per_1k_task_hrs.toFixed(2) : "—"}</td>
+                <td>${r.gpu_success_rate != null ? Math.round(r.gpu_success_rate * 100) + "%" : "—"}</td>
+                <td>${r.auto_gate_passed ? "✓" : "✗"}</td>
+              </tr>`)}
+          </tbody>
+        </table>` : null}
       </section>`;
   };
 

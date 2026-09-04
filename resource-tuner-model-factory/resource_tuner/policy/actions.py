@@ -24,6 +24,11 @@ MEMORY_GRID_MIB: tuple[int, ...] = (
 # the demo tenant's smallest schedulable request that still gets a task
 # through admission quickly.
 CPU_GRID: tuple[float, ...] = (0.5, 1, 2, 4, 6, 8, 12, 16)
+# GPU: the tenant's proposable accelerators, cheapest-$ first (see
+# pricing.py for the derivation). Only pools that actually schedule on
+# demo.hosted: T4 (g4dn.metal), L4 (g6.2xlarge), L40S (g6e.2xlarge).
+GPU_TYPES: tuple[str, ...] = ("T4", "L4", "L40S")
+GPU_VRAM_MIB: dict[str, int] = {"T4": 16 * 1024, "L4": 24 * 1024, "L40S": 48 * 1024}
 
 _MIB = 1024 * 1024
 _UNITS = {
@@ -85,14 +90,16 @@ def bucket_cpu(cores: float) -> float:
 class Proposal:
     """A validated, bucketed resource proposal — the policy's action.
 
-    `to_kwargs()` is the exact dict passed to `flyte.Resources(...)`. GPU is
-    carried but the prototype's task corpus is CPU-only, so it stays 0
-    unless the corpus grows GPU families.
+    GPU is part of the action: `gpu` is a count and `gpu_type` one of
+    GPU_TYPES (a count without a type defaults to the tenant's cheapest,
+    T4). A GPU request for a CPU task is pure waste the reward sees; a
+    missing GPU on a task that needs one is a failure, like an OOM.
     """
 
     cpu: float
     memory_mib: int
     gpu: int = 0
+    gpu_type: str | None = None
 
     def to_kwargs(self) -> dict:
         kwargs: dict = {
@@ -101,7 +108,7 @@ class Proposal:
             "memory": format_memory(self.memory_mib),
         }
         if self.gpu:
-            kwargs["gpu"] = self.gpu
+            kwargs["gpu"] = f"{self.gpu_type or GPU_TYPES[0]}:{self.gpu}"
         return kwargs
 
 
@@ -144,8 +151,38 @@ def validate_proposal(raw: dict) -> Proposal:
     except ValueError as e:
         raise InvalidProposal(str(e))
 
-    gpu_raw = raw.get("gpu", 0)
-    if not isinstance(gpu_raw, int) or isinstance(gpu_raw, bool) or gpu_raw < 0 or gpu_raw > 8:
-        raise InvalidProposal(f"gpu must be an int in [0, 8], got {gpu_raw!r}")
+    gpu_count, gpu_type = _parse_gpu(raw.get("gpu", 0))
 
-    return Proposal(cpu=bucket_cpu(cores), memory_mib=bucket_memory_mib(mem_mib), gpu=gpu_raw)
+    return Proposal(
+        cpu=bucket_cpu(cores),
+        memory_mib=bucket_memory_mib(mem_mib),
+        gpu=gpu_count,
+        gpu_type=gpu_type,
+    )
+
+
+def _parse_gpu(gpu_raw) -> tuple[int, str | None]:
+    """Model-emitted gpu value → (count, type). Accepts 0/N (typed T4),
+    "T4", or "T4:1" — only the tenant's GPU_TYPES are valid."""
+    if gpu_raw in (0, None, ""):
+        return 0, None
+    if isinstance(gpu_raw, str):
+        type_part, _, count_part = gpu_raw.strip().partition(":")
+        gpu_type = type_part.strip().upper()  # tolerate "t4" / "l40s"
+        matches = [t for t in GPU_TYPES if t.upper() == gpu_type]
+        if not matches:
+            raise InvalidProposal(
+                f"gpu type must be one of {list(GPU_TYPES)}, got {gpu_raw!r}"
+            )
+        try:
+            count = int(count_part) if count_part.strip() else 1
+        except ValueError:
+            raise InvalidProposal(f"unparseable gpu count in {gpu_raw!r}")
+        if count < 1 or count > 8:
+            raise InvalidProposal(f"gpu count must be in [1, 8], got {gpu_raw!r}")
+        return count, matches[0]
+    if isinstance(gpu_raw, int) and not isinstance(gpu_raw, bool):
+        if gpu_raw < 0 or gpu_raw > 8:
+            raise InvalidProposal(f"gpu must be an int in [0, 8], got {gpu_raw!r}")
+        return gpu_raw, GPU_TYPES[0] if gpu_raw else None
+    raise InvalidProposal(f"unparseable gpu {gpu_raw!r}")

@@ -19,7 +19,10 @@ Rules:
 the task cannot run out of memory, but not so much that most of it sits idle.
 - cpu: integer cores, or a millicore string like "500m". Match the task's \
 real parallelism; extra cores sit idle.
-- add "gpu": <count> only if the code clearly uses a GPU.
+- add "gpu": "<TYPE>:<count>" ONLY if the code clearly uses a GPU (moves \
+models/tensors to CUDA). TYPE must be one of T4 (16GiB VRAM, cheapest), \
+L4 (24GiB), L40S (48GiB, priciest) — pick the cheapest whose VRAM fits \
+the model plus activations. CPU-only code must not request a gpu.
 - no prose, no code fences, no keys other than cpu, memory, gpu."""
 
 USER_TEMPLATE = """\

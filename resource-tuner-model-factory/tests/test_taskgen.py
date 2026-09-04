@@ -42,13 +42,39 @@ def test_harness_code_executes_with_tiny_params():
             "dim": 16, "out_dim": 32, "batch_size": 16, "n_batches": 2, "duration_s": 0,
         },
         "etl": {"n_records": 100, "duration_s": 0},
+        # GPU families fall back to CPU here (guarded device pick) — the
+        # point is the rendered code is executable anywhere.
+        "gpu_batch_inference": {
+            "hidden": 16, "depth": 2, "batch_size": 2, "seq_len": 4, "duration_s": 0,
+        },
+        "gpu_finetune": {
+            "hidden": 16, "depth": 2, "lora_r": 4, "batch_size": 2, "seq_len": 4,
+            "duration_s": 0,
+        },
     }
+    assert set(tiny) == set(FAMILIES)  # every family stays covered
     for family, params in tiny.items():
         code = _render_harness(FAMILIES[family], params)
         ns: dict = {}
         exec(compile(code, family, "exec"), ns)
         result = ns["run"]()
         assert isinstance(result, dict) and result, family
+
+
+def test_gpu_family_vram_spans_the_tenant_ladder():
+    """Sampled VRAM demand must exercise T4 AND bigger cards, or the GPU
+    choice degenerates to 'always T4'."""
+    from resource_tuner.pricing import cheapest_gpu_for
+
+    types = {
+        cheapest_gpu_for(generate_task("gpu_batch_inference", seed=s).true_gpu_mem_mib)
+        for s in range(60)
+    }
+    assert "T4" in types and len(types - {None}) >= 2, types
+    assert all(
+        generate_task(f, seed=3).true_gpu_mem_mib == 0.0
+        for f in ("etl", "data_engineering")
+    )
 
 
 def test_footprint_grows_with_input_size():

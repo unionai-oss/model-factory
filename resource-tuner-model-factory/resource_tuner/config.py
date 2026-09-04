@@ -206,8 +206,19 @@ FULL = TunerProfile(
     eval_cluster_episodes=64,
 )
 
+# Reward-shaping experiment arms (round 7): identical dev-scale training,
+# reward shape varied — the only free variable. The mutually exclusive
+# waste_form is the per-experiment judgment; each named shape composes its
+# own set of the composable knobs (see rewards/shaping.py SHAPES).
+import dataclasses as _dc
+
+_SHAPE_ARMS = ("c-linear", "c-log", "c-bucket", "c-cost")
+_DEV_SHAPED = tuple(
+    _dc.replace(DEV, name=f"dev-{stage}", reward_stage=stage) for stage in _SHAPE_ARMS
+)
+
 PROFILES: dict[str, TunerProfile] = {
-    p.name: p for p in (SMOKE, SMOKE_COMPOSITE, DEV, FULL)
+    p.name: p for p in (SMOKE, SMOKE_COMPOSITE, DEV, FULL, *_DEV_SHAPED)
 }
 
 

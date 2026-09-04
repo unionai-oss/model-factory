@@ -262,6 +262,16 @@ async def dashboard() -> str:
         [("cumulative CPU cores saved vs prior", "#4d65ff", series["cum_cpu_saved"])],
         y_fmt="{:.1f}",
     )
+    usd_chart = line_chart(
+        [
+            (
+                "cumulative $/hr saved vs prior (pricing.py rates)",
+                "#e69812",
+                series["cum_dollars_saved_per_hr"],
+            )
+        ],
+        y_fmt="${:.3f}",
+    )
     kv = "".join(
         f'<tr><td style="padding:4px 12px;color:#9a9aa4">{k}</td>'
         f'<td style="padding:4px 12px">{v}</td></tr>'
@@ -274,6 +284,7 @@ async def dashboard() -> str:
             "OOMs under proposals": t["outcome_oom_count"],
             "cumulative memory saved": f"{t['cum_mem_saved_mib'] / 1024:.1f} GiB-requests",
             "cumulative CPU saved": f"{t['cum_cpu_saved']:.1f} cores-requests",
+            "cumulative $ saved": f"${t['cum_dollars_saved_per_hr']:.3f}/hr of tuned requests",
             "serving checkpoint": _state["checkpoint_path"][-48:] or "(not loaded)",
         }.items()
     )
@@ -300,7 +311,7 @@ async def dashboard() -> str:
 <a style="color:#8b9bff" href="/records">recent proposals</a> · <a style="color:#8b9bff" href="/health">health</a></p>
 <table style="border-collapse:collapse;background:#131316;border-radius:10px">{kv}</table>
 <h2 style="font-size:13px;color:#9a9aa4;text-transform:uppercase;margin-top:20px">Savings over time (requested resources vs hard-coded priors)</h2>
-{mem_chart}<br/>{cpu_chart}
+{usd_chart}<br/>{mem_chart}<br/>{cpu_chart}
 <h2 style="font-size:13px;color:#9a9aa4;text-transform:uppercase;margin-top:20px">Task registry ({len(registry)} tasks)</h2>
 <table style="border-collapse:collapse;background:#131316;border-radius:10px">
 <thead><tr><th {th}>task</th><th {th}>proposals</th><th {th}>prior</th><th {th}>last proposal</th>

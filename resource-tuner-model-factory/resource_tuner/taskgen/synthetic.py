@@ -144,6 +144,7 @@ def synthetic_record(
         "params_json": json.dumps({"synthetic": True}),
         "true_peak_memory_mib": float(measured["peak_rss_mib"]),
         "true_cpu_cores": max(1.0, round(float(measured.get("cpu_avg_cores", 1.0)), 1)),
+        "true_gpu_mem_mib": 0.0,  # oracle pods are CPU-only
         "duration_s": int(measured["duration_s"]),
         "split": "train",
     }

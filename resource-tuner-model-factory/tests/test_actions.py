@@ -49,7 +49,11 @@ def test_validate_proposal_happy_path():
     assert p == Proposal(cpu=0.5, memory_mib=1024)
     assert p.to_kwargs() == {"cpu": "500m", "memory": "1Gi"}
     p2 = validate_proposal({"cpu": 2, "memory": "4Gi", "gpu": 1})
-    assert p2.to_kwargs() == {"cpu": 2, "memory": "4Gi", "gpu": 1}
+    # A bare count is typed to the tenant's cheapest accelerator.
+    assert p2.to_kwargs() == {"cpu": 2, "memory": "4Gi", "gpu": "T4:1"}
+    p3 = validate_proposal({"cpu": 2, "memory": "4Gi", "gpu": "l40s:1"})
+    assert (p3.gpu, p3.gpu_type) == (1, "L40S")
+    assert p3.to_kwargs()["gpu"] == "L40S:1"
 
 
 @pytest.mark.parametrize(

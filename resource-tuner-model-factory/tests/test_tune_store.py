@@ -57,4 +57,6 @@ def test_totals():
     assert t["outcomes"] == 2 and t["outcome_oom_count"] == 1
     assert t["outcome_fit_rate"] == 0.5
     assert t["cum_mem_saved_mib"] == 7168.0
+    # $-ledger: net memory+cpu trimming must price out positive
+    assert t["cum_dollars_saved_per_hr"] > 0
     assert totals([])["outcome_fit_rate"] is None

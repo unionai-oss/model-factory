@@ -25,6 +25,7 @@ from ..contracts import (
     EVAL_REPORT_KEYS,
     publish,
 )
+from .. import pricing
 from ..shared import assets
 from ..shared.reporting import GOOD, MUTED, Reporter, esc, ok_pill, pill
 from ..environment.episodes import run_cluster_episode
@@ -38,28 +39,66 @@ from .envs import driver_env
 
 
 def _summarize(pairs: list[tuple[dict, Proposal]]) -> dict:
-    """Sim-score (record, proposal) pairs into success/waste aggregates."""
-    successes, wastes = [], []
+    """Sim-score (record, proposal) pairs into the aggregates a human needs
+    to judge a reward shape: success, per-axis waste, GPU decisions, and —
+    the business metric — $/task-hour of what was requested."""
+    successes, wastes, mem_wastes, cpu_wastes, costs = [], [], [], [], []
+    gpu_needed = gpu_ok = gpu_missing = gpu_spurious = 0
+    per_family: dict[str, dict] = {}
     for record, proposal in pairs:
+        gpu_mem = float(record.get("true_gpu_mem_mib", 0.0) or 0.0)
         ep = simulate_episode(
             proposal,
             float(record["true_peak_memory_mib"]),
             float(record["true_cpu_cores"]),
             int(record["duration_s"]),
+            true_gpu_mem_mib=gpu_mem,
         )
         successes.append(ep.ok)
+        cost = pricing.dollars_per_hr(
+            ep.requested_cpu, ep.requested_memory_mib, ep.requested_gpu_type, ep.requested_gpu
+        )
+        costs.append(cost)
+        fam = per_family.setdefault(
+            record.get("family", "?"),
+            {"n": 0, "ok": 0, "cost": 0.0, "waste": []},
+        )
+        fam["n"] += 1
+        fam["ok"] += 1 if ep.ok else 0
+        fam["cost"] += cost
+        if gpu_mem > 0:
+            gpu_needed += 1
+            gpu_missing += 1 if ep.gpu_missing else 0
+            gpu_ok += 1 if ep.ok else 0
+        elif ep.requested_gpu:
+            gpu_spurious += 1
         if ep.ok:
-            wastes.append(
-                100
-                * (
-                    overprovision_fraction(ep.requested_memory_mib, ep.peak_memory_mib)
-                    + overprovision_fraction(ep.requested_cpu, ep.peak_cpu)
-                )
-                / 2
-            )
+            mem_w = 100 * overprovision_fraction(ep.requested_memory_mib, ep.peak_memory_mib)
+            cpu_w = 100 * overprovision_fraction(ep.requested_cpu, ep.peak_cpu)
+            mem_wastes.append(mem_w)
+            cpu_wastes.append(cpu_w)
+            wastes.append((mem_w + cpu_w) / 2)
+            fam["waste"].append((mem_w + cpu_w) / 2)
+    n = len(successes)
     return {
-        "success_rate": sum(successes) / len(successes) if successes else 0.0,
+        "success_rate": sum(successes) / n if n else 0.0,
         "median_overprovision_pct": statistics.median(wastes) if wastes else None,
+        "median_mem_overprovision_pct": statistics.median(mem_wastes) if mem_wastes else None,
+        "median_cpu_overprovision_pct": statistics.median(cpu_wastes) if cpu_wastes else None,
+        "cost_per_task_hr": (sum(costs) / n) if n else None,
+        "gpu_contexts": gpu_needed,
+        "gpu_success_rate": (gpu_ok / gpu_needed) if gpu_needed else None,
+        "gpu_missing_count": gpu_missing,
+        "gpu_spurious_count": gpu_spurious,
+        "per_family": {
+            f: {
+                "n": v["n"],
+                "success_rate": v["ok"] / v["n"] if v["n"] else 0.0,
+                "cost_per_task_hr": v["cost"] / v["n"] if v["n"] else None,
+                "median_overprovision_pct": statistics.median(v["waste"]) if v["waste"] else None,
+            }
+            for f, v in per_family.items()
+        },
     }
 
 
@@ -166,29 +205,124 @@ async def eval_tuner(
         [(r, baseline_proposal(baselines, r["family"])) for r in heldout]
     )
 
-    rep.reset_body().kv({"schema validity": f"{schema_validity:.0%}"})
+    # Which reward produced this checkpoint — the manifest carries the full
+    # shape config so a human reading the report knows the experiment arm.
+    ckpt_dir = await checkpoint.download()
+    with open(f"{ckpt_dir}/manifest.json") as f:
+        manifest = json.load(f)
+    base_model = manifest["base_model"]
+    reward_stage = manifest.get("reward_stage", "?")
+    reward_shape = manifest.get("reward_shape")
+
+    def _pct(v):
+        return "-" if v is None else f"{v:.0f}%"
+
+    def _usd(v):
+        return "-" if v is None else f"${v:.4f}"
+
+    rep.reset_body()
+    rep.h("Reward configuration under evaluation")
+    shape_kv = {"reward stage": reward_stage, "trained profile": manifest.get("profile", "?")}
+    if reward_shape:
+        shape_kv.update(
+            {
+                "waste form": reward_shape.get("waste_form"),
+                "headroom band": str(reward_shape.get("headroom") or "off"),
+                "cost-weighted": str(bool(reward_shape.get("cost_weighted"))),
+                "baseline-relative": str(bool(reward_shape.get("baseline_relative"))),
+                "waste weight": f"{reward_shape.get('w_waste')}"
+                + (
+                    f" → {reward_shape['w_waste_final']} (annealed)"
+                    if reward_shape.get("w_waste_final") is not None
+                    else ""
+                ),
+                "group tie-break": str(reward_shape.get("group_tiebreak") or "off"),
+                "robustness samples": str(reward_shape.get("robustness_samples", 1)),
+            }
+        )
+    rep.kv(shape_kv)
+    rep.kv({"schema validity": f"{schema_validity:.0%}"})
+
+    # The business metric, first and biggest.
+    saved = None
+    if policy_stats["cost_per_task_hr"] is not None and baseline_stats["cost_per_task_hr"]:
+        saved = baseline_stats["cost_per_task_hr"] - policy_stats["cost_per_task_hr"]
+        rep.h("Dollars")
+        rep.kv(
+            {
+                "policy cost / task-hour": _usd(policy_stats["cost_per_task_hr"]),
+                "baseline cost / task-hour": _usd(baseline_stats["cost_per_task_hr"]),
+                "saved / 1,000 task-hours": f"${saved * 1000:,.2f}",
+                "savings vs baseline": f"{100 * saved / baseline_stats['cost_per_task_hr']:.1f}%",
+            }
+        )
+
     rep.h("Simulated scoring (policy vs baseline)")
     rep.table(
         ["metric", "policy", "baseline"],
         [
-            [
-                esc("success rate"),
-                esc(f"{policy_stats['success_rate']:.0%}"),
-                esc(f"{baseline_stats['success_rate']:.0%}"),
-            ],
-            [
-                esc("median overprovision"),
-                esc(
-                    "-"
-                    if policy_stats["median_overprovision_pct"] is None
-                    else f"{policy_stats['median_overprovision_pct']:.0f}%"
+            [esc(m), esc(p), esc(b)]
+            for m, p, b in [
+                (
+                    "success rate",
+                    f"{policy_stats['success_rate']:.0%}",
+                    f"{baseline_stats['success_rate']:.0%}",
                 ),
-                esc(
-                    "-"
-                    if baseline_stats["median_overprovision_pct"] is None
-                    else f"{baseline_stats['median_overprovision_pct']:.0f}%"
+                (
+                    "$ / task-hour",
+                    _usd(policy_stats["cost_per_task_hr"]),
+                    _usd(baseline_stats["cost_per_task_hr"]),
                 ),
+                (
+                    "median overprovision",
+                    _pct(policy_stats["median_overprovision_pct"]),
+                    _pct(baseline_stats["median_overprovision_pct"]),
+                ),
+                (
+                    "median mem overprovision",
+                    _pct(policy_stats["median_mem_overprovision_pct"]),
+                    _pct(baseline_stats["median_mem_overprovision_pct"]),
+                ),
+                (
+                    "median cpu overprovision",
+                    _pct(policy_stats["median_cpu_overprovision_pct"]),
+                    _pct(baseline_stats["median_cpu_overprovision_pct"]),
+                ),
+            ]
+        ],
+    )
+
+    if policy_stats["gpu_contexts"]:
+        rep.h("GPU estimation")
+        rep.table(
+            ["metric", "policy", "baseline"],
+            [
+                [esc(m), esc(str(p)), esc(str(b))]
+                for m, p, b in [
+                    ("GPU contexts in heldout", policy_stats["gpu_contexts"], baseline_stats["gpu_contexts"]),
+                    (
+                        "success on GPU tasks",
+                        "-" if policy_stats["gpu_success_rate"] is None else f"{policy_stats['gpu_success_rate']:.0%}",
+                        "-" if baseline_stats["gpu_success_rate"] is None else f"{baseline_stats['gpu_success_rate']:.0%}",
+                    ),
+                    ("GPU missing (needed, not proposed)", policy_stats["gpu_missing_count"], baseline_stats["gpu_missing_count"]),
+                    ("GPU spurious (proposed, not needed)", policy_stats["gpu_spurious_count"], baseline_stats["gpu_spurious_count"]),
+                ]
             ],
+        )
+
+    rep.h("Per-family breakdown (policy)")
+    rep.table(
+        ["family", "n", "success", "$ / task-hr", "median waste"],
+        [
+            [
+                esc(f),
+                esc(str(v["n"])),
+                esc(f"{v['success_rate']:.0%}"),
+                esc(_usd(v["cost_per_task_hr"])),
+                esc(_pct(v["median_overprovision_pct"])),
+            ]
+            for f, v in sorted(policy_stats["per_family"].items())
         ],
     )
     if run_cluster_episodes and valid:
@@ -196,10 +330,15 @@ async def eval_tuner(
     await rep.flush()
 
     # Real episodes: the sim-to-real check. Fan out a small batch of
-    # actual pods sized by the policy's proposals.
+    # actual pods sized by the policy's proposals. GPU-family contexts are
+    # sim-only (a GPU pod per episode would burn the training pool), so
+    # the real subset is CPU tasks.
     cluster: list[dict] = []
     if run_cluster_episodes and valid:
-        subset = valid[: profile.eval_cluster_episodes]
+        cpu_valid = [
+            (r, p) for r, p in valid if not float(r.get("true_gpu_mem_mib", 0.0) or 0.0)
+        ]
+        subset = cpu_valid[: profile.eval_cluster_episodes]
         results = await asyncio.gather(
             *(run_cluster_episode(r, p) for r, p in subset), return_exceptions=True
         )
@@ -233,6 +372,8 @@ async def eval_tuner(
                     row["pod_metrics_available"] = True
                 cluster.append({"pod_peaks": pod_peaks})
 
+    # The gate is the business question: at least as reliable as the
+    # baseline AND cheaper (or equal) in dollars.
     gate = (
         schema_validity >= 0.95
         and policy_stats["success_rate"] >= baseline_stats["success_rate"]
@@ -242,13 +383,19 @@ async def eval_tuner(
             or policy_stats["median_overprovision_pct"]
             <= baseline_stats["median_overprovision_pct"]
         )
+        and (
+            policy_stats["cost_per_task_hr"] is None
+            or baseline_stats["cost_per_task_hr"] is None
+            or policy_stats["cost_per_task_hr"] <= baseline_stats["cost_per_task_hr"]
+        )
     )
 
-    ckpt_dir = await checkpoint.download()
-    with open(f"{ckpt_dir}/manifest.json") as f:
-        base_model = json.load(f)["base_model"]
     report = {
         "base_model": base_model,
+        # Which reward produced the checkpoint — the comparison key for
+        # humans and the lineage dashboard.
+        "reward_stage": reward_stage,
+        "reward_shape": reward_shape,
         # Links this report to the checkpoint version it scored — the
         # lineage app uses it to badge checkpoint cards with eval metrics.
         "checkpoint_path": getattr(checkpoint, "path", "") or "",
@@ -256,8 +403,20 @@ async def eval_tuner(
         "schema_validity": schema_validity,
         "success_rate": policy_stats["success_rate"],
         "median_overprovision_pct": policy_stats["median_overprovision_pct"],
+        "median_mem_overprovision_pct": policy_stats["median_mem_overprovision_pct"],
+        "median_cpu_overprovision_pct": policy_stats["median_cpu_overprovision_pct"],
         "baseline_success_rate": baseline_stats["success_rate"],
         "baseline_median_overprovision_pct": baseline_stats["median_overprovision_pct"],
+        # ── the business metric ──
+        "policy_cost_per_task_hr": policy_stats["cost_per_task_hr"],
+        "baseline_cost_per_task_hr": baseline_stats["cost_per_task_hr"],
+        "dollars_saved_per_1k_task_hrs": (saved * 1000 if saved is not None else None),
+        # ── GPU estimation ──
+        "gpu_contexts": policy_stats["gpu_contexts"],
+        "gpu_success_rate": policy_stats["gpu_success_rate"],
+        "gpu_missing_count": policy_stats["gpu_missing_count"],
+        "gpu_spurious_count": policy_stats["gpu_spurious_count"],
+        "per_family": policy_stats["per_family"],
         "cluster_episodes": [c for c in cluster if "task_id" in c],
         "cluster_episode_details": cluster,
         "auto_gate_passed": gate,
@@ -267,6 +426,13 @@ async def eval_tuner(
     # Final report: verdict + real-episode table + pod-metric availability.
     rep.h("Verdict")
     rep.raw(ok_pill(gate, "GATE PASS", "gate fail"))
+    if saved is not None:
+        rep.p(
+            f"reward shape {reward_stage!r}: "
+            f"{'saves' if saved >= 0 else 'COSTS AN EXTRA'} "
+            f"${abs(saved) * 1000:,.2f} per 1,000 task-hours vs the rule baseline",
+            color=GOOD if saved >= 0 else "#F43B3E",
+        )
     real = [c for c in cluster if "task_id" in c and "error" not in c]
     if real:
         rep.h("Real episodes (sim-to-real)")

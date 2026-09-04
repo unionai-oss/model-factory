@@ -12,6 +12,7 @@ from __future__ import annotations
 from statistics import median
 
 from ..policy.actions import Proposal, bucket_cpu, bucket_memory_mib
+from ..pricing import cheapest_gpu_for
 
 SAFETY_MARGIN = 0.25
 
@@ -25,9 +26,13 @@ def fit_family_baseline(train_records: list[dict]) -> dict[str, Proposal]:
     for family, rows in by_family.items():
         peak = median(r["true_peak_memory_mib"] for r in rows)
         cpu = median(r["true_cpu_cores"] for r in rows)
+        gpu_mem = median(float(r.get("true_gpu_mem_mib", 0.0) or 0.0) for r in rows)
+        gpu_type = cheapest_gpu_for(gpu_mem, margin=SAFETY_MARGIN) if gpu_mem > 0 else None
         out[family] = Proposal(
             cpu=bucket_cpu(cpu),
             memory_mib=bucket_memory_mib(peak * (1 + SAFETY_MARGIN)),
+            gpu=1 if gpu_type else 0,
+            gpu_type=gpu_type,
         )
     return out
 

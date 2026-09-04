@@ -51,6 +51,7 @@ class GeneratedTask:
     true_peak_memory_mib: float
     true_cpu_cores: float
     duration_s: int
+    true_gpu_mem_mib: float = 0.0  # 0 = CPU task; >0 = VRAM the task needs
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,7 @@ class Family:
     sample: Callable[[Random], dict]
     footprint: Callable[[dict], tuple[float, float]]  # → (peak MiB, cpu cores)
     profile: Callable[[dict], str]
+    gpu_footprint: Callable[[dict], float] | None = None  # → VRAM MiB needed
 
 
 def _render_policy(fam: Family, params: dict) -> str:
@@ -265,6 +267,114 @@ def _etl_footprint(p: dict) -> tuple[float, float]:
     return BASE_OVERHEAD_MIB + p["n_records"] * 500 / _MIB, 1.0
 
 
+# ── GPU batch inference: transformer embedding on CUDA ──────────────────
+# The rendered code moves an fp16 model to CUDA — the "clearly uses a GPU"
+# signal the policy must read. VRAM demand is the analytic ground truth;
+# the guarded device fallback keeps the harness runnable anywhere, but
+# on-cluster episodes for GPU families are sim-only in this prototype.
+
+_GBI_BODY = _hold_loop(
+    """\
+device = "cuda" if torch.cuda.is_available() else "cpu"
+torch.manual_seed(_iters)
+hidden = {hidden}
+model = torch.nn.Sequential(*(
+    layer
+    for _ in range({depth})
+    for layer in (torch.nn.Linear(hidden, hidden), torch.nn.GELU())
+)).to(device=device, dtype=torch.float16 if device == "cuda" else torch.float32)
+embedded = 0
+with torch.no_grad():
+    for _b in range(4):
+        batch = torch.randn({batch_size}, {seq_len}, hidden, device=device,
+                            dtype=model[0].weight.dtype)
+        out = model(batch)
+        embedded += int(out.shape[0])
+result = {{"embedded": embedded, "device": device}}
+del model, batch, out"""
+) + 'return result'
+
+
+def _gbi_sample(rng: Random) -> dict:
+    # Ranges span ~1.5GiB → ~40GiB VRAM so the right answer walks the
+    # whole tenant GPU ladder (T4 16GiB → L4 24GiB → L40S 48GiB).
+    return {
+        "hidden": rng.choice([2048, 4096, 8192]),
+        "depth": rng.choice([24, 48]),
+        "batch_size": rng.choice([16, 64, 256]),
+        "seq_len": rng.choice([256, 1024]),
+        "duration_s": rng.randint(60, 120),
+    }
+
+
+def _gbi_host_footprint(p: dict) -> tuple[float, float]:
+    # Host side holds the fp32 weights briefly during .to(device) plus
+    # the loader process; CUDA work needs ~2 feeder cores.
+    weights_fp32 = p["depth"] * p["hidden"] ** 2 * 4 / _MIB
+    return TORCH_OVERHEAD_MIB + 1.2 * weights_fp32, 2.0
+
+
+def _gbi_gpu_footprint(p: dict) -> float:
+    # fp16 weights + activations for one batch (input/output/intermediate
+    # copies per layer step).
+    weights = p["depth"] * p["hidden"] ** 2 * 2 / _MIB
+    acts = p["batch_size"] * p["seq_len"] * p["hidden"] * 2 * 4 / _MIB
+    return 900 + weights + acts  # + CUDA context/cudnn workspace
+
+
+# ── GPU fine-tune: LoRA training step loop on CUDA ──────────────────────
+
+_GFT_BODY = _hold_loop(
+    """\
+device = "cuda" if torch.cuda.is_available() else "cpu"
+torch.manual_seed(_iters)
+hidden = {hidden}
+base = torch.nn.Sequential(*(
+    torch.nn.Linear(hidden, hidden) for _ in range({depth})
+)).to(device=device, dtype=torch.float16 if device == "cuda" else torch.float32)
+for p_ in base.parameters():
+    p_.requires_grad_(False)
+lora_a = torch.nn.Linear(hidden, {lora_r}, bias=False).to(device, base[0].weight.dtype)
+lora_b = torch.nn.Linear({lora_r}, hidden, bias=False).to(device, base[0].weight.dtype)
+opt = torch.optim.AdamW(list(lora_a.parameters()) + list(lora_b.parameters()), lr=1e-4)
+for _step in range(2):
+    x = torch.randn({batch_size}, {seq_len}, hidden, device=device,
+                    dtype=base[0].weight.dtype)
+    loss = (base(x) + lora_b(lora_a(x))).float().pow(2).mean()
+    loss.backward()
+    opt.step()
+    opt.zero_grad()
+result = {{"loss": float(loss.item()), "device": device}}
+del base, lora_a, lora_b, opt, x"""
+) + 'return result'
+
+
+def _gft_sample(rng: Random) -> dict:
+    # ~1.5GiB → ~17GiB VRAM: mostly T4-sized with an L4 tail.
+    return {
+        "hidden": rng.choice([2048, 4096, 6144]),
+        "depth": rng.choice([16, 32]),
+        "lora_r": rng.choice([8, 16, 32]),
+        "batch_size": rng.choice([4, 8, 16]),
+        "seq_len": rng.choice([512, 1024]),
+        "duration_s": rng.randint(60, 120),
+    }
+
+
+def _gft_host_footprint(p: dict) -> tuple[float, float]:
+    weights_fp32 = p["depth"] * p["hidden"] ** 2 * 4 / _MIB
+    return TORCH_OVERHEAD_MIB + 1.2 * weights_fp32, 2.0
+
+
+
+def _gft_gpu_footprint(p: dict) -> float:
+    # frozen fp16 base + LoRA adapters/opt-state (small) + backward
+    # activations (kept per layer for the whole depth).
+    weights = p["depth"] * p["hidden"] ** 2 * 2 / _MIB
+    acts = p["batch_size"] * p["seq_len"] * p["hidden"] * 2 * p["depth"] * 2 / _MIB
+    return 1200 + weights + acts
+
+
 FAMILIES: dict[str, Family] = {
     f.name: f
     for f in (
@@ -328,6 +438,34 @@ FAMILIES: dict[str, Family] = {
             footprint=_etl_footprint,
             profile=lambda p: f"input: {p['n_records']:,} JSON-ish records, ~100B payload each",
         ),
+        Family(
+            name="gpu_batch_inference",
+            task_name="embed_documents_gpu",
+            imports="import torch",
+            body_template=_GBI_BODY,
+            sample=_gbi_sample,
+            footprint=_gbi_host_footprint,
+            gpu_footprint=_gbi_gpu_footprint,
+            profile=lambda p: (
+                f"model: {p['depth']}-layer transformer-ish encoder, hidden {p['hidden']}, "
+                f"fp16 on CUDA (~{_gbi_gpu_footprint(p):.0f}MiB VRAM); "
+                f"batch {p['batch_size']} x seq {p['seq_len']}"
+            ),
+        ),
+        Family(
+            name="gpu_finetune",
+            task_name="lora_finetune_gpu",
+            imports="import torch",
+            body_template=_GFT_BODY,
+            sample=_gft_sample,
+            footprint=_gft_host_footprint,
+            gpu_footprint=_gft_gpu_footprint,
+            profile=lambda p: (
+                f"model: frozen {p['depth']}x{p['hidden']} fp16 base + LoRA r{p['lora_r']} "
+                f"on CUDA (~{_gft_gpu_footprint(p):.0f}MiB VRAM); "
+                f"batch {p['batch_size']} x seq {p['seq_len']}, AdamW"
+            ),
+        ),
     )
 }
 
@@ -354,4 +492,5 @@ def generate_task(family: str, seed: int) -> GeneratedTask:
         true_peak_memory_mib=peak_mib,
         true_cpu_cores=cpu,
         duration_s=params["duration_s"],
+        true_gpu_mem_mib=fam.gpu_footprint(params) if fam.gpu_footprint else 0.0,
     )
