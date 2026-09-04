@@ -126,13 +126,20 @@ async def _get_batcher(checkpoint_path: str):
                             out.append("")  # caller treats empty as invalid
                     return out
 
-            _batchers[checkpoint_path] = DynamicBatcher(
+            batcher = DynamicBatcher(
                 process,
                 cost_estimator=lambda p: max(len(p) // 4, 1),
                 target_batch_cost=16_000,  # ~16 prompts × ~1k tokens
                 max_batch_size=16,
                 batch_timeout_s=0.25,
             )
+            # start() is required before submit() and it is a COROUTINE
+            # (its `-> None` annotation lies about that): un-awaited it is
+            # a silent no-op plus RuntimeWarning, and every submit dies
+            # with "DynamicBatcher is not running" (runs urtf5kpc… and
+            # u86mtkp… failed exactly this way, 128 + 96 actions).
+            await batcher.start()
+            _batchers[checkpoint_path] = batcher
     return _batchers[checkpoint_path]
 
 
