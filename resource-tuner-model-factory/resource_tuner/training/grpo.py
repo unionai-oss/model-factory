@@ -29,6 +29,7 @@ from ..environment.simulator import simulate_episode
 from ..policy.parsing import try_extract_proposal
 from ..policy.prompts import render_messages
 from ..rewards.rewards import invalid_proposal_reward, score_episode
+from ..shared.reporting import GOOD, Reporter, esc, line_chart, pill
 from .envs import trainer_env
 
 
@@ -77,6 +78,7 @@ def _records_to_dataset(records: list[dict]):
     return Dataset.from_list(rows)
 
 
+@flyte.trace
 def _load_model(profile: TunerProfile):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -113,45 +115,109 @@ def _load_model(profile: TunerProfile):
     return model, tok, bf16
 
 
-def _report_html(profile: TunerProfile, rows: list[dict]) -> str:
-    """Live training report: reward curve (inline SVG) + last-step stats.
+def _report_html(profile: TunerProfile, rows: list[dict], meta: dict | None = None) -> str:
+    """Live training report, re-rendered every logged step.
 
-    Rendered every log step via flyte.report so the run page shows the
-    go/no-go signal — mean reward climbing — while training is in flight.
+    Reads as a page: config header (knobs / device / dataset / W&B link),
+    the go/no-go reward curve, group-health curves (entropy +
+    frac_reward_zero_std — the degenerate-group early warning), training
+    dynamics (grad_norm, completion length), and the last step's stats.
     """
+    meta = meta or {}
     rewards = [r["reward"] for r in rows if "reward" in r]
-    points = ""
-    if len(rewards) >= 2:
-        lo, hi = min(rewards), max(rewards)
-        span = (hi - lo) or 1.0
-        points = " ".join(
-            f"{20 + 560 * i / (len(rewards) - 1):.1f},{150 - 130 * (r - lo) / span:.1f}"
-            for i, r in enumerate(rewards)
-        )
-    last = rows[-1] if rows else {}
-    stats = "".join(
-        f"<tr><td>{k}</td><td>{v:.4g}</td></tr>"
-        for k, v in last.items()
-        if isinstance(v, (int, float))
-    )
     knobs = (
         f"lr {profile.learning_rate} · group {profile.num_generations} · "
         f"batch {profile.per_device_batch} · comp_len {profile.max_completion_length} · "
         f"lora r{profile.lora_r}{' · qlora' if profile.use_qlora else ''}"
     )
-    header = f"""
-<h2>resource-tuner GRPO — {profile.name} / {profile.base_model}</h2>
-<p>reward stage: <b>{profile.reward_stage}</b> · {knobs}</p>"""
+    rep = Reporter(
+        f"GRPO — {profile.name} / {profile.base_model}",
+        f"reward stage: {profile.reward_stage} · {knobs}",
+    )
+    config_kv = {
+        "device": meta.get("device", "?"),
+        "dtype": meta.get("dtype", "?"),
+        "train contexts": meta.get("n_contexts", "?"),
+        "corpus": str(meta.get("corpus", ""))[-60:] or "?",
+    }
+    if meta.get("wandb_url"):
+        rep.raw(
+            f'<p style="margin:6px 0"><a style="color:#8b9bff" href="{esc(meta["wandb_url"])}">'
+            "Weights &amp; Biases run ↗</a></p>"
+        )
+    rep.kv(config_kv)
     if not rewards:
-        return header + "<p>model loading / waiting for the first logged step…</p>"
-    return f"""{header}
-<p>step {len(rewards)}/{profile.max_steps}
- · mean reward {rewards[-1]:.3f} (start {rewards[0]:.3f})</p>
-<svg viewBox="0 0 600 170" style="max-width:640px;border:1px solid #ccc">
-  <polyline points="{points}" fill="none" stroke="#4a7dbd" stroke-width="2"/>
-</svg>
-<table border="1" cellpadding="4" style="border-collapse:collapse">{stats}</table>
-"""
+        rep.p("model loading / waiting for the first logged step…")
+        return rep.html()
+
+    def col(key):
+        return [r.get(key) for r in rows if "reward" in r]
+
+    rep.progress(len(rewards), profile.max_steps, "steps")
+    rep.p(
+        f"step {len(rewards)}/{profile.max_steps} · mean reward {rewards[-1]:.3f} "
+        f"(start {rewards[0]:.3f})"
+    )
+    rep.h("Reward")
+    rep.raw(line_chart([("mean reward", GOOD, rewards)], y_fmt="{:.2f}"))
+    rep.h("Group health (all-pass/all-fail groups yield no gradient)")
+    rep.raw(
+        line_chart(
+            [
+                ("frac_reward_zero_std", "#e69812", col("frac_reward_zero_std")),
+                ("entropy", "#4d65ff", col("entropy")),
+            ],
+            y_max=1.0,
+            y_fmt="{:.1f}",
+        )
+    )
+    rep.h("Dynamics")
+    rep.raw(
+        line_chart(
+            [
+                ("grad_norm", "#F43B3E", col("grad_norm")),
+                ("completion len", "#9a9aa4", col("completions/mean_length")),
+            ],
+            y_fmt="{:.0f}",
+        )
+    )
+    last = rows[-1]
+    rep.h("Last step")
+    rep.table(
+        ["metric", "value"],
+        [
+            [esc(k), esc(f"{v:.4g}")]
+            for k, v in last.items()
+            if isinstance(v, (int, float))
+        ],
+    )
+    return rep.html()
+
+
+@flyte.trace
+async def _save_checkpoint(trainer, tok, out_dir: str, profile: TunerProfile,
+                           history: list[dict], mean_rewards: list) -> "flyte.io.Dir":
+    """Write adapter + tokenizer + manifest and upload as a Dir (traced —
+    checkpoint writes are exactly where a crashed run wants a span)."""
+    trainer.model.save_pretrained(out_dir)
+    tok.save_pretrained(out_dir)
+    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
+        json.dump(
+            {
+                "base_model": profile.base_model,
+                "profile": profile.name,
+                "reward_stage": profile.reward_stage,
+                "max_steps": profile.max_steps,
+                "final_metrics": {
+                    "mean_reward_first": mean_rewards[0] if mean_rewards else None,
+                    "mean_reward_last": mean_rewards[-1] if mean_rewards else None,
+                    "log_history": history,
+                },
+            },
+            f,
+            indent=2,
+        )
+    return await flyte.io.Dir.from_local(out_dir)
 
 
 # Dark-mode wiring: a new corpus version IS the request to train.
@@ -180,15 +246,24 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
     from trl import GRPOConfig, GRPOTrainer
 
     profile = get_profile(profile_name)
+    meta: dict = {"corpus": getattr(corpus, "path", "")}
     # Page up immediately: the model download/load takes minutes and the
     # run page should say so rather than sit blank.
-    await flyte.report.replace.aio(_report_html(profile, []), do_flush=True)
+    await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
 
     df = pd.read_parquet(await corpus.download())
     records = df[df["split"] == "train"].to_dict("records")[: profile.train_contexts]
     dataset = _records_to_dataset(records)
+    meta["n_contexts"] = len(records)
 
     model, tok, bf16 = _load_model(profile)
+    import torch
+
+    meta["device"] = (
+        torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+    )
+    meta["dtype"] = "bf16" if bf16 else "fp16"
+    await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
     lora = LoraConfig(
         r=profile.lora_r,
         lora_alpha=profile.lora_r * 2,
@@ -202,6 +277,13 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
     wandb_on = bool(os.environ.get("WANDB_API_KEY"))
     if wandb_on:
         os.environ.setdefault("WANDB_PROJECT", WANDB_PROJECT)
+        run_name = ""
+        try:
+            run_name = flyte.ctx().action.run_name  # type: ignore[union-attr]
+        except Exception:
+            pass
+        os.environ.setdefault("WANDB_NAME", f"{profile.name}-{run_name or 'local'}")
+        os.environ.setdefault("WANDB_TAGS", f"{profile.reward_stage},{profile.base_model}")
     import dataclasses
     import random
 
@@ -241,8 +323,16 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
 
     class _ReportCallback(TrainerCallback):
         def on_log(self, args, state, control, logs=None, **kwargs):
+            if wandb_on and not meta.get("wandb_url"):
+                try:
+                    import wandb
+
+                    if wandb.run is not None:
+                        meta["wandb_url"] = wandb.run.url
+                except Exception:
+                    pass
             rows = [r for r in state.log_history if isinstance(r, dict)]
-            html = _report_html(profile, rows)
+            html = _report_html(profile, rows, meta)
             asyncio.run_coroutine_threadsafe(
                 flyte.report.replace.aio(html, do_flush=True), loop
             )
@@ -257,33 +347,23 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
         callbacks=[_ReportCallback()],
     )
     # The trainer is blocking for the whole run; keep the event loop alive.
-    await asyncio.to_thread(trainer.train)
+    try:
+        await asyncio.to_thread(trainer.train)
+    except torch.cuda.OutOfMemoryError as e:
+        # Explicit OOM handling: fail with a pointed message instead of a
+        # bare CUDA traceback (the fix is a knob, not a retry).
+        raise RuntimeError(
+            f"GPU OOM during GRPO training on {meta.get('device')}: {e}. "
+            f"Reduce per_device_batch/num_generations/max_completion_length "
+            f"or set use_qlora for {profile.base_model}."
+        ) from e
 
     history = [
         {k: v for k, v in row.items() if isinstance(v, (int, float))}
         for row in trainer.state.log_history
     ]
     mean_rewards = [h["reward"] for h in history if "reward" in h]
-    trainer.model.save_pretrained(out_dir)
-    tok.save_pretrained(out_dir)
-    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
-        json.dump(
-            {
-                "base_model": profile.base_model,
-                "profile": profile.name,
-                "reward_stage": profile.reward_stage,
-                "max_steps": profile.max_steps,
-                "final_metrics": {
-                    "mean_reward_first": mean_rewards[0] if mean_rewards else None,
-                    "mean_reward_last": mean_rewards[-1] if mean_rewards else None,
-                    "log_history": history,
-                },
-            },
-            f,
-            indent=2,
-        )
-
-    ckpt = await flyte.io.Dir.from_local(out_dir)
+    ckpt = await _save_checkpoint(trainer, tok, out_dir, profile, history, mean_rewards)
     return publish(
         ckpt,
         ARTIFACT_TUNER_CHECKPOINT,

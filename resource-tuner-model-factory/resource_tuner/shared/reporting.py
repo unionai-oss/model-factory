@@ -46,6 +46,54 @@ def ok_pill(ok: bool, yes: str = "ok", no: str = "failed") -> str:
     return pill(yes, GOOD) if ok else pill(no, BAD)
 
 
+def line_chart(
+    series: list[tuple[str, str, list]],
+    y_max: float | None = None,
+    y_fmt: str = "{:.2f}",
+    height: int = 190,
+) -> str:
+    """Multi-series inline-SVG line chart (Union palette, self-contained).
+
+    series = [(label, color, values)]; None values are skipped. y_max
+    autoscales to the data when omitted.
+    """
+    n = max((len(v) for _, _, v in series), default=0)
+    vals = [v for _, _, vs in series for v in vs if v is not None]
+    if n == 0 or not vals:
+        return '<p style="color:#5f5f6a;font-size:12px">no data yet</p>'
+    top = y_max if y_max is not None else (max(vals) or 1.0)
+    top = top or 1.0
+    w, pad = 640, 36
+    x = lambda i: pad + (w - 2 * pad) * (i / max(n - 1, 1))  # noqa: E731
+    y = lambda v: height - pad - (height - 2 * pad) * min(v / top, 1.0)  # noqa: E731
+    parts = [
+        f'<svg viewBox="0 0 {w} {height}" style="max-width:{w}px;background:#0e0e12;'
+        f'border:1px solid #222228;border-radius:10px">'
+    ]
+    for frac in (0.0, 0.5, 1.0):
+        gy = height - pad - (height - 2 * pad) * frac
+        parts.append(
+            f'<line x1="{pad}" y1="{gy:.0f}" x2="{w - pad}" y2="{gy:.0f}" stroke="#1d1d23"/>'
+            f'<text x="4" y="{gy + 4:.0f}" font-size="10" fill="#5f5f6a">'
+            f"{esc(y_fmt.format(top * frac))}</text>"
+        )
+    lx = pad
+    for label, color, values in series:
+        pts = " ".join(
+            f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(values) if v is not None
+        )
+        if pts:
+            parts.append(
+                f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2"/>'
+            )
+        parts.append(
+            f'<text x="{lx}" y="15" font-size="11" fill="{color}">— {esc(label)}</text>'
+        )
+        lx += 8 * len(label) + 40
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 class Reporter:
     """Accumulates sections; each flush() replaces the task's report."""
 

@@ -45,7 +45,9 @@ WANDB_SECRET = "WANDB_API_KEY"
 # gateway accepts it as a bearer token). Mounted on the driver env
 # unconditionally — the synthetic station needs it.
 LLM_SERVICE_SECRET = "LLM_SERVICE_API_KEY"
-USE_SECRETS = os.environ.get("RT_USE_SECRETS", "0") == "1"
+# Default ON: all three secrets exist in this project; RT_USE_SECRETS=0
+# remains the escape hatch for tenants without them.
+USE_SECRETS = os.environ.get("RT_USE_SECRETS", "1") == "1"
 
 WANDB_PROJECT = "resource-tuner-model-factory"
 

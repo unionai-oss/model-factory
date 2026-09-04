@@ -57,7 +57,22 @@ async def run_cluster_episode(record: dict, proposal: Proposal) -> EpisodeResult
         out = await overridden(
             harness_code=record["harness_code"], task_id=record["task_id"]
         )
-    except Exception as e:  # noqa: BLE001 — failed child action
+    except flyte.errors.OOMError:
+        # Typed path: the episode pod was OOMKilled — that IS the negative
+        # reward signal for an under-ask, never an error to bubble up.
+        oom = True
+        return EpisodeResult(
+            ok=False,
+            oom=True,
+            requested_cpu=proposal.cpu,
+            requested_memory_mib=proposal.memory_mib,
+            peak_memory_mib=float(proposal.memory_mib),
+            peak_cpu=0.0,
+            throttled=False,
+            duration_s=0.0,
+            simulated=False,
+        )
+    except Exception as e:  # noqa: BLE001 — failed child action (string fallback)
         oom = _looks_like_oom(e)
         return EpisodeResult(
             ok=False,

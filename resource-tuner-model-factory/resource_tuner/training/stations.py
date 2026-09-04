@@ -258,7 +258,10 @@ async def synthetic_data_release(
             resources=flyte.Resources(cpu=4, memory="14Gi", disk="10Gi")
         )
         try:
-            measured = await oracle(harness_code=code, task_id=f"synthetic-{seed}-{idx}")
+            # Group the oracle subactions so the run view shows one tidy
+            # "execution-oracle" box instead of N loose run_generated rows.
+            with flyte.group("execution-oracle"):
+                measured = await oracle(harness_code=code, task_id=f"synthetic-{seed}-{idx}")
         except Exception as e:  # noqa: BLE001 — teacher code crashed its pod
             print(f"[synthetic {idx}] oracle pod failed: {e}")
             await set_stage(idx, "rejected", f"oracle pod failed: {str(e)[:140]}")
@@ -443,9 +446,12 @@ async def archetype_data_release(
             )
             try:
                 async with oracle_sem:
-                    measured = await oracle(
-                        harness_code=code, task_id=f"arch-{seed}-{idx}-c{len(points)}"
-                    )
+                    # Per-archetype group: ~450 calibration pods fold into
+                    # one box per archetype in the run view.
+                    with flyte.group(f"calibrate-arch-{idx}"):
+                        measured = await oracle(
+                            harness_code=code, task_id=f"arch-{seed}-{idx}-c{len(points)}"
+                        )
             except Exception as e:  # noqa: BLE001 — pod died (likely footprint > 14Gi)
                 print(f"[arch {idx}] calibration pod failed: {e}")
                 return

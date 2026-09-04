@@ -32,10 +32,9 @@ from ..environment.metrics import harness_action_peaks, metrics_available
 from ..environment.simulator import simulate_episode
 from ..policy.actions import Proposal
 from ..policy.parsing import try_extract_proposal
-from ..policy.prompts import render_messages
 from ..rewards.rewards import overprovision_fraction
 from ..training.baseline import baseline_proposal, fit_family_baseline
-from .envs import trainer_env
+from .envs import driver_env
 
 
 def _summarize(pairs: list[tuple[dict, Proposal]]) -> dict:
@@ -64,50 +63,40 @@ def _summarize(pairs: list[tuple[dict, Proposal]]) -> dict:
     }
 
 
-def _generate_proposals(records: list[dict], ckpt_dir: str) -> list[Proposal | None]:
-    """Greedy one-shot proposals from the trained adapter."""
-    import torch
-    from peft import PeftModel
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+async def _generate_proposals(
+    records: list[dict], checkpoint_path: str
+) -> list[Proposal | None]:
+    """Greedy proposals via the reusable generator env.
 
-    with open(f"{ckpt_dir}/manifest.json") as f:
-        base_model = json.load(f)["base_model"]
-    bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    tok = AutoTokenizer.from_pretrained(ckpt_dir, padding_side="left")
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        dtype=torch.bfloat16 if bf16 else torch.float16,
-        device_map="auto",
-        attn_implementation="eager",
-        trust_remote_code=True,
-    )
-    model = PeftModel.from_pretrained(model, ckpt_dir)
-    model.eval()
+    One `generate_proposal` child call per context — warm replicas batch
+    them dynamically (see training/generator.py), so the fan-out costs one
+    model load per replica instead of per eval, and generation runs in
+    batched `model.generate` calls. Per-record failures (including a
+    generator OOM) degrade to an invalid proposal rather than failing the
+    eval: a missing proposal is exactly what schema_validity measures.
+    """
+    import asyncio
 
-    proposals: list[Proposal | None] = []
-    for record in records:
-        messages = render_messages(record["source_code"], record["input_profile"])
+    import flyte.errors
+
+    from .generator import generate_proposal
+
+    async def one(record: dict) -> Proposal | None:
         try:
-            rendered = tok.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            text = await generate_proposal(
+                checkpoint_path=checkpoint_path,
+                source_code=record["source_code"],
+                input_profile=record["input_profile"],
             )
-        except TypeError:  # template without the thinking switch
-            rendered = tok.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-        inputs = tok(rendered, return_tensors="pt", truncation=True, max_length=4096).to(
-            model.device
-        )
-        with torch.no_grad():
-            out = model.generate(
-                **inputs,
-                max_new_tokens=128,
-                do_sample=False,
-                pad_token_id=tok.pad_token_id or tok.eos_token_id,
-            )
-        text = tok.decode(out[0, inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-        proposals.append(try_extract_proposal(text))
-    return proposals
+        except flyte.errors.OOMError as e:
+            print(f"[eval] generator OOM for {record['task_id']}: {e}")
+            return None
+        except Exception as e:  # noqa: BLE001 — one bad context ≠ failed eval
+            print(f"[eval] generation failed for {record['task_id']}: {e}")
+            return None
+        return try_extract_proposal(text)
+
+    return list(await asyncio.gather(*(one(r) for r in records)))
 
 
 # Dark-mode wiring: a new checkpoint version IS the request to evaluate.
@@ -123,7 +112,7 @@ _eval_trigger = flyte.Trigger(
 )
 
 
-@trainer_env.task(
+@driver_env.task(
     triggers=[_eval_trigger],
     timeout=flyte.Timeout(max_runtime=2 * 3600),
     produces_artifacts=True,
@@ -157,16 +146,16 @@ async def eval_tuner(
     heldout = df[df["split"] == "heldout"].to_dict("records")[: profile.eval_contexts]
     train_records = df[df["split"] == "train"].to_dict("records")
 
-    ckpt_dir = await checkpoint.download()
+    ckpt_path = getattr(checkpoint, "path", "") or ""
     rep.reset_body().kv(
         {
             "heldout contexts": len(heldout),
             "train contexts (baseline fit)": len(train_records),
-            "checkpoint": getattr(checkpoint, "path", "")[-60:],
+            "checkpoint": ckpt_path[-60:],
         }
-    ).p("Generating greedy proposals with the trained adapter…")
+    ).p("Generating proposals via the reusable batched generator…")
     await rep.flush()
-    proposals = await asyncio.to_thread(_generate_proposals, heldout, ckpt_dir)
+    proposals = await _generate_proposals(heldout, ckpt_path)
 
     valid = [(r, p) for r, p in zip(heldout, proposals) if p is not None]
     policy_stats = _summarize(valid)
@@ -255,6 +244,7 @@ async def eval_tuner(
         )
     )
 
+    ckpt_dir = await checkpoint.download()
     with open(f"{ckpt_dir}/manifest.json") as f:
         base_model = json.load(f)["base_model"]
     report = {
