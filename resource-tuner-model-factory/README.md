@@ -6,7 +6,9 @@ policy reads a task's source code + input profile and emits the kwargs for
 `flyte.Resources` (e.g. `{"cpu": 2, "memory": "4Gi"}`); the reward is
 "the task succeeded and didn't waste the request".
 
-See [docs/DESIGN.md](docs/DESIGN.md) for the full design (MDP framing,
+See [research_log/](research_log/) for the experiment audit trail (run
+links, findings, standing results), and
+[docs/DESIGN.md](docs/DESIGN.md) for the full design (MDP framing,
 sim-first environment, reward curriculum, model choice rationale).
 
 ## The loop
