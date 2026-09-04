@@ -29,7 +29,8 @@ TRAIN_MEMORY = os.environ.get("RT_TRAIN_MEMORY", "10Gi")
 TRAIN_DISK = os.environ.get("RT_TRAIN_DISK", "50Gi")
 
 CPU_TASK_CPU = int(os.environ.get("RT_CPU", "2"))
-CPU_TASK_MEMORY = os.environ.get("RT_CPU_MEMORY", "4Gi")
+# 8Gi: the archetype release materializes a ~10^5-row corpus in pandas.
+CPU_TASK_MEMORY = os.environ.get("RT_CPU_MEMORY", "8Gi")
 
 # The episode harness env: the resource request is the WHOLE experiment, so
 # these are only the env defaults — every episode overrides them with the

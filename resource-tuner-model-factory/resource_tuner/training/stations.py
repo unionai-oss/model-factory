@@ -15,7 +15,9 @@ code actually uses), never from the teacher's own guess.
 
 from __future__ import annotations
 
+import json
 import tempfile
+import time
 
 import flyte
 import flyte.io
@@ -29,6 +31,7 @@ from ..contracts import ARTIFACT_SYNTHETIC, ARTIFACT_TASK_CORPUS, publish
 # llm_client). Both modules are stdlib-only, so importing them here is free.
 from ..shared import llm_client
 from ..shared.reporting import GOOD, MUTED, Reporter, esc, ok_pill, pill
+from ..taskgen import archetypes as arch
 from ..taskgen import synthetic as syn
 from ..taskgen.corpus import build_corpus
 from .envs import driver_env
@@ -90,8 +93,49 @@ async def publish_synthetic_corpus(corpus_file: flyte.io.File, n: int, teacher: 
     MERGED corpus, so the synthetic slice needs its own returning task
     (first attempt published nothing: 0 versions listed).
     """
-    rep = Reporter("Synthetic corpus publish", f"{n} oracle-verified tasks from {teacher}")
-    rep.p("Returning the wrapped file versions the synthetic-task-corpus artifact.")
+    import pandas as pd
+
+    rep = Reporter("Synthetic corpus publish", f"{n} tasks from {teacher}")
+    try:
+        df = pd.read_parquet(await corpus_file.download())
+        peaks = df["true_peak_memory_mib"]
+        code_len = df["source_code"].str.len()
+        rep.kv(
+            {
+                "rows": len(df),
+                "archetypes": df["params_json"].apply(
+                    lambda s: json.loads(s).get("archetype", "single")
+                ).nunique(),
+                "families": ", ".join(
+                    f"{k}:{v}" for k, v in df["family"].value_counts().items()
+                ),
+                "label sources": ", ".join(
+                    f"{k}:{v}"
+                    for k, v in df["params_json"]
+                    .apply(lambda s: json.loads(s).get("label_source", "measured"))
+                    .value_counts()
+                    .items()
+                ),
+            }
+        )
+        rep.h("Peak memory distribution (MiB)")
+        rep.table(
+            ["p5", "p25", "median", "p75", "p95", "max"],
+            [[esc(int(peaks.quantile(q))) for q in (0.05, 0.25, 0.5, 0.75, 0.95, 1.0)]],
+        )
+        rep.h("Other stats")
+        rep.kv(
+            {
+                "cpu cores (median / max)": f"{df['true_cpu_cores'].median():.1f} / "
+                f"{df['true_cpu_cores'].max():.1f}",
+                "duration s (median / max)": f"{df['duration_s'].median():.0f} / "
+                f"{df['duration_s'].max():.0f}",
+                "code length chars (median / p95)": f"{int(code_len.median())} / "
+                f"{int(code_len.quantile(0.95))}",
+            }
+        )
+    except Exception as e:  # noqa: BLE001 — stats must not block the publish
+        rep.p(f"stats unavailable: {e}")
     await rep.flush()
     return publish(
         corpus_file,
@@ -261,6 +305,248 @@ async def synthetic_data_release(
         await flyte.io.File.from_local(merged_path),
         ARTIFACT_TASK_CORPUS,
         description=f"templates({len(template_records)}) + synthetic({len(records)}) "
+        f"via {teacher}, seed={seed}",
+    )
+
+
+@driver_env.task(timeout=flyte.Timeout(max_runtime=8 * 3600), produces_artifacts=True, report=True)
+async def archetype_data_release(
+    total_tasks: int = 100_000,
+    n_archetypes: int = 150,
+    calibration_k: int = 3,
+    teacher: str = "qwen38-27b",
+    merge_with_templates: bool = True,
+    profile_name: str = "smoke",
+    seed: int = 0,
+) -> flyte.io.File:
+    """Scale synthetic generation: archetypes × instantiation → 10⁵ tasks.
+
+    The teacher writes ~10² parameterized archetypes; the oracle calibrates
+    each at `calibration_k` parameter points (real pods, measured RSS/CPU);
+    a per-archetype fit labels sampled instantiations up to `total_tasks`.
+    Labels are measurement-anchored — `label_source` marks measured
+    (calibration rows) vs fitted (interpolated variants).
+
+    The report shows SUMMARY stats + head/tail of the archetype table only
+    (a 10⁵-row table in a report helps no one).
+    """
+    import asyncio
+    import random
+
+    import pandas as pd
+
+    candidates = llm_client.resolve_teacher_candidates(teacher)
+    base_url = candidates[0]
+    rng = random.Random(seed)
+
+    astatus: list[dict] = [
+        {"stage": "queued", "detail": "", "family": syn.FAMILY_HINTS[i % len(syn.FAMILY_HINTS)][0]}
+        for i in range(n_archetypes)
+    ]
+    counters = {"calib_done": 0, "calib_total": 0, "variants": 0}
+    rep = Reporter("Archetype data release", f"teacher={teacher} target={total_tasks:,}")
+    rep_lock = asyncio.Lock()
+    last_flush = {"t": 0.0}
+
+    async def render(phase: str, force: bool = False) -> None:
+        # Throttled: hundreds of concurrent state changes must not turn
+        # the report into a flush storm.
+        if not force and time.monotonic() - last_flush["t"] < 3.0:
+            return
+        async with rep_lock:
+            last_flush["t"] = time.monotonic()
+            rep.reset_body()
+            settled = sum(1 for s in astatus if s["stage"] in ("kept", "rejected"))
+            kept = sum(1 for s in astatus if s["stage"] == "kept")
+            rep.kv(
+                {
+                    "endpoint": base_url,
+                    "phase": phase,
+                    "archetypes kept / settled / total": f"{kept} / {settled} / {n_archetypes}",
+                    "calibration pods": f"{counters['calib_done']}/{counters['calib_total']}",
+                    "variants written": f"{counters['variants']:,}/{total_tasks:,}",
+                }
+            )
+            rep.progress(settled, n_archetypes, "archetypes")
+            if counters["calib_total"]:
+                rep.progress(counters["calib_done"], counters["calib_total"], "calibrations")
+            reasons: dict[str, int] = {}
+            for s in astatus:
+                if s["stage"] == "rejected":
+                    key = s["detail"].split(":")[0][:60]
+                    reasons[key] = reasons.get(key, 0) + 1
+            if reasons:
+                rep.h("Rejection reasons")
+                rep.table(
+                    ["reason", "count"],
+                    [[esc(k), esc(v)] for k, v in sorted(reasons.items(), key=lambda x: -x[1])[:8]],
+                )
+            rep.h("Archetypes (head / tail)")
+            shown = (
+                list(enumerate(astatus))[:4] + list(enumerate(astatus))[-4:]
+                if n_archetypes > 8
+                else list(enumerate(astatus))
+            )
+            colors = {"kept": GOOD, "rejected": "#F43B3E"}
+            rep.table(
+                ["#", "family", "stage", "detail"],
+                [
+                    [esc(i), esc(s["family"]), pill(s["stage"], colors.get(s["stage"], MUTED)),
+                     esc(s["detail"][:120])]
+                    for i, s in shown
+                ],
+            )
+            await rep.flush()
+
+    await render("waking teacher", force=True)
+    loop = asyncio.get_running_loop()
+
+    def on_status(s: str) -> None:
+        asyncio.run_coroutine_threadsafe(render(f"waking teacher — {s}", force=True), loop)
+
+    base_url = await asyncio.to_thread(
+        llm_client.wait_until_ready, candidates, 1800, 15, on_status
+    )
+
+    teacher_sem = asyncio.Semaphore(3)  # llama.cpp serializes anyway; keep a small queue
+    oracle_sem = asyncio.Semaphore(24)
+
+    async def build_archetype(idx: int) -> tuple[arch.Archetype, list[tuple[float, dict]], dict] | None:
+        family, hint = syn.FAMILY_HINTS[idx % len(syn.FAMILY_HINTS)]
+        prompt = arch.ARCHETYPE_PROMPT.format(
+            family_hint=hint, duration_s=60, allowed=", ".join(sorted(syn.ALLOWED_IMPORTS))
+        )
+        astatus[idx].update(stage="asking teacher")
+        await render("generating")
+        try:
+            async with teacher_sem:
+                text = await asyncio.to_thread(
+                    llm_client.chat, base_url, [{"role": "user", "content": prompt}], 6144
+                )
+            archetype = arch.parse_archetype_response(text)
+        except (syn.RejectedTask, llm_client.TeacherError) as e:
+            astatus[idx].update(stage="rejected", detail=f"pre-oracle: {e}")
+            await render("generating")
+            return None
+
+        astatus[idx].update(stage="calibrating", detail=archetype.description[:100])
+        counters["calib_total"] += calibration_k
+        await render("generating")
+        points: list[tuple[float, dict]] = []
+        stats: dict = {"cpu": [], "dur": []}
+
+        async def calibrate(point: dict) -> None:
+            code = arch.instantiate(archetype, point)
+            oracle = run_generated.override(
+                resources=flyte.Resources(cpu=4, memory="14Gi", disk="10Gi")
+            )
+            try:
+                async with oracle_sem:
+                    measured = await oracle(
+                        harness_code=code, task_id=f"arch-{seed}-{idx}-c{len(points)}"
+                    )
+            except Exception as e:  # noqa: BLE001 — pod died (likely footprint > 14Gi)
+                print(f"[arch {idx}] calibration pod failed: {e}")
+                return
+            finally:
+                counters["calib_done"] += 1
+            if syn.curate_measurement(measured) is None:
+                points.append((measured["peak_rss_mib"], point))
+                stats["cpu"].append(measured.get("cpu_avg_cores", 1.0))
+                stats["dur"].append(measured["duration_s"])
+
+        await asyncio.gather(*(calibrate(p) for p in arch.calibration_points(archetype, calibration_k)))
+        if len(points) < 2:
+            astatus[idx].update(
+                stage="rejected", detail=f"calibration: only {len(points)}/{calibration_k} valid"
+            )
+            await render("generating")
+            return None
+        astatus[idx].update(
+            stage="kept",
+            detail=f"{archetype.description[:80]} · {len(points)} pts "
+            f"{min(p[0] for p in points):.0f}–{max(p[0] for p in points):.0f}MiB",
+        )
+        await render("generating")
+        return archetype, points, {"family": family, "cpu": stats["cpu"], "dur": stats["dur"]}
+
+    built = await asyncio.gather(*(build_archetype(i) for i in range(n_archetypes)))
+    kept = [b for b in built if b]
+    await render(f"instantiating from {len(kept)} archetypes", force=True)
+    if not kept:
+        raise RuntimeError(f"0/{n_archetypes} archetypes survived; see report for reasons")
+
+    records: list[dict] = []
+    # Calibration rows first: measured labels, real instantiated code.
+    for ai, (archetype, points, meta) in enumerate(kept):
+        for pi, (peak, point) in enumerate(points):
+            records.append(
+                {
+                    "task_id": f"arch-{seed}-{ai}-cal{pi}",
+                    "family": meta["family"],
+                    "source_code": arch.instantiate(archetype, point),
+                    "harness_code": arch.instantiate(archetype, point),
+                    "input_profile": archetype.description,
+                    "params_json": json.dumps(
+                        {"archetype": ai, "label_source": "measured", **point}
+                    ),
+                    "true_peak_memory_mib": float(peak),
+                    "true_cpu_cores": max(1.0, round(sum(meta["cpu"]) / len(meta["cpu"]), 1)),
+                    "duration_s": int(sum(meta["dur"]) / len(meta["dur"])),
+                    "split": "train",
+                }
+            )
+    per = max((total_tasks - len(records)) // len(kept), 1)
+    for ai, (archetype, points, meta) in enumerate(kept):
+        fit = arch.FootprintFit(points)
+        cpu_label = max(1.0, round(sum(meta["cpu"]) / len(meta["cpu"]), 1))
+        dur_label = int(sum(meta["dur"]) / len(meta["dur"]))
+        for vi in range(per):
+            if len(records) >= total_tasks:
+                break
+            values = arch.sample_params(archetype, rng)
+            peak = fit.predict(values[archetype.memory_param], archetype.memory_param)
+            records.append(
+                {
+                    "task_id": f"arch-{seed}-{ai}-v{vi}",
+                    "family": meta["family"],
+                    "source_code": arch.instantiate(archetype, values),
+                    "harness_code": arch.instantiate(archetype, values),
+                    "input_profile": archetype.description,
+                    "params_json": json.dumps(
+                        {"archetype": ai, "label_source": "fitted", **values}
+                    ),
+                    "true_peak_memory_mib": float(min(max(peak, 96.0), 12288.0)),
+                    "true_cpu_cores": cpu_label,
+                    "duration_s": dur_label,
+                    "split": "train",
+                }
+            )
+        counters["variants"] = len(records)
+        await render("instantiating")
+
+    counters["variants"] = len(records)
+    await render(f"writing parquet ({len(records):,} rows)", force=True)
+    path = tempfile.mktemp(suffix=".parquet")
+    pd.DataFrame(records).to_parquet(path, index=False)
+    synthetic_file = await publish_synthetic_corpus(
+        corpus_file=await flyte.io.File.from_local(path), n=len(records), teacher=teacher
+    )
+    if not merge_with_templates:
+        await render("done", force=True)
+        return synthetic_file
+
+    profile = get_profile(profile_name)
+    template_records = build_corpus(profile.train_contexts, profile.eval_contexts, seed=seed)
+    merged_path = tempfile.mktemp(suffix=".parquet")
+    pd.concat([pd.DataFrame(template_records), pd.DataFrame(records)], ignore_index=True).to_parquet(
+        merged_path, index=False
+    )
+    await render("publishing merged corpus", force=True)
+    return publish(
+        await flyte.io.File.from_local(merged_path),
+        ARTIFACT_TASK_CORPUS,
+        description=f"templates({len(template_records)}) + archetypes({len(records)}) "
         f"via {teacher}, seed={seed}",
     )
 
