@@ -2,13 +2,29 @@
 
 import pytest
 
-from resource_tuner.shared.llm_client import TeacherError, _headers, resolve_teacher
+from resource_tuner.shared.llm_client import (
+    TeacherError,
+    _headers,
+    resolve_teacher,
+    resolve_teacher_candidates,
+)
 
 
 @pytest.fixture(autouse=True)
 def _no_ambient_env(monkeypatch):
     monkeypatch.delenv("LLM_SERVICE_API_KEY", raising=False)
     monkeypatch.delenv("RT_TEACHER_URL", raising=False)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+
+
+def test_in_cluster_prefers_svc_dns_with_public_fallback(monkeypatch):
+    """Task pods get 403 at the public app gateway regardless of bearer —
+    in-cluster must try svc DNS first, public+key second."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setenv("LLM_SERVICE_API_KEY", "sekrit")
+    urls = resolve_teacher_candidates("qwen38-27b")
+    assert urls[0].startswith("http://qwen38-27b.llm-service-development.svc")
+    assert urls[1].startswith("https://qwen38-27b-llm-service-development.apps")
 
 
 def test_keyless_resolution_uses_internal_service_dns():

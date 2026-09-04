@@ -121,7 +121,8 @@ async def synthetic_data_release(
 
     from ..environment.harness import run_generated
 
-    base_url = llm_client.resolve_teacher(teacher)
+    candidates = llm_client.resolve_teacher_candidates(teacher)
+    base_url = candidates[0]
     # Live per-candidate pipeline status; re-rendered on every state change.
     status: list[dict] = [
         {"stage": "queued", "detail": "", "family": ""} for _ in range(n_tasks)
@@ -152,7 +153,17 @@ async def synthetic_data_release(
             await rep.flush()
 
     await render("waking teacher (scale-from-zero can take 15+ min)")
-    await asyncio.to_thread(llm_client.wait_until_ready, base_url)
+    # Poll status streams into the report so a stuck wake is diagnosable
+    # from the console (learned from a run that sat at "waking teacher"
+    # with the actual per-poll HTTP statuses invisible).
+    loop = asyncio.get_running_loop()
+
+    def on_status(s: str) -> None:
+        asyncio.run_coroutine_threadsafe(render(f"waking teacher — {s}"), loop)
+
+    base_url = await asyncio.to_thread(
+        llm_client.wait_until_ready, candidates, 1800, 15, on_status
+    )
     await render("generating")
 
     import random
