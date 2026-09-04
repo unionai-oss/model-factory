@@ -47,7 +47,26 @@ generator for eval throughput.
 | [uzbmfshw9bdkx5wkqrkb](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/uzbmfshw9bdkx5wkqrkb) | grouped-oracle verification | ✅ oracle pods fold into flyte.group boxes |
 | [utgc7xtglxmrxpkbfdd5](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/utgc7xtglxmrxpkbfdd5) | A/B attempt 1 | ❌ bundler import-graph rule again (`tune` imported in-body) |
 | [uzcbdpjwcgx9jbvvqsmm](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/uzcbdpjwcgx9jbvvqsmm) | A/B: 12 tasks, prior 2Gi | ✅ ran — and the tuned arm LOST (OOM 0%→17%, waste 64%→83%): the service served the **newest** checkpoint, a 10-step smoke train, not the dev-scale one. Recency ≠ quality — the promotion-gate gap, observed live |
-| [u77jntkj2rxgvpk6c8kx](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/u77jntkj2rxgvpk6c8kx) | A/B rerun: 15 tasks, prior 1Gi, service now picks the **best-evaluated** checkpoint | (in flight) |
+| [u77jntkj2rxgvpk6c8kx](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/u77jntkj2rxgvpk6c8kx) | A/B rerun: 15 tasks, prior 1Gi | still smoke-served (dev eval predated `checkpoint_path` linkage) — waste 54%→84%, though 1 OOM prevented |
+| [urtf5kpc97bt889bp8c4](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/urtf5kpc97bt889bp8c4) | fresh dev-scale pipeline (150 composite steps) for linkage | train ✅; its eval showed **0% validity** — generator regression (below) |
+| [u86mtkp9kgn8bh445f68](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/u86mtkp9kgn8bh445f68) | standalone re-eval, batcher "fix" v1 | ❌ still 0% validity — `DynamicBatcher.start()` is a COROUTINE (annotation says `-> None`); un-awaited it's a silent no-op |
+| [uwsl8sfzl2d2j8x9vmpm](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/uwsl8sfzl2d2j8x9vmpm) | re-eval with `await batcher.start()` | ✅ generator path healthy: **validity 100%, fit 97% vs 62%, waste 51% vs 24%** — score 0.713 beats smoke's 0.430 |
+| [u642czmkg6cnspbn9tdp](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/u642czmkg6cnspbn9tdp) | **FINAL A/B**: 15 tasks, prior 1Gi, service serving the dev checkpoint | ✅ see below |
+
+## Final A/B result (real pods, dev checkpoint served)
+
+| metric | hard-coded prior (2 CPU / 1Gi) | tuned |
+|---|---|---|
+| OOM rate | 13% | **0%** |
+| fit rate | 87% | **100%** |
+| median overprovision | 54% | **47%** |
+
+Both prior OOMs **prevented** (`data_engineering-1520172038` at 3.8GiB
+peak, `ml_training-1357816123`); zero OOMs introduced. Honest caveat:
+tuned memory requests are still uniform (4Gi) — the dev policy is
+conservative-uniform on template tasks, so the waste win is modest;
+per-task differentiation is the next training frontier (longer runs /
+steeper waste weight / richer heldout).
 
 ## Findings
 
@@ -62,3 +81,14 @@ generator for eval throughput.
    a traced model loader would pickle gigabytes).
 3. The bundler import-graph rule caught its third victim (`tune`);
    the rule is now load-bearing enough to live in CLAUDE.md.
+4. **`DynamicBatcher.start()` must be awaited** — it's a coroutine whose
+   `-> None` annotation reads synchronous; un-awaited it no-ops and every
+   `submit()` raises "not running".
+5. **A DEGRADED fallback can mask total failure as a bad metric**: two
+   evals reported 0% validity while every generator action failed; the
+   run stayed green. Rule adopted: a green run with 0% validity is a red
+   flag, not a pass — check metric content, not just phases.
+6. Serve-best also needs the *linkage to exist*: the first serve-best
+   deploy still picked a smoke checkpoint because the dev eval predated
+   the `checkpoint_path` field. Selection, linkage, and metadata are one
+   system.
