@@ -19,5 +19,6 @@ from resource_tuner.training.stations import (  # noqa: F401
     build_task_corpus,
     probe_episodes,
     synthetic_data_release,
+    tune_ab_experiment,
     tuner_pipeline,
 )

@@ -78,7 +78,9 @@ def _records_to_dataset(records: list[dict]):
     return Dataset.from_list(rows)
 
 
-@flyte.trace
+# Deliberately NOT @flyte.trace'd: traced functions serialize inputs AND
+# outputs as literals, and this returns the model object — the span costs
+# a multi-GB pickle upload. Load timing is visible in the report instead.
 def _load_model(profile: TunerProfile):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -195,28 +197,15 @@ def _report_html(profile: TunerProfile, rows: list[dict], meta: dict | None = No
 
 
 @flyte.trace
-async def _save_checkpoint(trainer, tok, out_dir: str, profile: TunerProfile,
-                           history: list[dict], mean_rewards: list) -> "flyte.io.Dir":
-    """Write adapter + tokenizer + manifest and upload as a Dir (traced —
-    checkpoint writes are exactly where a crashed run wants a span)."""
-    trainer.model.save_pretrained(out_dir)
-    tok.save_pretrained(out_dir)
+async def _upload_checkpoint(out_dir: str, manifest: dict) -> "flyte.io.Dir":
+    """Write the manifest and upload the checkpoint dir (traced — the span
+    marks the write/upload). Traced functions serialize their INPUTS as
+    literals, so only plain data crosses this boundary: passing the
+    trainer object here pickled the accelerate-wrapped model and died with
+    PicklingError (hit for real on run ullwh6kd4s727k5jvm59).
+    """
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
-        json.dump(
-            {
-                "base_model": profile.base_model,
-                "profile": profile.name,
-                "reward_stage": profile.reward_stage,
-                "max_steps": profile.max_steps,
-                "final_metrics": {
-                    "mean_reward_first": mean_rewards[0] if mean_rewards else None,
-                    "mean_reward_last": mean_rewards[-1] if mean_rewards else None,
-                    "log_history": history,
-                },
-            },
-            f,
-            indent=2,
-        )
+        json.dump(manifest, f, indent=2)
     return await flyte.io.Dir.from_local(out_dir)
 
 
@@ -363,7 +352,22 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
         for row in trainer.state.log_history
     ]
     mean_rewards = [h["reward"] for h in history if "reward" in h]
-    ckpt = await _save_checkpoint(trainer, tok, out_dir, profile, history, mean_rewards)
+    # save_pretrained holds unpicklable objects — keep it OUTSIDE the
+    # traced boundary; only paths/dicts cross into the traced upload.
+    trainer.model.save_pretrained(out_dir)
+    tok.save_pretrained(out_dir)
+    manifest = {
+        "base_model": profile.base_model,
+        "profile": profile.name,
+        "reward_stage": profile.reward_stage,
+        "max_steps": profile.max_steps,
+        "final_metrics": {
+            "mean_reward_first": mean_rewards[0] if mean_rewards else None,
+            "mean_reward_last": mean_rewards[-1] if mean_rewards else None,
+            "log_history": history,
+        },
+    }
+    ckpt = await _upload_checkpoint(out_dir, manifest)
     return publish(
         ckpt,
         ARTIFACT_TUNER_CHECKPOINT,

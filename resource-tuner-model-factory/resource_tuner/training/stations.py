@@ -23,7 +23,13 @@ import flyte
 import flyte.io
 
 from ..config import get_profile
-from ..contracts import ARTIFACT_SYNTHETIC, ARTIFACT_TASK_CORPUS, publish
+from ..contracts import (
+    AB_REPORT_KEYS,
+    ARTIFACT_AB_REPORT,
+    ARTIFACT_SYNTHETIC,
+    ARTIFACT_TASK_CORPUS,
+    publish,
+)
 
 # Static imports on purpose: the code bundler walks the import graph from
 # the entrypoint, so a module imported only inside a task function is NOT
@@ -555,6 +561,154 @@ async def archetype_data_release(
         ARTIFACT_TASK_CORPUS,
         description=f"templates({len(template_records)}) + archetypes({len(records)}) "
         f"via {teacher}, seed={seed}",
+    )
+
+
+@driver_env.task(timeout=flyte.Timeout(max_runtime=2 * 3600), produces_artifacts=True, report=True)
+async def tune_ab_experiment(
+    n_tasks: int = 12,
+    prior_cpu: int = 2,
+    prior_memory: str = "2Gi",
+    seed: int = 23,
+) -> flyte.io.File:
+    """A/B on real pods: tune-service proposals vs a hard-coded prior.
+
+    The last-mile evidence the PRD's pricing depends on: for each held-out
+    task, run one episode with the one-size-fits-all prior (what authors
+    hard-code today) and one with the tuned proposal. Report OOM
+    prevention (prior OOMs the big tasks) and overprovisioning reduction
+    (prior wastes the small ones) — published as tuning-ab-report.
+    """
+    import asyncio
+    import statistics
+
+    import pandas as pd
+
+    from ..environment.episodes import run_cluster_episode
+    from ..policy.actions import validate_proposal
+    from ..rewards.rewards import overprovision_fraction
+    from ..tune import request_proposal, service_url
+    from ..taskgen.corpus import build_corpus
+
+    prior_kwargs = {"cpu": prior_cpu, "memory": prior_memory}
+    prior_proposal = validate_proposal(prior_kwargs)
+    records = [
+        r
+        for r in build_corpus(n_train=10, n_heldout=n_tasks, seed=seed)
+        if r["split"] == "heldout"
+    ][:n_tasks]
+
+    rep = Reporter("A/B: tuned vs hard-coded resources", f"prior={prior_kwargs}")
+    rep.p("Warming the tune service (scale-from-zero + checkpoint load)…")
+    await rep.flush()
+
+    # Warm the service; the first propose triggers the checkpoint load.
+    def warm() -> str:
+        deadline = time.monotonic() + 1500
+        last = ""
+        while time.monotonic() < deadline:
+            out = request_proposal("warmup", records[0]["source_code"],
+                                   records[0]["input_profile"], prior_kwargs)
+            if out is not None:
+                return "warm"
+            last = "waking"
+            time.sleep(20)
+        raise RuntimeError(f"tune service at {service_url()} never became ready ({last})")
+
+    await asyncio.to_thread(warm)
+
+    async def arm(record: dict, tuned: bool):
+        if not tuned:
+            return await run_cluster_episode(record, prior_proposal)
+        kwargs = await asyncio.to_thread(
+            request_proposal,
+            record["task_id"],
+            record["source_code"],
+            record["input_profile"],
+            prior_kwargs,
+        )
+        proposal = prior_proposal if kwargs is None else validate_proposal(kwargs)
+        ep = await run_cluster_episode(record, proposal)
+        return ep
+
+    rep.reset_body().p(
+        f"Running {n_tasks} tasks × 2 arms (prior vs tuned) on real pods…"
+    )
+    await rep.flush()
+    tuned_eps, prior_eps = await asyncio.gather(
+        asyncio.gather(*(arm(r, True) for r in records)),
+        asyncio.gather(*(arm(r, False) for r in records)),
+    )
+
+    def summarize(eps):
+        wastes = [
+            100
+            * (
+                overprovision_fraction(e.requested_memory_mib, e.peak_memory_mib)
+                + overprovision_fraction(e.requested_cpu, e.peak_cpu)
+            )
+            / 2
+            for e in eps
+            if e.ok
+        ]
+        n = len(eps) or 1
+        return {
+            "oom_rate": sum(1 for e in eps if e.oom) / n,
+            "fit_rate": sum(1 for e in eps if e.ok) / n,
+            "median_overprovision_pct": statistics.median(wastes) if wastes else None,
+        }
+
+    t, p = summarize(tuned_eps), summarize(prior_eps)
+    episodes = [
+        {
+            "task_id": r["task_id"],
+            "family": r["family"],
+            "analytic_peak_mib": round(r["true_peak_memory_mib"], 1),
+            "prior": {"requested_mib": pe.requested_memory_mib, "ok": pe.ok, "oom": pe.oom,
+                      "peak_rss_mib": round(pe.peak_memory_mib, 1)},
+            "tuned": {"requested_mib": te.requested_memory_mib, "ok": te.ok, "oom": te.oom,
+                      "peak_rss_mib": round(te.peak_memory_mib, 1)},
+        }
+        for r, te, pe in zip(records, tuned_eps, prior_eps)
+    ]
+    report = {
+        "n_tasks": n_tasks,
+        "prior": prior_kwargs,
+        "prior_oom_rate": p["oom_rate"],
+        "tuned_oom_rate": t["oom_rate"],
+        "prior_fit_rate": p["fit_rate"],
+        "tuned_fit_rate": t["fit_rate"],
+        "prior_median_overprovision_pct": p["median_overprovision_pct"],
+        "tuned_median_overprovision_pct": t["median_overprovision_pct"],
+        "episodes": episodes,
+    }
+    assert all(k in report for k in AB_REPORT_KEYS)
+
+    rep.reset_body()
+    rep.h("Result (real pods)")
+    rep.table(
+        ["metric", "hard-coded prior", "tuned"],
+        [
+            ["OOM rate", f"{p['oom_rate']:.0%}", f"{t['oom_rate']:.0%}"],
+            ["fit rate", f"{p['fit_rate']:.0%}", f"{t['fit_rate']:.0%}"],
+            [
+                "median overprovision",
+                "-" if p["median_overprovision_pct"] is None else f"{p['median_overprovision_pct']:.0f}%",
+                "-" if t["median_overprovision_pct"] is None else f"{t['median_overprovision_pct']:.0f}%",
+            ],
+        ],
+    )
+    await rep.flush()
+
+    path = tempfile.mktemp(suffix=".json")
+    with open(path, "w") as f:
+        json.dump(report, f, indent=2, default=str)
+    return publish(
+        await flyte.io.File.from_local(path),
+        ARTIFACT_AB_REPORT,
+        description=f"{n_tasks} tasks: OOM {p['oom_rate']:.0%}→{t['oom_rate']:.0%}, "
+        f"waste {p['median_overprovision_pct'] and round(p['median_overprovision_pct'])}%→"
+        f"{t['median_overprovision_pct'] and round(t['median_overprovision_pct'])}%",
     )
 
 

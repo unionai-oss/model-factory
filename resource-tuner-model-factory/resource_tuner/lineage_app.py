@@ -35,6 +35,7 @@ from flyte.app.extras import FastAPIAppEnvironment
 
 from .config import APP_DOMAIN, APP_PROJECT, cluster_env_vars, cpu_resources
 from .contracts import (
+    ARTIFACT_AB_REPORT,
     ARTIFACT_EVAL_REPORT,
     ARTIFACT_SYNTHETIC,
     ARTIFACT_TASK_CORPUS,
@@ -49,6 +50,7 @@ STATIONS: list[dict[str, str]] = [
     {"artifact": ARTIFACT_TASK_CORPUS, "label": "Task corpus", "team": "data"},
     {"artifact": ARTIFACT_TUNER_CHECKPOINT, "label": "Tuner checkpoint", "team": "training"},
     {"artifact": ARTIFACT_EVAL_REPORT, "label": "Eval report", "team": "eval"},
+    {"artifact": ARTIFACT_AB_REPORT, "label": "A/B tuning report", "team": "eval"},
 ]
 TEAMS: dict[str, str] = {"data": "Data", "training": "Training", "eval": "Evaluation"}
 CONTRACT_EDGES: list[tuple[str, str]] = [
@@ -304,6 +306,44 @@ async def _artifact_card(name: str, uri: str) -> dict:
                         ],
                     )
                 )
+        elif name == ARTIFACT_AB_REPORT:
+            ab = await _load_report(uri)
+            if "error" in ab:
+                raise RuntimeError(ab["error"])
+            card["sections"].append(
+                _table_section(
+                    "Tuned vs hard-coded prior (real pods)",
+                    ["metric", "prior", "tuned"],
+                    [
+                        ["OOM rate", f"{(ab.get('prior_oom_rate') or 0):.0%}",
+                         f"{(ab.get('tuned_oom_rate') or 0):.0%}"],
+                        ["fit rate", f"{(ab.get('prior_fit_rate') or 0):.0%}",
+                         f"{(ab.get('tuned_fit_rate') or 0):.0%}"],
+                        ["median overprovision",
+                         "-" if ab.get("prior_median_overprovision_pct") is None
+                         else f"{ab['prior_median_overprovision_pct']:.0f}%",
+                         "-" if ab.get("tuned_median_overprovision_pct") is None
+                         else f"{ab['tuned_median_overprovision_pct']:.0f}%"],
+                    ],
+                )
+            )
+            card["sections"].append(
+                _table_section(
+                    "Per-task episodes",
+                    ["task", "peak MiB", "prior req/outcome", "tuned req/outcome"],
+                    [
+                        [
+                            e.get("task_id"),
+                            e.get("analytic_peak_mib"),
+                            f"{e['prior']['requested_mib']} / "
+                            + ("oom" if e["prior"]["oom"] else ("ok" if e["prior"]["ok"] else "fail")),
+                            f"{e['tuned']['requested_mib']} / "
+                            + ("oom" if e["tuned"]["oom"] else ("ok" if e["tuned"]["ok"] else "fail")),
+                        ]
+                        for e in (ab.get("episodes") or [])[:16]
+                    ],
+                )
+            )
         else:
             card["sections"].append(_kv_section("Payload", {"uri": uri}))
     except Exception as e:  # noqa: BLE001 — a broken payload still gets a card
@@ -393,6 +433,12 @@ async def _collect() -> dict:
             {"run": v["source"], "created_at": v["created_at"], **metrics}
         )
     data["reports"].reverse()  # oldest → newest for the charts
+
+    ab_versions = versions_by_station.get(ARTIFACT_AB_REPORT, [])
+    if ab_versions:
+        ab = await _load_report(ab_versions[0]["url"])
+        if "error" not in ab:
+            data["ab_report"] = {"run": ab_versions[0]["source"], **ab}
 
     for station in STATIONS:
         data["stations"].append(
@@ -1075,6 +1121,38 @@ try {
       </svg>`;
   };
 
+  const TunePanel = ({ ab }) => {
+    if (!ab) return null;
+    const pct = (x) => (x == null ? "–" : Math.round(x * 100) + "%");
+    const raw = (x) => (x == null ? "–" : Math.round(x) + "%");
+    const better = (a, b) => (a != null && b != null && b <= a);
+    return html`
+      <section class="panel">
+        <h2>Tune service — measured impact vs hard-coded requests
+          <span class="side-count">${(ab.episodes || []).length} tasks</span>
+          <span class="spacer"></span>
+          <span class="team-chip">prior ${JSON.stringify(ab.prior)}</span></h2>
+        <div class="panel-body">
+          <table>
+            <thead><tr><th>metric</th><th>hard-coded prior</th><th>tuned</th><th></th></tr></thead>
+            <tbody>
+              <tr><td class="primary">OOM rate</td><td>${pct(ab.prior_oom_rate)}</td>
+                <td>${pct(ab.tuned_oom_rate)}</td>
+                <td>${better(ab.prior_oom_rate, ab.tuned_oom_rate)
+                  ? html`<span class="badge good">prevented</span>` : null}</td></tr>
+              <tr><td class="primary">fit rate</td><td>${pct(ab.prior_fit_rate)}</td>
+                <td>${pct(ab.tuned_fit_rate)}</td><td></td></tr>
+              <tr><td class="primary">median overprovision</td>
+                <td>${raw(ab.prior_median_overprovision_pct)}</td>
+                <td>${raw(ab.tuned_median_overprovision_pct)}</td>
+                <td>${better(ab.prior_median_overprovision_pct, ab.tuned_median_overprovision_pct)
+                  ? html`<span class="badge good">reduced</span>` : null}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>`;
+  };
+
   const EvalPanel = ({ reports }) => {
     const col = (k) => reports.map((r) => r[k]);
     return html`
@@ -1444,6 +1522,7 @@ try {
             <//>
           </div>
         </div>
+        <${TunePanel} ab=${data.ab_report} />
         <${EvalPanel} reports=${data.reports || []} />
         <div class="bottom">
           <${VersionsPanel} station=${station} rows=${versionRows} onCopy=${onCopy}
