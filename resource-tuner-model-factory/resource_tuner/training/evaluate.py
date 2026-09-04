@@ -26,6 +26,7 @@ from ..contracts import (
     publish,
 )
 from ..shared import assets
+from ..shared.reporting import GOOD, MUTED, Reporter, esc, ok_pill, pill
 from ..environment.episodes import run_cluster_episode
 from ..environment.metrics import harness_action_peaks, metrics_available
 from ..environment.simulator import simulate_episode
@@ -126,6 +127,7 @@ _eval_trigger = flyte.Trigger(
     triggers=[_eval_trigger],
     timeout=flyte.Timeout(max_runtime=2 * 3600),
     produces_artifacts=True,
+    report=True,
 )
 async def eval_tuner(
     checkpoint: flyte.io.Dir,
@@ -139,6 +141,10 @@ async def eval_tuner(
     import pandas as pd
 
     profile = get_profile(profile_name)
+    rep = Reporter("Checkpoint eval", f"profile={profile.name}")
+    rep.p("Resolving corpus + checkpoint…")
+    await rep.flush()
+
     if corpus is None:
         latest = await assets.latest_version(ARTIFACT_TASK_CORPUS)
         if latest is None:
@@ -152,6 +158,14 @@ async def eval_tuner(
     train_records = df[df["split"] == "train"].to_dict("records")
 
     ckpt_dir = await checkpoint.download()
+    rep.reset_body().kv(
+        {
+            "heldout contexts": len(heldout),
+            "train contexts (baseline fit)": len(train_records),
+            "checkpoint": getattr(checkpoint, "path", "")[-60:],
+        }
+    ).p("Generating greedy proposals with the trained adapter…")
+    await rep.flush()
     proposals = await asyncio.to_thread(_generate_proposals, heldout, ckpt_dir)
 
     valid = [(r, p) for r, p in zip(heldout, proposals) if p is not None]
@@ -162,6 +176,35 @@ async def eval_tuner(
     baseline_stats = _summarize(
         [(r, baseline_proposal(baselines, r["family"])) for r in heldout]
     )
+
+    rep.reset_body().kv({"schema validity": f"{schema_validity:.0%}"})
+    rep.h("Simulated scoring (policy vs baseline)")
+    rep.table(
+        ["metric", "policy", "baseline"],
+        [
+            [
+                esc("success rate"),
+                esc(f"{policy_stats['success_rate']:.0%}"),
+                esc(f"{baseline_stats['success_rate']:.0%}"),
+            ],
+            [
+                esc("median overprovision"),
+                esc(
+                    "-"
+                    if policy_stats["median_overprovision_pct"] is None
+                    else f"{policy_stats['median_overprovision_pct']:.0f}%"
+                ),
+                esc(
+                    "-"
+                    if baseline_stats["median_overprovision_pct"] is None
+                    else f"{baseline_stats['median_overprovision_pct']:.0f}%"
+                ),
+            ],
+        ],
+    )
+    if run_cluster_episodes and valid:
+        rep.p("Running real cluster episodes under the policy's proposals…")
+    await rep.flush()
 
     # Real episodes: the sim-to-real check. Fan out a small batch of
     # actual pods sized by the policy's proposals.
@@ -230,6 +273,44 @@ async def eval_tuner(
         "auto_gate_passed": gate,
     }
     assert all(k in report for k in EVAL_REPORT_KEYS)
+
+    # Final report: verdict + real-episode table + pod-metric availability.
+    rep.h("Verdict")
+    rep.raw(ok_pill(gate, "GATE PASS", "gate fail"))
+    real = [c for c in cluster if "task_id" in c and "error" not in c]
+    if real:
+        rep.h("Real episodes (sim-to-real)")
+        rep.table(
+            ["task", "requested MiB", "sim peak", "real RSS", "outcome"],
+            [
+                [
+                    esc(c["task_id"]),
+                    esc(c.get("requested_memory_mib", "-")),
+                    esc(f"{c.get('sim_peak_memory_mib', 0):.0f}"),
+                    esc(f"{c.get('real_peak_rss_mib', 0):.0f}"),
+                    pill("oom", "#e69812") if c.get("oom") else ok_pill(bool(c.get("ok")), "fit"),
+                ]
+                for c in real
+            ],
+        )
+    pod = next((c.get("pod_peaks") for c in cluster if "pod_peaks" in c), None)
+    rep.h("Pod metrics cross-check")
+    if pod:
+        rep.table(
+            ["action", "pod peak MiB", "pod peak CPU", "error"],
+            [
+                [
+                    esc(p.get("action_name", "-")),
+                    esc("-" if p.get("peak_memory_mib") is None else f"{p['peak_memory_mib']:.0f}"),
+                    esc("-" if p.get("peak_cpu") is None else f"{p['peak_cpu']:.2f}"),
+                    esc(p.get("error", "")[:80]),
+                ]
+                for p in pod
+            ],
+        )
+    else:
+        rep.p("pod metrics unavailable (plugin missing or no data)", color=MUTED)
+    await rep.flush()
 
     path = tempfile.mktemp(suffix=".json")
     with open(path, "w") as f:

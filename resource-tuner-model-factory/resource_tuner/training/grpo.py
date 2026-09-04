@@ -134,15 +134,24 @@ def _report_html(profile: TunerProfile, rows: list[dict]) -> str:
         for k, v in last.items()
         if isinstance(v, (int, float))
     )
-    return f"""
+    knobs = (
+        f"lr {profile.learning_rate} · group {profile.num_generations} · "
+        f"batch {profile.per_device_batch} · comp_len {profile.max_completion_length} · "
+        f"lora r{profile.lora_r}{' · qlora' if profile.use_qlora else ''}"
+    )
+    header = f"""
 <h2>resource-tuner GRPO — {profile.name} / {profile.base_model}</h2>
-<p>reward stage: <b>{profile.reward_stage}</b> · step {len(rewards)}/{profile.max_steps}
+<p>reward stage: <b>{profile.reward_stage}</b> · {knobs}</p>"""
+    if not rewards:
+        return header + "<p>model loading / waiting for the first logged step…</p>"
+    return f"""{header}
+<p>step {len(rewards)}/{profile.max_steps}
  · mean reward {rewards[-1]:.3f} (start {rewards[0]:.3f})</p>
 <svg viewBox="0 0 600 170" style="max-width:640px;border:1px solid #ccc">
   <polyline points="{points}" fill="none" stroke="#4a7dbd" stroke-width="2"/>
 </svg>
 <table border="1" cellpadding="4" style="border-collapse:collapse">{stats}</table>
-""" if rewards else "<p>waiting for the first logged step…</p>"
+"""
 
 
 # Dark-mode wiring: a new corpus version IS the request to train.
@@ -171,6 +180,10 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
     from trl import GRPOConfig, GRPOTrainer
 
     profile = get_profile(profile_name)
+    # Page up immediately: the model download/load takes minutes and the
+    # run page should say so rather than sit blank.
+    await flyte.report.replace.aio(_report_html(profile, []), do_flush=True)
+
     df = pd.read_parquet(await corpus.download())
     records = df[df["split"] == "train"].to_dict("records")[: profile.train_contexts]
     dataset = _records_to_dataset(records)
