@@ -36,12 +36,14 @@ CPU_TASK_MEMORY = os.environ.get("RT_CPU_MEMORY", "4Gi")
 # policy's proposal.
 HARNESS_TIMEOUT_S = int(os.environ.get("RT_HARNESS_TIMEOUT", "600"))
 
-# Secrets on the cluster (project-scoped, see basic-model-factory TODO.md).
+# Secrets on the cluster (project-scoped; all three exist in
+# resource-tuner-model-factory/development as of 2026-09-03).
 HF_TOKEN_SECRET = "HUGGINGFACE_TOKEN"
 WANDB_SECRET = "WANDB_API_KEY"
-# GitHub token secret used by the remote image builder to install the
-# private flyteplugins-union branch; see shared/images.py.
-GH_BUILD_TOKEN_SECRET = "RT_GH_BUILD_TOKEN"
+# API key for the llm-service teacher apps' PUBLIC endpoints (the OIDC
+# gateway accepts it as a bearer token). Mounted on the driver env
+# unconditionally — the synthetic station needs it.
+LLM_SERVICE_SECRET = "LLM_SERVICE_API_KEY"
 USE_SECRETS = os.environ.get("RT_USE_SECRETS", "0") == "1"
 
 WANDB_PROJECT = "resource-tuner-model-factory"

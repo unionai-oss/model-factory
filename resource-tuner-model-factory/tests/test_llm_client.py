@@ -1,16 +1,33 @@
-"""Teacher endpoint resolution."""
+"""Teacher endpoint resolution + auth headers."""
 
 import pytest
 
-from resource_tuner.shared.llm_client import TeacherError, resolve_teacher
+from resource_tuner.shared.llm_client import TeacherError, _headers, resolve_teacher
 
 
-def test_named_teachers_resolve_to_internal_service_dns():
-    # In-cluster callers must use svc DNS: the public app URL sits behind
-    # the OIDC gateway and answers pods with a login redirect.
+@pytest.fixture(autouse=True)
+def _no_ambient_env(monkeypatch):
+    monkeypatch.delenv("LLM_SERVICE_API_KEY", raising=False)
+    monkeypatch.delenv("RT_TEACHER_URL", raising=False)
+
+
+def test_keyless_resolution_uses_internal_service_dns():
+    # Without the API key, in-cluster svc DNS is the only reachable path
+    # (the public app URL is OIDC-gated).
     url = resolve_teacher("qwen38-27b")
     assert url == "http://qwen38-27b.llm-service-development.svc.cluster.local"
-    assert resolve_teacher("glm-5-2").startswith("http://glm-5-2.")
+
+
+def test_api_key_switches_to_public_endpoint_with_bearer(monkeypatch):
+    monkeypatch.setenv("LLM_SERVICE_API_KEY", "sekrit")
+    url = resolve_teacher("qwen38-27b")
+    assert url == "https://qwen38-27b-llm-service-development.apps.demo.hosted.unionai.cloud"
+    assert resolve_teacher("glm-5-2").startswith("https://glm-5-2-")
+    assert _headers()["Authorization"] == "Bearer sekrit"
+
+
+def test_no_key_means_no_auth_header():
+    assert "Authorization" not in _headers()
 
 
 def test_default_and_explicit_url_pass_through():
@@ -18,7 +35,8 @@ def test_default_and_explicit_url_pass_through():
     assert resolve_teacher("http://localhost:8080/") == "http://localhost:8080"
 
 
-def test_env_override_wins(monkeypatch):
+def test_env_override_wins_even_over_api_key(monkeypatch):
+    monkeypatch.setenv("LLM_SERVICE_API_KEY", "sekrit")
     monkeypatch.setenv("RT_TEACHER_URL", "http://tunnel:9999/")
     assert resolve_teacher("glm-5-2") == "http://tunnel:9999"
 

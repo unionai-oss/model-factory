@@ -74,25 +74,22 @@ Model is parameterized: `RT_MODEL=Qwen/Qwen3-0.6B` for plumbing tests,
 default `Qwen/Qwen3-1.7B`; Qwen3.5 rungs live in `MODEL_LADDER` behind
 upstream TRL support (see DESIGN.md §3).
 
-## Metrics plugin (optional, private repo)
+## Metrics plugin
 
-Pod-level utilization cross-checks use `flyteplugins-union` at branch
-[`niels/get-metrics`](https://github.com/unionai/flyteplugins-union/tree/niels/get-metrics)
-(private). Locally:
-
-```bash
-uv sync --extra metrics       # needs GitHub credentials for unionai/flyteplugins-union
-```
-
-For task images, deploy with `RT_WITH_METRICS=1 RT_GH_TOKEN=<token>` so the
-remote builder can install it (short-lived read-only token; it is visible
-in image pip metadata — prototype-grade wiring, see shared/images.py).
-Everything degrades gracefully to harness rusage when the plugin is absent.
+Pod-level utilization cross-checks use `flyteplugins-union>=0.10.0`
+(public on PyPI as of 2026-09-03; previously a private branch). It's a
+normal dependency — installed by `uv sync` and baked into the gpu/driver
+task images. Note: 0.10.0's PyPI metadata still caps `flyte<2.7.0`, so
+the project carries a uv `override-dependencies` and the images re-pin
+flyte after the plugin layer (see `shared/images.py`); drop both once a
+plugins release declares flyte 2.7 support. Episode scoring still
+degrades gracefully to harness rusage if pod metrics answer errors.
 
 ## Secrets
 
 | where | name | purpose |
 |---|---|---|
 | Flyte cluster (project-scoped) | `HUGGINGFACE_TOKEN`, `WANDB_API_KEY` | model pulls / W&B, attached with `RT_USE_SECRETS=1` |
-| GitHub Actions + local deploy-time env | `RT_GH_TOKEN` | private metrics plugin in image builds; CI sets `RT_WITH_METRICS=1` automatically when it is present |
 | GitHub Actions | `DEMO_HOSTED_FLYTE_API_KEY` | CI deploys (shared with basic-model-factory) |
+
+(`RT_GH_TOKEN` is no longer used — the repo secret can be deleted.)

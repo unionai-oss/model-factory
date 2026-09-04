@@ -23,7 +23,17 @@ import time
 import urllib.error
 import urllib.request
 
-TEACHERS: dict[str, str] = {
+# Public app endpoints, usable from anywhere WITH the LLM_SERVICE_API_KEY
+# bearer token (the gateway is OIDC-gated otherwise). Preferred: the
+# gateway wakes scale-to-zero apps reliably, and the svc DNS name
+# disappears entirely when the platform unassigns an idle app (observed
+# 2026-09-03: "Service marked for deletion" → NXDOMAIN).
+TEACHERS_PUBLIC: dict[str, str] = {
+    "qwen38-27b": "https://qwen38-27b-llm-service-development.apps.demo.hosted.unionai.cloud",
+    "glm-5-2": "https://glm-5-2-llm-service-development.apps.demo.hosted.unionai.cloud",
+}
+# In-cluster service DNS — the keyless fallback.
+TEACHERS_SVC: dict[str, str] = {
     "qwen38-27b": "http://qwen38-27b.llm-service-development.svc.cluster.local",
     "glm-5-2": "http://glm-5-2.llm-service-development.svc.cluster.local",
 }
@@ -34,23 +44,49 @@ class TeacherError(RuntimeError):
     pass
 
 
+def _api_key() -> str:
+    return os.environ.get("LLM_SERVICE_API_KEY", "")
+
+
 def resolve_teacher(name_or_url: str | None = None) -> str:
-    """Teacher name or URL → base URL. RT_TEACHER_URL overrides everything."""
+    """Teacher name or URL → base URL.
+
+    Precedence: RT_TEACHER_URL override → public endpoint when
+    LLM_SERVICE_API_KEY is present → in-cluster svc DNS.
+    """
     override = os.environ.get("RT_TEACHER_URL")
     if override:
         return override.rstrip("/")
     key = name_or_url or DEFAULT_TEACHER
     if key.startswith("http"):
         return key.rstrip("/")
+    table = TEACHERS_PUBLIC if _api_key() else TEACHERS_SVC
     try:
-        return TEACHERS[key]
+        return table[key]
     except KeyError:
-        raise TeacherError(f"unknown teacher {key!r}; choose from {sorted(TEACHERS)}")
+        raise TeacherError(f"unknown teacher {key!r}; choose from {sorted(table)}")
+
+
+def _headers() -> dict:
+    headers = {"Content-Type": "application/json"}
+    if _api_key():
+        headers["Authorization"] = f"Bearer {_api_key()}"
+    return headers
 
 
 def _get(url: str, timeout: float = 30) -> dict:
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        return json.loads(resp.read())
+    req = urllib.request.Request(url, headers=_headers())
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read()
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        # The auth gateway answers non-JSON (a signin redirect page) when
+        # the bearer token is missing/invalid — say so instead of looping.
+        raise TeacherError(
+            f"{url} answered non-JSON (auth redirect? bad LLM_SERVICE_API_KEY?): "
+            f"{body[:120]!r}"
+        )
 
 
 def wait_until_ready(base_url: str, deadline_s: float = 1800, poll_s: float = 15) -> None:
@@ -64,6 +100,8 @@ def wait_until_ready(base_url: str, deadline_s: float = 1800, poll_s: float = 15
         try:
             _get(f"{base_url}/v1/models", timeout=20)
             return
+        except TeacherError:
+            raise  # auth-shaped failure: polling will never fix it
         except Exception as e:  # noqa: BLE001 — cold start
             last = e
             time.sleep(poll_s)
@@ -100,10 +138,7 @@ def chat(
         }
     ).encode()
     req = urllib.request.Request(
-        f"{base_url}/v1/chat/completions",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        f"{base_url}/v1/chat/completions", data=body, headers=_headers(), method="POST"
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
