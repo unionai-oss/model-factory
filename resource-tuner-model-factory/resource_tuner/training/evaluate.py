@@ -103,7 +103,7 @@ def _summarize(pairs: list[tuple[dict, Proposal]]) -> dict:
 
 
 async def _generate_proposals(
-    records: list[dict], checkpoint_path: str
+    records: list[dict], checkpoint_path: str, invalid_examples: list[str] | None = None
 ) -> list[Proposal | None]:
     """Greedy proposals via the reusable generator env.
 
@@ -135,7 +135,12 @@ async def _generate_proposals(
         except Exception as e:  # noqa: BLE001 — one bad context ≠ failed eval
             print(f"[eval] generation failed for {record['task_id']}: {e}")
             return None
-        return try_extract_proposal(text)
+        proposal = try_extract_proposal(text)
+        if proposal is None and invalid_examples is not None and len(invalid_examples) < 10:
+            # Round-7 lesson: a validity drop with no visible completions
+            # is undebuggable — keep the receipts.
+            invalid_examples.append(f"{record['task_id']} [{record.get('family', '?')}]: {text[:220]}")
+        return proposal
 
     return list(await asyncio.gather(*(one(r) for r in records)))
 
@@ -196,7 +201,8 @@ async def eval_tuner(
         }
     ).p("Generating proposals via the reusable batched generator…")
     await rep.flush()
-    proposals = await _generate_proposals(heldout, ckpt_path)
+    invalid_examples: list[str] = []
+    proposals = await _generate_proposals(heldout, ckpt_path, invalid_examples)
 
     valid = [(r, p) for r, p in zip(heldout, proposals) if p is not None]
     policy_stats = _summarize(valid)
@@ -432,6 +438,7 @@ async def eval_tuner(
         "gpu_missing_count": policy_stats["gpu_missing_count"],
         "gpu_spurious_count": policy_stats["gpu_spurious_count"],
         "per_family": policy_stats["per_family"],
+        "invalid_completion_examples": invalid_examples,
         "cluster_episodes": [c for c in cluster if "task_id" in c],
         "cluster_episode_details": cluster,
         "auto_gate_passed": gate,
@@ -464,6 +471,10 @@ async def eval_tuner(
                 for c in real
             ],
         )
+    if invalid_examples:
+        rep.h("Invalid completions (first 10 — why validity is below 100%)")
+        for ex in invalid_examples:
+            rep.p(ex[:300], color=MUTED)  # Reporter.p escapes internally
     pod = next((c.get("pod_peaks") for c in cluster if "pod_peaks" in c), None)
     rep.h("Pod metrics cross-check")
     if pod:
