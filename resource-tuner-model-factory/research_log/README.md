@@ -22,6 +22,8 @@ Conventions:
 | 2026-09-02 | [design-and-scaffold](2026-09-02-design-and-scaffold.md) | Research + design phase; project scaffold, sim-first env, PR #6 |
 | 2026-09-03 | [round-1-smoke-experiments](2026-09-03-round-1-smoke-experiments.md) | First cluster runs: env works, thinking-budget + batch-divisibility + unschedulable-proposal bugs found and fixed; stage-A saturates |
 | 2026-09-03 | [round-2-dark-loop-and-teacher](2026-09-03-round-2-dark-loop-and-teacher.md) | Triggers live (dark runs), synthetic pipeline via qwen38-27b + execution oracle, dev-scale training moves waste 83%→47% |
+| 2026-09-03 | [round-3-flyte-2.7-metrics](2026-09-03-round-3-flyte-2.7-metrics.md) | flyte 2.7 + public metrics plugin; teacher auth via LLM_SERVICE_API_KEY; Cloudflare 1010 UA-ban diagnosed; per-task live reports |
+| 2026-09-04 | [round-4-archetype-100k](2026-09-04-round-4-archetype-100k.md) | 100k-pipeline corpus via teacher archetypes × oracle-calibrated instantiation; hash-salt reproducibility fix |
 
 ## Standing results (as of 2026-09-03)
 

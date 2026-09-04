@@ -29,6 +29,7 @@ from ..contracts import ARTIFACT_SYNTHETIC, ARTIFACT_TASK_CORPUS, publish
 # the entrypoint, so a module imported only inside a task function is NOT
 # bundled and the task dies with ImportError in the pod (hit for real with
 # llm_client). Both modules are stdlib-only, so importing them here is free.
+from ..environment.harness import run_generated
 from ..shared import llm_client
 from ..shared.reporting import GOOD, MUTED, Reporter, esc, ok_pill, pill
 from ..taskgen import archetypes as arch
