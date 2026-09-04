@@ -91,7 +91,15 @@ def resolve_teacher(name_or_url: str | None = None) -> str:
 
 
 def _headers() -> dict:
-    headers = {"Content-Type": "application/json"}
+    # The User-Agent is load-bearing: the public app endpoints sit behind
+    # Cloudflare, which bans python-urllib's default UA with 403 error 1010
+    # BEFORE auth is evaluated (proven by probe runs uvpm5vx2bhf2lvgc4n8t /
+    # umsxdmqzdtf9xbn8g7sc: same request 403s with default UA, 200s with a
+    # normal one — key valid in both).
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "resource-tuner-llm-client/0.1",
+    }
     if _api_key():
         headers["Authorization"] = f"Bearer {_api_key()}"
     return headers
