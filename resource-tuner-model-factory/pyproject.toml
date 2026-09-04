@@ -32,6 +32,7 @@ flyteplugins-union = { git = "https://github.com/unionai/flyteplugins-union.git"
 [dependency-groups]
 # The corpus templates import these; tests execute the templates for real.
 dev = [
+    "fastapi>=0.115",
     "numpy>=1.26",
     "scikit-learn>=1.5",
     "torch>=2.4",

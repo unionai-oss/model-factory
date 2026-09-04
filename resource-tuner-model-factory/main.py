@@ -14,4 +14,9 @@ from resource_tuner.environment.harness import harness_env, run_generated  # noq
 from resource_tuner.training.envs import driver_env, trainer_env  # noqa: F401
 from resource_tuner.training.evaluate import eval_tuner  # noqa: F401
 from resource_tuner.training.grpo import train_tuner  # noqa: F401
-from resource_tuner.training.stations import build_task_corpus, tuner_pipeline  # noqa: F401
+from resource_tuner.training.stations import (  # noqa: F401
+    build_task_corpus,
+    probe_episodes,
+    synthetic_data_release,
+    tuner_pipeline,
+)

@@ -18,7 +18,14 @@ import flyte
 import flyte.io
 
 from ..config import get_profile
-from ..contracts import ARTIFACT_EVAL_REPORT, EVAL_REPORT_KEYS, publish
+from ..contracts import (
+    ARTIFACT_EVAL_REPORT,
+    ARTIFACT_TASK_CORPUS,
+    ARTIFACT_TUNER_CHECKPOINT,
+    EVAL_REPORT_KEYS,
+    publish,
+)
+from ..shared import assets
 from ..environment.episodes import run_cluster_episode
 from ..environment.metrics import harness_action_peaks, metrics_available
 from ..environment.simulator import simulate_episode
@@ -78,11 +85,15 @@ def _generate_proposals(records: list[dict], ckpt_dir: str) -> list[Proposal | N
 
     proposals: list[Proposal | None] = []
     for record in records:
-        rendered = tok.apply_chat_template(
-            render_messages(record["source_code"], record["input_profile"]),
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        messages = render_messages(record["source_code"], record["input_profile"])
+        try:
+            rendered = tok.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            )
+        except TypeError:  # template without the thinking switch
+            rendered = tok.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
         inputs = tok(rendered, return_tensors="pt", truncation=True, max_length=4096).to(
             model.device
         )
@@ -98,10 +109,27 @@ def _generate_proposals(records: list[dict], ckpt_dir: str) -> list[Proposal | N
     return proposals
 
 
-@trainer_env.task(timeout=flyte.Timeout(max_runtime=2 * 3600), produces_artifacts=True)
+# Dark-mode wiring: a new checkpoint version IS the request to evaluate.
+# The trigger binds only the checkpoint; the eval resolves the latest
+# corpus artifact itself (trigger-shaped path, like basic-model-factory's
+# eval_and_promote with dataset=None).
+_eval_trigger = flyte.Trigger(
+    name="eval-on-new-checkpoint",
+    automation=flyte.OnArtifact(name=ARTIFACT_TUNER_CHECKPOINT),
+    inputs={"checkpoint": flyte.TriggeredArtifact},
+    description="New tuner-checkpoint version -> eval vs baseline",
+    auto_activate=False,
+)
+
+
+@trainer_env.task(
+    triggers=[_eval_trigger],
+    timeout=flyte.Timeout(max_runtime=2 * 3600),
+    produces_artifacts=True,
+)
 async def eval_tuner(
-    corpus: flyte.io.File,
     checkpoint: flyte.io.Dir,
+    corpus: flyte.io.File | None = None,
     profile_name: str = "smoke",
     run_cluster_episodes: bool = True,
 ) -> flyte.io.File:
@@ -111,6 +139,14 @@ async def eval_tuner(
     import pandas as pd
 
     profile = get_profile(profile_name)
+    if corpus is None:
+        latest = await assets.latest_version(ARTIFACT_TASK_CORPUS)
+        if latest is None:
+            raise RuntimeError(
+                f"no {ARTIFACT_TASK_CORPUS} artifact to evaluate against — "
+                "run build_task_corpus (or synthetic_data_release) first"
+            )
+        corpus = flyte.io.File.from_existing_remote(latest.path)
     df = pd.read_parquet(await corpus.download())
     heldout = df[df["split"] == "heldout"].to_dict("records")[: profile.eval_contexts]
     train_records = df[df["split"] == "train"].to_dict("records")
@@ -180,6 +216,9 @@ async def eval_tuner(
         base_model = json.load(f)["base_model"]
     report = {
         "base_model": base_model,
+        # Links this report to the checkpoint version it scored — the
+        # lineage app uses it to badge checkpoint cards with eval metrics.
+        "checkpoint_path": getattr(checkpoint, "path", "") or "",
         "n_contexts": len(heldout),
         "schema_validity": schema_validity,
         "success_rate": policy_stats["success_rate"],

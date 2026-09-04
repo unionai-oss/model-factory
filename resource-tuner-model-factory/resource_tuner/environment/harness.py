@@ -36,7 +36,13 @@ harness_env = flyte.TaskEnvironment(
 )
 
 
-@harness_env.task(retries=0, timeout=flyte.Timeout(max_runtime=HARNESS_TIMEOUT_S))
+# max_queued_time is load-bearing: an unschedulable pod (a proposal no node
+# satisfies) queues FOREVER otherwise — one such episode hung an eval for
+# 75+ minutes. Queue timeout turns "can't schedule" into a failed episode.
+@harness_env.task(
+    retries=0,
+    timeout=flyte.Timeout(max_runtime=HARNESS_TIMEOUT_S, max_queued_time=300),
+)
 async def run_generated(harness_code: str, task_id: str = "") -> dict:
     """Execute one generated workload and report what it actually used.
 
@@ -47,6 +53,7 @@ async def run_generated(harness_code: str, task_id: str = "") -> dict:
 
     namespace: dict = {}
     started = time.monotonic()
+    ru0 = resource.getrusage(resource.RUSAGE_SELF)
     try:
         exec(compile(harness_code, task_id or "<generated>", "exec"), namespace)
         result = namespace["run"]()
@@ -54,11 +61,16 @@ async def run_generated(harness_code: str, task_id: str = "") -> dict:
     except Exception as e:  # noqa: BLE001 — corpus bug, not an OOM
         result, ok, error = None, False, f"{type(e).__name__}: {e}"
     duration = time.monotonic() - started
-    peak_rss_mib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # linux: KiB
+    ru1 = resource.getrusage(resource.RUSAGE_SELF)
+    peak_rss_mib = ru1.ru_maxrss / 1024  # linux: KiB
+    # Sustained parallelism ≈ CPU-seconds / wall-seconds. This is the
+    # oracle's cpu label for synthetic tasks (rusage has no CPU peak).
+    cpu_s = (ru1.ru_utime - ru0.ru_utime) + (ru1.ru_stime - ru0.ru_stime)
     return {
         "ok": ok,
         "error": error,
         "peak_rss_mib": float(peak_rss_mib),
+        "cpu_avg_cores": float(cpu_s / duration) if duration > 0 else 0.0,
         "duration_s": float(duration),
         "result": result or {},
     }

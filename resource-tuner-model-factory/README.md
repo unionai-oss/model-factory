@@ -12,17 +12,29 @@ sim-first environment, reward curriculum, model choice rationale).
 ## The loop
 
 ```
-build_task_corpus ──► [tuning-task-corpus]      synthetic-but-realistic Flyte
-        │                                       tasks w/ analytic footprints
-        ▼
-train_tuner (GRPO + LoRA, T4) ──► [tuner-checkpoint]
-        │                         rewards from the SIMULATOR (cheap loop)
-        ▼
-eval_tuner ──► [tuner-eval-report]
-        │      policy vs rule-based baseline, held-out split
-        └────► REAL episodes: harness pods sized by the policy's proposals
-               (resources=.override(...)), rusage + pod metrics ground truth
+teacher LLM (qwen38-27b / glm-5-2      build_task_corpus (templates,
+on llm-service, in-cluster svc DNS)     analytic footprints)
+        │                                       │
+synthetic_data_release: generate ─► AST screen ─► EXECUTION ORACLE
+(harness pod measures real peak RSS + avg CPU — labels never come
+from the teacher)                               │
+        ▼                                       ▼
+[synthetic-task-corpus] ──── merge ────► [tuning-task-corpus]
+                                                │  OnArtifact trigger
+                                                ▼  (train-on-new-corpus)
+                    train_tuner (GRPO + LoRA, T4) ──► [tuner-checkpoint]
+                            rewards from the SIMULATOR  │  OnArtifact trigger
+                                                        ▼  (eval-on-new-checkpoint)
+                    eval_tuner ──► [tuner-eval-report] ──► rt-lineage app
+                        │     policy vs rule-based baseline  (aggregate charts
+                        └───► REAL episodes: harness pods     across checkpoints)
+                              sized by the policy's proposals
 ```
+
+Both triggers deploy `auto_activate=False`; activate them (console or
+`flyte trigger activate`) and publishing a corpus IS the request to train,
+a checkpoint IS the request to evaluate. A trigger keeps firing the task
+version it was deployed with — re-deploy after fixes dark mode should see.
 
 ## Quickstart
 
@@ -31,11 +43,26 @@ uv sync                       # unit tests only
 uv run pytest
 
 CFG=.flyte/config.yaml        # demo.hosted, project resource-tuner-model-factory
-uv run flyte --config $CFG deploy main.py driver_env
+uv run flyte --config $CFG deploy main.py driver_env       # stations + triggers
+uv run flyte --config $CFG deploy app.py lineage_app_env   # dashboard
 
 # E2E smoke: corpus -> 10 GRPO steps on a T4 -> eval incl. real episodes
 uv run flyte --config $CFG run main.py tuner_pipeline --profile_name smoke
+
+# teacher-generated corpus (wakes the 27B llama.cpp app from zero; the
+# merged corpus fires train-on-new-corpus when triggers are active)
+uv run flyte --config $CFG run main.py synthetic_data_release --n_tasks 10
 ```
+
+## Teachers (synthetic data)
+
+`llm-service` project apps, llama.cpp with OpenAI-compatible `/v1`:
+`qwen38-27b` (default — cheapest, single L40S) and `glm-5-2`. In-cluster
+tasks reach them via internal service DNS (the public app URL sits behind
+OIDC and answers pods with a login redirect); locally set `RT_TEACHER_URL`.
+The teacher only writes code — footprint labels always come from the
+execution oracle, because a teacher's guess about resource needs is
+exactly the bias this factory exists to remove.
 
 Profiles (`resource_tuner/config.py`): `smoke` (64 contexts, 10 steps,
 stage-A reward — proves reward goes up), `dev` (512 contexts, 150 steps,
