@@ -33,7 +33,7 @@ from fastapi.responses import JSONResponse
 from flyte.app.extras import FastAPIAppEnvironment
 
 from .config import APP_DOMAIN, APP_PROJECT, TRAIN_GPU, cluster_env_vars
-from .contracts import ARTIFACT_TUNER_CHECKPOINT
+from .contracts import ARTIFACT_EVAL_REPORT, ARTIFACT_TUNER_CHECKPOINT
 from .environment.episodes import clamp_for_execution
 from .policy.actions import InvalidProposal, validate_proposal
 from .policy.parsing import try_extract_proposal
@@ -56,12 +56,49 @@ def _digest(source_code: str, input_profile: str) -> str:
     return hashlib.sha256(f"{source_code}\n{input_profile}".encode()).hexdigest()[:16]
 
 
-async def _load_latest() -> str:
-    """Load the newest tuner-checkpoint; returns its path."""
-    latest = await assets.latest_version(ARTIFACT_TUNER_CHECKPOINT)
-    if latest is None:
+async def _pick_checkpoint() -> str:
+    """Best evaluated checkpoint, not the newest.
+
+    Serving "latest" shipped a regression on the first A/B (a 10-step
+    smoke checkpoint outranked the dev-scale one purely by recency and
+    lost to the hard-coded prior). This is the promotion gate in
+    miniature: score every checkpoint by its linked eval report
+    (fit first, then low waste) and serve the winner; fall back to
+    newest only when no reports link.
+    """
+    ckpts = await assets.list_versions(ARTIFACT_TUNER_CHECKPOINT, limit=50)
+    if not ckpts:
         raise RuntimeError("no tuner-checkpoint artifact exists yet")
-    local = await flyte.io.Dir.from_existing_remote(latest.path).download()
+    reports = await assets.list_versions(ARTIFACT_EVAL_REPORT, limit=50)
+    scored: list[tuple[float, str]] = []
+    for rv in reports:
+        try:
+            local = await flyte.io.File.from_existing_remote(rv.path).download()
+            with open(local) as f:
+                rep = json.load(f)
+        except Exception:  # noqa: BLE001 — skip unreadable reports
+            continue
+        ckpt = rep.get("checkpoint_path")
+        if not ckpt or not any(c.path == ckpt for c in ckpts):
+            continue
+        fit = rep.get("success_rate") or 0.0
+        waste = rep.get("median_overprovision_pct")
+        waste = 100.0 if waste is None else waste
+        validity = rep.get("schema_validity") or 0.0
+        scored.append((validity * (fit - waste / 200.0), ckpt))
+    if scored:
+        scored.sort(reverse=True)
+        best = scored[0][1]
+        print(f"[tune] serving best-evaluated checkpoint (score {scored[0][0]:.3f}): {best}")
+        return best
+    print("[tune] no eval-linked checkpoints; serving newest")
+    return ckpts[0].path
+
+
+async def _load_latest() -> str:
+    """Load the best evaluated tuner-checkpoint; returns its path."""
+    path = await _pick_checkpoint()
+    local = await flyte.io.Dir.from_existing_remote(path).download()
     with open(f"{local}/manifest.json") as f:
         base_model = json.load(f)["base_model"]
 
@@ -84,9 +121,9 @@ async def _load_latest() -> str:
         return model, tok
 
     model, tok = await asyncio.to_thread(load)
-    _state.update(model=model, tok=tok, checkpoint_path=latest.path)
+    _state.update(model=model, tok=tok, checkpoint_path=path)
     _proposal_cache.clear()  # new policy, new proposals
-    return latest.path
+    return path
 
 
 async def _ensure_loaded() -> None:
