@@ -26,15 +26,15 @@ from ..contracts import (
     publish,
 )
 from ..shared import assets
+from ..shared.reporting import GOOD, MUTED, Reporter, esc, ok_pill, pill
 from ..environment.episodes import run_cluster_episode
 from ..environment.metrics import harness_action_peaks, metrics_available
 from ..environment.simulator import simulate_episode
 from ..policy.actions import Proposal
 from ..policy.parsing import try_extract_proposal
-from ..policy.prompts import render_messages
 from ..rewards.rewards import overprovision_fraction
 from ..training.baseline import baseline_proposal, fit_family_baseline
-from .envs import trainer_env
+from .envs import driver_env
 
 
 def _summarize(pairs: list[tuple[dict, Proposal]]) -> dict:
@@ -63,50 +63,40 @@ def _summarize(pairs: list[tuple[dict, Proposal]]) -> dict:
     }
 
 
-def _generate_proposals(records: list[dict], ckpt_dir: str) -> list[Proposal | None]:
-    """Greedy one-shot proposals from the trained adapter."""
-    import torch
-    from peft import PeftModel
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+async def _generate_proposals(
+    records: list[dict], checkpoint_path: str
+) -> list[Proposal | None]:
+    """Greedy proposals via the reusable generator env.
 
-    with open(f"{ckpt_dir}/manifest.json") as f:
-        base_model = json.load(f)["base_model"]
-    bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    tok = AutoTokenizer.from_pretrained(ckpt_dir, padding_side="left")
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        dtype=torch.bfloat16 if bf16 else torch.float16,
-        device_map="auto",
-        attn_implementation="eager",
-        trust_remote_code=True,
-    )
-    model = PeftModel.from_pretrained(model, ckpt_dir)
-    model.eval()
+    One `generate_proposal` child call per context — warm replicas batch
+    them dynamically (see training/generator.py), so the fan-out costs one
+    model load per replica instead of per eval, and generation runs in
+    batched `model.generate` calls. Per-record failures (including a
+    generator OOM) degrade to an invalid proposal rather than failing the
+    eval: a missing proposal is exactly what schema_validity measures.
+    """
+    import asyncio
 
-    proposals: list[Proposal | None] = []
-    for record in records:
-        messages = render_messages(record["source_code"], record["input_profile"])
+    import flyte.errors
+
+    from .generator import generate_proposal
+
+    async def one(record: dict) -> Proposal | None:
         try:
-            rendered = tok.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            text = await generate_proposal(
+                checkpoint_path=checkpoint_path,
+                source_code=record["source_code"],
+                input_profile=record["input_profile"],
             )
-        except TypeError:  # template without the thinking switch
-            rendered = tok.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-        inputs = tok(rendered, return_tensors="pt", truncation=True, max_length=4096).to(
-            model.device
-        )
-        with torch.no_grad():
-            out = model.generate(
-                **inputs,
-                max_new_tokens=128,
-                do_sample=False,
-                pad_token_id=tok.pad_token_id or tok.eos_token_id,
-            )
-        text = tok.decode(out[0, inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-        proposals.append(try_extract_proposal(text))
-    return proposals
+        except flyte.errors.OOMError as e:
+            print(f"[eval] generator OOM for {record['task_id']}: {e}")
+            return None
+        except Exception as e:  # noqa: BLE001 — one bad context ≠ failed eval
+            print(f"[eval] generation failed for {record['task_id']}: {e}")
+            return None
+        return try_extract_proposal(text)
+
+    return list(await asyncio.gather(*(one(r) for r in records)))
 
 
 # Dark-mode wiring: a new checkpoint version IS the request to evaluate.
@@ -122,10 +112,11 @@ _eval_trigger = flyte.Trigger(
 )
 
 
-@trainer_env.task(
+@driver_env.task(
     triggers=[_eval_trigger],
     timeout=flyte.Timeout(max_runtime=2 * 3600),
     produces_artifacts=True,
+    report=True,
 )
 async def eval_tuner(
     checkpoint: flyte.io.Dir,
@@ -139,6 +130,10 @@ async def eval_tuner(
     import pandas as pd
 
     profile = get_profile(profile_name)
+    rep = Reporter("Checkpoint eval", f"profile={profile.name}")
+    rep.p("Resolving corpus + checkpoint…")
+    await rep.flush()
+
     if corpus is None:
         latest = await assets.latest_version(ARTIFACT_TASK_CORPUS)
         if latest is None:
@@ -151,8 +146,16 @@ async def eval_tuner(
     heldout = df[df["split"] == "heldout"].to_dict("records")[: profile.eval_contexts]
     train_records = df[df["split"] == "train"].to_dict("records")
 
-    ckpt_dir = await checkpoint.download()
-    proposals = await asyncio.to_thread(_generate_proposals, heldout, ckpt_dir)
+    ckpt_path = getattr(checkpoint, "path", "") or ""
+    rep.reset_body().kv(
+        {
+            "heldout contexts": len(heldout),
+            "train contexts (baseline fit)": len(train_records),
+            "checkpoint": ckpt_path[-60:],
+        }
+    ).p("Generating proposals via the reusable batched generator…")
+    await rep.flush()
+    proposals = await _generate_proposals(heldout, ckpt_path)
 
     valid = [(r, p) for r, p in zip(heldout, proposals) if p is not None]
     policy_stats = _summarize(valid)
@@ -162,6 +165,35 @@ async def eval_tuner(
     baseline_stats = _summarize(
         [(r, baseline_proposal(baselines, r["family"])) for r in heldout]
     )
+
+    rep.reset_body().kv({"schema validity": f"{schema_validity:.0%}"})
+    rep.h("Simulated scoring (policy vs baseline)")
+    rep.table(
+        ["metric", "policy", "baseline"],
+        [
+            [
+                esc("success rate"),
+                esc(f"{policy_stats['success_rate']:.0%}"),
+                esc(f"{baseline_stats['success_rate']:.0%}"),
+            ],
+            [
+                esc("median overprovision"),
+                esc(
+                    "-"
+                    if policy_stats["median_overprovision_pct"] is None
+                    else f"{policy_stats['median_overprovision_pct']:.0f}%"
+                ),
+                esc(
+                    "-"
+                    if baseline_stats["median_overprovision_pct"] is None
+                    else f"{baseline_stats['median_overprovision_pct']:.0f}%"
+                ),
+            ],
+        ],
+    )
+    if run_cluster_episodes and valid:
+        rep.p("Running real cluster episodes under the policy's proposals…")
+    await rep.flush()
 
     # Real episodes: the sim-to-real check. Fan out a small batch of
     # actual pods sized by the policy's proposals.
@@ -212,6 +244,7 @@ async def eval_tuner(
         )
     )
 
+    ckpt_dir = await checkpoint.download()
     with open(f"{ckpt_dir}/manifest.json") as f:
         base_model = json.load(f)["base_model"]
     report = {
@@ -230,6 +263,44 @@ async def eval_tuner(
         "auto_gate_passed": gate,
     }
     assert all(k in report for k in EVAL_REPORT_KEYS)
+
+    # Final report: verdict + real-episode table + pod-metric availability.
+    rep.h("Verdict")
+    rep.raw(ok_pill(gate, "GATE PASS", "gate fail"))
+    real = [c for c in cluster if "task_id" in c and "error" not in c]
+    if real:
+        rep.h("Real episodes (sim-to-real)")
+        rep.table(
+            ["task", "requested MiB", "sim peak", "real RSS", "outcome"],
+            [
+                [
+                    esc(c["task_id"]),
+                    esc(c.get("requested_memory_mib", "-")),
+                    esc(f"{c.get('sim_peak_memory_mib', 0):.0f}"),
+                    esc(f"{c.get('real_peak_rss_mib', 0):.0f}"),
+                    pill("oom", "#e69812") if c.get("oom") else ok_pill(bool(c.get("ok")), "fit"),
+                ]
+                for c in real
+            ],
+        )
+    pod = next((c.get("pod_peaks") for c in cluster if "pod_peaks" in c), None)
+    rep.h("Pod metrics cross-check")
+    if pod:
+        rep.table(
+            ["action", "pod peak MiB", "pod peak CPU", "error"],
+            [
+                [
+                    esc(p.get("action_name", "-")),
+                    esc("-" if p.get("peak_memory_mib") is None else f"{p['peak_memory_mib']:.0f}"),
+                    esc("-" if p.get("peak_cpu") is None else f"{p['peak_cpu']:.2f}"),
+                    esc(p.get("error", "")[:80]),
+                ]
+                for p in pod
+            ],
+        )
+    else:
+        rep.p("pod metrics unavailable (plugin missing or no data)", color=MUTED)
+    await rep.flush()
 
     path = tempfile.mktemp(suffix=".json")
     with open(path, "w") as f:

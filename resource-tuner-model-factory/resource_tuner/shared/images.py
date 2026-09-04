@@ -4,8 +4,8 @@ Three images because the workloads differ by an order of magnitude:
 - harness: CPU-only, must import everything the CORPUS templates import
   (numpy/pandas/sklearn/torch-cpu). Kept lean — episode pods are the
   experiment, and image pull time pads every episode.
-- gpu: the trainer stack (TRL/peft/bitsandbytes).
-- driver: CPU orchestration + optionally the private metrics plugin.
+- gpu: the trainer stack (TRL/peft/bitsandbytes) + the metrics plugin.
+- driver: CPU orchestration + the metrics plugin.
 
 `with_pip_packages` everywhere; `.with_requirements()` stores a relative
 path that breaks under the remote builder.
@@ -13,30 +13,18 @@ path that breaks under the remote builder.
 
 from __future__ import annotations
 
-import os
-
 import flyte
 
-from ..config import GH_BUILD_TOKEN_SECRET, HF_TOKEN_SECRET, USE_SECRETS, WANDB_SECRET
+from ..config import HF_TOKEN_SECRET, USE_SECRETS, WANDB_SECRET
 
 PYTHON = (3, 12)
 
-# The metrics plugin lives in a PRIVATE repo (unionai/flyteplugins-union,
-# branch niels/get-metrics). The remote image builder can only fetch it with
-# a token. RT_GH_TOKEN is read at BUNDLE time on the deploy machine; note
-# the token is visible in the image's pip metadata, so use a short-lived,
-# read-only fine-grained token scoped to that one repo (prototype-grade
-# wiring; production would mount a build secret named
-# RT_GH_BUILD_TOKEN — see config.GH_BUILD_TOKEN_SECRET).
-METRICS_PLUGIN_REF = "github.com/unionai/flyteplugins-union.git@niels/get-metrics"
-
-
-def _metrics_plugin_spec() -> str | None:
-    if os.environ.get("RT_WITH_METRICS", "0") != "1":
-        return None
-    token = os.environ.get("RT_GH_TOKEN", "")
-    auth = f"x-access-token:{token}@" if token else ""
-    return f"flyteplugins-union @ git+https://{auth}{METRICS_PLUGIN_REF}"
+# flyteplugins-union is public as of 0.10.0 (Metrics interface). Its PyPI
+# metadata still caps flyte<2.7.0, so pip may downgrade flyte when it
+# installs; the re-pin layer after it restores flyte 2.7.x deterministically.
+# Collapse to one plain layer once a plugins release declares 2.7 support.
+_METRICS_LAYER = ("flyteplugins-union>=0.10.0",)
+_FLYTE_REPIN_LAYER = ("flyte>=2.7.0,<2.8.0",)
 
 
 def secrets() -> list[flyte.Secret]:
@@ -70,13 +58,13 @@ gpu_image = (
         "pyarrow>=17",
         "wandb>=0.28",
     )
+    .with_pip_packages(*_METRICS_LAYER)
+    .with_pip_packages(*_FLYTE_REPIN_LAYER)
 )
 
-driver_image = flyte.Image.from_debian_base(name="rt-driver", python_version=PYTHON).with_pip_packages(
-    "pandas>=2.2", "pyarrow>=17"
+driver_image = (
+    flyte.Image.from_debian_base(name="rt-driver", python_version=PYTHON)
+    .with_pip_packages("pandas>=2.2", "pyarrow>=17")
+    .with_pip_packages(*_METRICS_LAYER)
+    .with_pip_packages(*_FLYTE_REPIN_LAYER)
 )
-
-_spec = _metrics_plugin_spec()
-if _spec:
-    gpu_image = gpu_image.with_pip_packages(_spec)
-    driver_image = driver_image.with_pip_packages(_spec)

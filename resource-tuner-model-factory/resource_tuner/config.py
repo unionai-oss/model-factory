@@ -29,20 +29,25 @@ TRAIN_MEMORY = os.environ.get("RT_TRAIN_MEMORY", "10Gi")
 TRAIN_DISK = os.environ.get("RT_TRAIN_DISK", "50Gi")
 
 CPU_TASK_CPU = int(os.environ.get("RT_CPU", "2"))
-CPU_TASK_MEMORY = os.environ.get("RT_CPU_MEMORY", "4Gi")
+# 8Gi: the archetype release materializes a ~10^5-row corpus in pandas.
+CPU_TASK_MEMORY = os.environ.get("RT_CPU_MEMORY", "8Gi")
 
 # The episode harness env: the resource request is the WHOLE experiment, so
 # these are only the env defaults — every episode overrides them with the
 # policy's proposal.
 HARNESS_TIMEOUT_S = int(os.environ.get("RT_HARNESS_TIMEOUT", "600"))
 
-# Secrets on the cluster (project-scoped, see basic-model-factory TODO.md).
+# Secrets on the cluster (project-scoped; all three exist in
+# resource-tuner-model-factory/development as of 2026-09-03).
 HF_TOKEN_SECRET = "HUGGINGFACE_TOKEN"
 WANDB_SECRET = "WANDB_API_KEY"
-# GitHub token secret used by the remote image builder to install the
-# private flyteplugins-union branch; see shared/images.py.
-GH_BUILD_TOKEN_SECRET = "RT_GH_BUILD_TOKEN"
-USE_SECRETS = os.environ.get("RT_USE_SECRETS", "0") == "1"
+# API key for the llm-service teacher apps' PUBLIC endpoints (the OIDC
+# gateway accepts it as a bearer token). Mounted on the driver env
+# unconditionally — the synthetic station needs it.
+LLM_SERVICE_SECRET = "LLM_SERVICE_API_KEY"
+# Default ON: all three secrets exist in this project; RT_USE_SECRETS=0
+# remains the escape hatch for tenants without them.
+USE_SECRETS = os.environ.get("RT_USE_SECRETS", "1") == "1"
 
 WANDB_PROJECT = "resource-tuner-model-factory"
 

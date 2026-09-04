@@ -12,6 +12,20 @@ ARTIFACT_SYNTHETIC = "synthetic-task-corpus"  # oracle-verified teacher tasks
 ARTIFACT_TUNER_CHECKPOINT = "tuner-checkpoint"
 ARTIFACT_EVAL_REPORT = "tuner-eval-report"
 ARTIFACT_PROMOTED = "promoted-tuner"
+# A/B attribution: tuned proposals vs a hard-coded prior on real pods —
+# the PRD's auditable savings record, prototype-sized. JSON File.
+ARTIFACT_AB_REPORT = "tuning-ab-report"
+AB_REPORT_KEYS = [
+    "n_tasks",
+    "prior",
+    "prior_oom_rate",
+    "tuned_oom_rate",
+    "prior_fit_rate",
+    "tuned_fit_rate",
+    "prior_median_overprovision_pct",
+    "tuned_median_overprovision_pct",
+    "episodes",
+]
 
 # tuning-task-corpus: parquet File with exactly these columns.
 CORPUS_COLUMNS = [

@@ -333,9 +333,15 @@ FAMILIES: dict[str, Family] = {
 
 
 def generate_task(family: str, seed: int) -> GeneratedTask:
-    """Deterministically sample one task from a family."""
+    """Deterministically sample one task from a family.
+
+    zlib.crc32, not hash(): str hashing is salted per process, which made
+    "the same corpus" differ between runs (and made a test flake ~1 in 20).
+    """
+    import zlib
+
     fam = FAMILIES[family]
-    rng = Random((hash(family) & 0xFFFF_FFFF) ^ seed)
+    rng = Random(zlib.crc32(family.encode()) ^ seed)
     params = fam.sample(rng)
     peak_mib, cpu = fam.footprint(params)
     return GeneratedTask(

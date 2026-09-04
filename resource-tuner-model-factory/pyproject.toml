@@ -3,14 +3,16 @@ name = "resource-tuner-model-factory"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "flyte>=2.6.7,<2.7.0",
+    "flyte>=2.7.0,<2.8.0",
+    # Public as of 0.10.0 (previously the private niels/get-metrics
+    # branch) — ships the Metrics interface (flyteplugins.union.remote).
+    "flyteplugins-union>=0.10.0",
     "pandas>=2.2",
     "pyarrow>=17",
     "pytest>=8",
 ]
 
 # The trainer/eval stacks are installed in their task images, not locally.
-# Local extras exist for running bits of the loop on your machine.
 [project.optional-dependencies]
 train = [
     "torch>=2.4",
@@ -20,14 +22,6 @@ train = [
     "datasets>=3.2",
     "accelerate>=0.34",
 ]
-# flyteplugins-union is PRIVATE (unionai/flyteplugins-union@niels/get-metrics);
-# installing this extra needs GitHub credentials with access to that repo.
-metrics = [
-    "flyteplugins-union",
-]
-
-[tool.uv.sources]
-flyteplugins-union = { git = "https://github.com/unionai/flyteplugins-union.git", branch = "niels/get-metrics" }
 
 [dependency-groups]
 # The corpus templates import these; tests execute the templates for real.
@@ -38,9 +32,13 @@ dev = [
     "torch>=2.4",
 ]
 
+[tool.uv]
+package = false
+# flyteplugins-union 0.10.0 still declares flyte<2.7.0 on PyPI; per the
+# 2026-09-03 release both are meant to pair, so relax the stale cap here.
+# Drop this override once a plugins release declares flyte 2.7 support.
+override-dependencies = ["flyte>=2.7.0,<2.8.0"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-
-[tool.uv]
-package = false
