@@ -35,6 +35,8 @@ CORPUS_COLUMNS = [
     "harness_code",  # the same workload as a plain function, for episode pods
     "input_profile",  # human-readable input description shown to the policy
     "params_json",  # sampled template params (ground truth generator state)
+    "prior_json",  # author-declared prior (JSON kwargs; "" = cold start)
+    "history_json",  # past runs [{resources, peak, ok}]; "" = none
     "true_peak_memory_mib",  # analytic footprint estimate
     "true_cpu_cores",  # sustained parallel CPU demand
     "true_gpu_mem_mib",  # VRAM the task needs; 0 = CPU task

@@ -8,6 +8,29 @@ object — the exact kwargs to `flyte.Resources`.
 
 from __future__ import annotations
 
+import json
+
+
+def parse_context_fields(
+    prior_json: str | None, history_json: str | None
+) -> tuple[dict | None, list | None]:
+    """Corpus/task-arg JSON strings → render_messages kwargs. Empty or
+    malformed fields degrade to cold-start (None), never to a crash."""
+    prior = history = None
+    if prior_json:
+        try:
+            parsed = json.loads(prior_json)
+            prior = parsed if isinstance(parsed, dict) and parsed else None
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if history_json:
+        try:
+            parsed = json.loads(history_json)
+            history = parsed if isinstance(parsed, list) and parsed else None
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return prior, history
+
 SYSTEM_PROMPT = """\
 You size compute requests for Flyte tasks. Given a task's source code and \
 input profile, respond with ONLY a JSON object of flyte.Resources kwargs:

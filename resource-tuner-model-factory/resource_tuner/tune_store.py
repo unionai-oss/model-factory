@@ -56,6 +56,11 @@ class StoreReader:
     def __init__(self):
         self._seen: dict[str, dict] = {}
 
+    def cached(self) -> list[dict]:
+        """Already-fetched records, ts-sorted, zero I/O — for request paths
+        that must not block on a storage listing (propose's history)."""
+        return sorted(self._seen.values(), key=lambda r: r.get("ts", 0))
+
     async def load(self) -> list[dict]:
         import flyte.io
         import flyte.storage
@@ -180,6 +185,24 @@ def task_registry(records: list[dict]) -> list[dict]:
             if r.get("peak_rss_mib") is not None:
                 row["last_peak_rss_mib"] = r["peak_rss_mib"]
     return sorted(reg.values(), key=lambda x: -x["last_ts"])
+
+
+def history_of(records: list[dict], task_id: str, limit: int = 3) -> list[dict]:
+    """The newest `limit` ledger outcomes for a task, shaped for the
+    policy prompt's history field ({resources, peak, ok})."""
+    entries = []
+    for r in records:
+        if r.get("kind") != "outcome" or r.get("task_id") != task_id:
+            continue
+        peak = r.get("peak_rss_mib")
+        entries.append(
+            {
+                "resources": r.get("requested") or {},
+                "peak": f"{peak:.0f}MiB" if isinstance(peak, (int, float)) else "unknown",
+                "ok": bool(r.get("ok")),
+            }
+        )
+    return entries[-limit:]
 
 
 def totals(records: list[dict]) -> dict:

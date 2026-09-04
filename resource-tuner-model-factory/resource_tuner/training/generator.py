@@ -28,7 +28,7 @@ import flyte.errors
 import flyte.io
 
 from ..config import cluster_env_vars, train_resources
-from ..policy.prompts import render_messages
+from ..policy.prompts import parse_context_fields, render_messages
 from ..shared.images import gpu_image, secrets
 
 MAX_NEW_TOKENS = 128
@@ -145,17 +145,24 @@ async def _get_batcher(checkpoint_path: str):
 
 @generator_env.task
 async def generate_proposal(
-    checkpoint_path: str, source_code: str, input_profile: str
+    checkpoint_path: str,
+    source_code: str,
+    input_profile: str,
+    prior_json: str = "",
+    history_json: str = "",
 ) -> str:
     """One greedy proposal completion for one estimation context.
 
     Concurrent calls to warm replicas are transparently batched. Returns
     the raw completion text (parsing/validation stays with the caller so
-    format failures remain visible to eval metrics).
+    format failures remain visible to eval metrics). `prior_json` /
+    `history_json` carry the PRD §8 context fields when the corpus row
+    has them.
     """
     batcher = await _get_batcher(checkpoint_path)
     _model, tok = _engines[checkpoint_path]
-    messages = render_messages(source_code, input_profile)
+    prior, history = parse_context_fields(prior_json, history_json)
+    messages = render_messages(source_code, input_profile, prior=prior, history=history)
     try:
         prompt = tok.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, enable_thinking=False

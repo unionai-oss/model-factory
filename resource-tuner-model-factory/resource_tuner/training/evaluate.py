@@ -126,6 +126,8 @@ async def _generate_proposals(
                 checkpoint_path=checkpoint_path,
                 source_code=record["source_code"],
                 input_profile=record["input_profile"],
+                prior_json=str(record.get("prior_json", "") or ""),
+                history_json=str(record.get("history_json", "") or ""),
             )
         except flyte.errors.OOMError as e:
             print(f"[eval] generator OOM for {record['task_id']}: {e}")

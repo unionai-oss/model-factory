@@ -28,7 +28,7 @@ from ..config import TunerProfile, WANDB_PROJECT, get_profile
 from ..contracts import ARTIFACT_TASK_CORPUS, ARTIFACT_TUNER_CHECKPOINT, publish
 from ..environment.simulator import simulate_episode
 from ..policy.parsing import try_extract_proposal
-from ..policy.prompts import render_messages
+from ..policy.prompts import parse_context_fields, render_messages
 from ..rewards import shaping
 from ..rewards.rewards import invalid_proposal_reward, score_episode
 from ..shared.reporting import GOOD, Reporter, esc, line_chart, pill
@@ -108,27 +108,29 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
     return resource_reward
 
 
+def _record_to_row(r: dict, baselines: dict | None = None) -> dict:
+    base_cost = None
+    if baselines:
+        bp = baseline_proposal(baselines, r["family"])
+        base_cost = pricing.dollars_per_hr(bp.cpu, bp.memory_mib, bp.gpu_type, bp.gpu)
+    prior, history = parse_context_fields(r.get("prior_json"), r.get("history_json"))
+    return {
+        "prompt": render_messages(
+            r["source_code"], r["input_profile"], prior=prior, history=history
+        ),
+        "true_peak_memory_mib": r["true_peak_memory_mib"],
+        "true_cpu_cores": r["true_cpu_cores"],
+        "duration_s": r["duration_s"],
+        # Old corpora predate the GPU column — default to CPU task.
+        "true_gpu_mem_mib": float(r.get("true_gpu_mem_mib", 0.0) or 0.0),
+        "baseline_cost_per_hr": base_cost,
+    }
+
+
 def _records_to_dataset(records: list[dict], baselines: dict | None = None):
     from datasets import Dataset
 
-    rows = []
-    for r in records:
-        base_cost = None
-        if baselines:
-            bp = baseline_proposal(baselines, r["family"])
-            base_cost = pricing.dollars_per_hr(bp.cpu, bp.memory_mib, bp.gpu_type, bp.gpu)
-        rows.append(
-            {
-                "prompt": render_messages(r["source_code"], r["input_profile"]),
-                "true_peak_memory_mib": r["true_peak_memory_mib"],
-                "true_cpu_cores": r["true_cpu_cores"],
-                "duration_s": r["duration_s"],
-                # Old corpora predate the GPU column — default to CPU task.
-                "true_gpu_mem_mib": float(r.get("true_gpu_mem_mib", 0.0) or 0.0),
-                "baseline_cost_per_hr": base_cost,
-            }
-        )
-    return Dataset.from_list(rows)
+    return Dataset.from_list([_record_to_row(r, baselines) for r in records])
 
 
 # Deliberately NOT @flyte.trace'd: traced functions serialize inputs AND

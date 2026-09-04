@@ -56,8 +56,13 @@ _store_reader = tune_store.StoreReader()
 _bg_writes: set = set()  # strong refs to in-flight store writes
 
 
-def _digest(source_code: str, input_profile: str) -> str:
-    return hashlib.sha256(f"{source_code}\n{input_profile}".encode()).hexdigest()[:16]
+def _digest(source_code: str, input_profile: str, context: str = "") -> str:
+    """Cache key over EVERYTHING the prompt sees — prior and ledger
+    history included, so a new outcome record naturally invalidates the
+    cached proposal for that task."""
+    return hashlib.sha256(
+        f"{source_code}\n{input_profile}\n{context}".encode()
+    ).hexdigest()[:16]
 
 
 async def _pick_checkpoint() -> str:
@@ -140,11 +145,16 @@ async def _ensure_loaded() -> None:
                 _state["loading"] = False
 
 
-def _generate_sync(source_code: str, input_profile: str) -> str:
+def _generate_sync(
+    source_code: str,
+    input_profile: str,
+    prior: dict | None = None,
+    history: list | None = None,
+) -> str:
     import torch
 
     model, tok = _state["model"], _state["tok"]
-    messages = render_messages(source_code, input_profile)
+    messages = render_messages(source_code, input_profile, prior=prior, history=history)
     try:
         prompt = tok.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
@@ -187,16 +197,32 @@ async def propose(body: dict) -> JSONResponse:
     input_profile = body.get("input_profile", "") or "no input profile provided"
     prior = body.get("prior") or {}
     task_id = body.get("task_id", "")
-    digest = _digest(source_code, input_profile)
+    # PRD §8 context: the caller's author-declared prior goes INTO the
+    # prompt (not just the fallback), and the value ledger supplies run
+    # history for this task. History reads the reader's cache (zero I/O on
+    # the request path) and a background refresh keeps it fresh — the
+    # first propose after a cold start is history-free, the next isn't.
+    history = tune_store.history_of(_store_reader.cached(), task_id)
+    tune_store.fire_and_forget(_store_reader.load(), _bg_writes)
+    context_key = json.dumps({"prior": prior, "history": history}, sort_keys=True)
+    digest = _digest(source_code, input_profile, context_key)
 
-    record = {"task_id": task_id, "digest": digest, "ts": time.time(), "prior": prior}
+    record = {
+        "task_id": task_id,
+        "digest": digest,
+        "ts": time.time(),
+        "prior": prior,
+        "history_used": len(history),
+    }
     try:
         if digest in _proposal_cache:
             kwargs = _proposal_cache[digest]
             record.update(proposal=kwargs, source="cache")
         else:
             await _ensure_loaded()
-            text = await asyncio.to_thread(_generate_sync, source_code, input_profile)
+            text = await asyncio.to_thread(
+                _generate_sync, source_code, input_profile, prior or None, history or None
+            )
             proposal = try_extract_proposal(text)
             if proposal is None:
                 raise InvalidProposal(f"unparseable completion: {text[:120]!r}")
@@ -217,6 +243,7 @@ async def propose(body: dict) -> JSONResponse:
             "proposal": record.get("proposal"),
             "proposal_id": f"{digest}-{int(record['ts'])}",
             "source": record["source"],
+            "history_used": record["history_used"],
             "checkpoint_path": _state["checkpoint_path"],
             **({"error": record["error"]} if "error" in record else {}),
         }

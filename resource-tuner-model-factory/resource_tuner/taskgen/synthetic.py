@@ -142,6 +142,8 @@ def synthetic_record(
         "harness_code": code,
         "input_profile": description,
         "params_json": json.dumps({"synthetic": True}),
+        "prior_json": "",  # teacher tasks are cold-start by construction
+        "history_json": "",
         "true_peak_memory_mib": float(measured["peak_rss_mib"]),
         "true_cpu_cores": max(1.0, round(float(measured.get("cpu_avg_cores", 1.0)), 1)),
         "true_gpu_mem_mib": 0.0,  # oracle pods are CPU-only

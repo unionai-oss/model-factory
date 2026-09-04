@@ -504,6 +504,8 @@ async def archetype_data_release(
                     "params_json": json.dumps(
                         {"archetype": ai, "label_source": "measured", **point}
                     ),
+                    "prior_json": "",
+                    "history_json": "",
                     "true_peak_memory_mib": float(peak),
                     "true_cpu_cores": max(1.0, round(sum(meta["cpu"]) / len(meta["cpu"]), 1)),
                     "true_gpu_mem_mib": 0.0,  # oracle pods are CPU-only
@@ -531,6 +533,8 @@ async def archetype_data_release(
                     "params_json": json.dumps(
                         {"archetype": ai, "label_source": "fitted", **values}
                     ),
+                    "prior_json": "",
+                    "history_json": "",
                     "true_peak_memory_mib": float(min(max(peak, 96.0), 12288.0)),
                     "true_cpu_cores": cpu_label,
                     "true_gpu_mem_mib": 0.0,
