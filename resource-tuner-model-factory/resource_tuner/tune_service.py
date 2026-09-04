@@ -29,7 +29,7 @@ import flyte
 import flyte.app
 import flyte.io
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from flyte.app.extras import FastAPIAppEnvironment
 
 from .config import APP_DOMAIN, APP_PROJECT, TRAIN_GPU, cluster_env_vars
@@ -40,6 +40,8 @@ from .policy.parsing import try_extract_proposal
 from .policy.prompts import render_messages
 from .shared import assets
 from .shared.images import gpu_image
+from .shared.reporting import line_chart
+from . import tune_store
 
 MAX_NEW_TOKENS = 128
 APP_NAME = "rt-tune"
@@ -50,6 +52,8 @@ _state: dict = {"model": None, "tok": None, "checkpoint_path": "", "loading": Fa
 _load_lock = asyncio.Lock()
 _proposal_cache: dict[str, dict] = {}  # code digest -> proposal kwargs
 _records: list[dict] = []  # recent proposals, newest last (in-memory)
+_store_reader = tune_store.StoreReader()
+_bg_writes: set = set()  # strong refs to in-flight store writes
 
 
 def _digest(source_code: str, input_profile: str) -> str:
@@ -204,6 +208,10 @@ async def propose(body: dict) -> JSONResponse:
         record.update(proposal=prior or None, source="fallback_prior", error=str(e)[:200])
     _records.append(record)
     del _records[:-500]
+    # Persist to the append-only Dir store (off the request path).
+    tune_store.fire_and_forget(
+        tune_store.append_record({"kind": "proposal", **record}), _bg_writes
+    )
     return JSONResponse(
         {
             "proposal": record.get("proposal"),
@@ -213,6 +221,92 @@ async def propose(body: dict) -> JSONResponse:
             **({"error": record["error"]} if "error" in record else {}),
         }
     )
+
+
+@app.post("/v1/outcome")
+async def outcome(body: dict) -> JSONResponse:
+    """Callers report what actually happened under a proposal — the other
+    half of the value ledger (fit/oom + measured peak). The
+    @tune.resources decorator auto-posts this when the wrapped task
+    returns a dict containing peak_rss_mib."""
+    record = {
+        "kind": "outcome",
+        "ts": time.time(),
+        "task_id": body.get("task_id", ""),
+        "digest": body.get("digest", ""),
+        "proposal_id": body.get("proposal_id", ""),
+        "ok": bool(body.get("ok", True)),
+        "oom": bool(body.get("oom", False)),
+        "peak_rss_mib": body.get("peak_rss_mib"),
+        "duration_s": body.get("duration_s"),
+        "requested": body.get("requested"),
+    }
+    uri = await tune_store.append_record(record)
+    return JSONResponse({"ok": True, "stored": uri.rsplit("/", 1)[-1]})
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard() -> str:
+    """The value dashboard: cumulative CPU/mem saved over time + the
+    registry of every task the tuner has served."""
+    records = await _store_reader.load()
+    t = tune_store.totals(records)
+    series = tune_store.savings_series(records)
+    registry = tune_store.task_registry(records)
+
+    mem_chart = line_chart(
+        [("cumulative memory saved vs prior (MiB)", "#35c48d", series["cum_mem_saved_mib"])],
+        y_fmt="{:.0f}",
+    )
+    cpu_chart = line_chart(
+        [("cumulative CPU cores saved vs prior", "#4d65ff", series["cum_cpu_saved"])],
+        y_fmt="{:.1f}",
+    )
+    kv = "".join(
+        f'<tr><td style="padding:4px 12px;color:#9a9aa4">{k}</td>'
+        f'<td style="padding:4px 12px">{v}</td></tr>'
+        for k, v in {
+            "proposals served": t["proposals"],
+            "distinct tasks in registry": t["distinct_tasks"],
+            "model/cache answer rate": f"{t['model_or_cache_rate']:.0%}",
+            "outcomes reported": t["outcomes"],
+            "outcome fit rate": "–" if t["outcome_fit_rate"] is None else f"{t['outcome_fit_rate']:.0%}",
+            "OOMs under proposals": t["outcome_oom_count"],
+            "cumulative memory saved": f"{t['cum_mem_saved_mib'] / 1024:.1f} GiB-requests",
+            "cumulative CPU saved": f"{t['cum_cpu_saved']:.1f} cores-requests",
+            "serving checkpoint": _state["checkpoint_path"][-48:] or "(not loaded)",
+        }.items()
+    )
+    def _row(r: dict) -> str:
+        peak = "–" if r["last_peak_rss_mib"] is None else f"{r['last_peak_rss_mib']:.0f} MiB"
+        oom = f' <span style="color:#F43B3E">({r["oom"]} oom)</span>' if r["oom"] else ""
+        cells = [
+            f'<span style="font-family:monospace">{r["task_id"][:44]}</span>',
+            str(r["proposals"]),
+            json.dumps(r["last_prior"]) if r["last_prior"] else "–",
+            json.dumps(r["last_proposal"]) if r["last_proposal"] else "–",
+            r["last_source"] or "–",
+            f'{r["fit"]}/{r["outcomes"]}{oom}',
+            peak,
+        ]
+        return "<tr>" + "".join(f'<td style="padding:4px 10px">{c}</td>' for c in cells) + "</tr>"
+
+    rows = "".join(_row(r) for r in registry[:50])
+    th = 'style="text-align:left;padding:4px 10px;color:#9a9aa4;font-size:11px;text-transform:uppercase"'
+    return f"""<!doctype html><html><head><meta charset="utf-8"><title>rt-tune — value dashboard</title></head>
+<body style="font-family:-apple-system,sans-serif;background:#0b0b0d;color:#f2f2f3;margin:2rem">
+<h1 style="font-size:18px">Resource tuner — value dashboard</h1>
+<p style="color:#9a9aa4;font-size:13px">Append-only store: <code>{tune_store.store_uri()}</code> · {len(records)} records ·
+<a style="color:#8b9bff" href="/records">recent proposals</a> · <a style="color:#8b9bff" href="/health">health</a></p>
+<table style="border-collapse:collapse;background:#131316;border-radius:10px">{kv}</table>
+<h2 style="font-size:13px;color:#9a9aa4;text-transform:uppercase;margin-top:20px">Savings over time (requested resources vs hard-coded priors)</h2>
+{mem_chart}<br/>{cpu_chart}
+<h2 style="font-size:13px;color:#9a9aa4;text-transform:uppercase;margin-top:20px">Task registry ({len(registry)} tasks)</h2>
+<table style="border-collapse:collapse;background:#131316;border-radius:10px">
+<thead><tr><th {th}>task</th><th {th}>proposals</th><th {th}>prior</th><th {th}>last proposal</th>
+<th {th}>source</th><th {th}>outcomes fit</th><th {th}>last peak</th></tr></thead>
+<tbody>{rows}</tbody></table>
+</body></html>"""
 
 
 @app.post("/reload")
