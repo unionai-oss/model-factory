@@ -110,20 +110,31 @@ def _context_rng(t: GeneratedTask) -> Random:
     return Random(zlib.crc32(t.task_id.encode()))
 
 
-def build_corpus(n_train: int, n_heldout: int, seed: int = 0) -> list[dict]:
+def build_corpus(
+    n_train: int,
+    n_heldout: int,
+    seed: int = 0,
+    gpu_max_vram_mib: float | None = None,
+) -> list[dict]:
     """Round-robin families, deterministic in `seed`, heldout drawn from a
-    disjoint seed range so re-sampling train can never leak into eval."""
+    disjoint seed range so re-sampling train can never leak into eval.
+    `gpu_max_vram_mib` constrains GPU families (e.g. 14000 → every GPU
+    task fits, and should be proposed, a single T4)."""
     families = sorted(FAMILIES)
     rng = Random(seed)
     records: list[dict] = []
     for i in range(n_train):
         fam = families[i % len(families)]
-        t = generate_task(fam, seed=rng.randint(0, 2**30))
+        t = generate_task(fam, seed=rng.randint(0, 2**30), gpu_max_vram_mib=gpu_max_vram_mib)
         records.append(task_to_record(t, "train", rng=_context_rng(t)))
     heldout_rng = Random(seed + 1_000_003)
     for i in range(n_heldout):
         fam = families[i % len(families)]
-        t = generate_task(fam, seed=2**30 + heldout_rng.randint(0, 2**30))
+        t = generate_task(
+            fam,
+            seed=2**30 + heldout_rng.randint(0, 2**30),
+            gpu_max_vram_mib=gpu_max_vram_mib,
+        )
         records.append(task_to_record(t, "heldout", rng=_context_rng(t)))
     assert all(set(r) == set(CORPUS_COLUMNS) for r in records)
     return records

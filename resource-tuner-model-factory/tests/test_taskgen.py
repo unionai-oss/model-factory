@@ -77,6 +77,21 @@ def test_gpu_family_vram_spans_the_tenant_ladder():
     )
 
 
+def test_gpu_vram_cap_produces_single_t4_only_tasks():
+    """gpu_max_vram_mib=14000: every GPU task fits (and therefore should
+    be proposed) exactly one T4 — the round-8 corpus constraint."""
+    for fam in ("gpu_batch_inference", "gpu_finetune"):
+        for s in range(40):
+            t = generate_task(fam, seed=s, gpu_max_vram_mib=14_000)
+            assert 0 < t.true_gpu_mem_mib <= 14_000, (fam, s, t.true_gpu_mem_mib)
+    # deterministic: capping is a pure function of the sampled params
+    a = generate_task("gpu_batch_inference", seed=5, gpu_max_vram_mib=14_000)
+    b = generate_task("gpu_batch_inference", seed=5, gpu_max_vram_mib=14_000)
+    assert a == b
+    # uncapped sampling is untouched
+    assert generate_task("gpu_batch_inference", seed=5) != a or a.true_gpu_mem_mib <= 14_000
+
+
 def test_footprint_grows_with_input_size():
     fam = FAMILIES["data_engineering"]
     small, _ = fam.footprint({"rows": 10_000, "cols": 8})

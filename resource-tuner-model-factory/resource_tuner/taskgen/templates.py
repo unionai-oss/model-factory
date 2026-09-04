@@ -470,17 +470,46 @@ FAMILIES: dict[str, Family] = {
 }
 
 
-def generate_task(family: str, seed: int) -> GeneratedTask:
+# Shrink order + floors for capping a GPU task's VRAM demand: halve the
+# most footprint-elastic knobs first, never below a family's plausible min.
+_GPU_CAP_ORDER = ("batch_size", "seq_len", "hidden", "depth")
+_GPU_CAP_FLOORS = {"batch_size": 2, "seq_len": 128, "hidden": 1024, "depth": 8}
+
+
+def _cap_gpu_params(params: dict, footprint, cap_mib: float) -> dict:
+    """Deterministically shrink sampled params until the VRAM footprint
+    fits `cap_mib` — used to build corpora whose GPU tasks must fit ONE
+    specific card (e.g. a single T4)."""
+    p = dict(params)
+    while footprint(p) > cap_mib:
+        for key in _GPU_CAP_ORDER:
+            if key in p and p[key] // 2 >= _GPU_CAP_FLOORS[key]:
+                p[key] = p[key] // 2
+                break
+        else:  # nothing left to shrink; floors define the smallest task
+            break
+    return p
+
+
+def generate_task(
+    family: str, seed: int, gpu_max_vram_mib: float | None = None
+) -> GeneratedTask:
     """Deterministically sample one task from a family.
 
     zlib.crc32, not hash(): str hashing is salted per process, which made
     "the same corpus" differ between runs (and made a test flake ~1 in 20).
+
+    `gpu_max_vram_mib` caps GPU families' VRAM demand (shrinking sampled
+    params deterministically) so a corpus can require, say, single-T4-only
+    GPU tasks.
     """
     import zlib
 
     fam = FAMILIES[family]
     rng = Random(zlib.crc32(family.encode()) ^ seed)
     params = fam.sample(rng)
+    if fam.gpu_footprint is not None and gpu_max_vram_mib:
+        params = _cap_gpu_params(params, fam.gpu_footprint, gpu_max_vram_mib)
     peak_mib, cpu = fam.footprint(params)
     return GeneratedTask(
         task_id=f"{family}-{seed}",

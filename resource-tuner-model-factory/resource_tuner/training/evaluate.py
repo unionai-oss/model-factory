@@ -215,6 +215,12 @@ async def eval_tuner(
     base_model = manifest["base_model"]
     reward_stage = manifest.get("reward_stage", "?")
     reward_shape = manifest.get("reward_shape")
+    # Native reward: each arm's own training curve. NOT comparable across
+    # shapes in absolute terms (different formulas) — the comparable part
+    # is the first→last improvement, shown alongside the shared $ metric.
+    fm = manifest.get("final_metrics") or {}
+    train_reward_first = fm.get("mean_reward_first")
+    train_reward_last = fm.get("mean_reward_last")
 
     def _pct(v):
         return "-" if v is None else f"{v:.0f}%"
@@ -241,6 +247,11 @@ async def eval_tuner(
                 "group tie-break": str(reward_shape.get("group_tiebreak") or "off"),
                 "robustness samples": str(reward_shape.get("robustness_samples", 1)),
             }
+        )
+    if train_reward_first is not None and train_reward_last is not None:
+        shape_kv["native reward (train, first → last)"] = (
+            f"{train_reward_first:.3f} → {train_reward_last:.3f} "
+            f"(Δ {train_reward_last - train_reward_first:+.3f})"
         )
     rep.kv(shape_kv)
     rep.kv({"schema validity": f"{schema_validity:.0%}"})
@@ -398,6 +409,8 @@ async def eval_tuner(
         # humans and the lineage dashboard.
         "reward_stage": reward_stage,
         "reward_shape": reward_shape,
+        "train_reward_first": train_reward_first,
+        "train_reward_last": train_reward_last,
         # Links this report to the checkpoint version it scored — the
         # lineage app uses it to badge checkpoint cards with eval metrics.
         "checkpoint_path": getattr(checkpoint, "path", "") or "",

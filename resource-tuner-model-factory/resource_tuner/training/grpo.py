@@ -296,7 +296,13 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
     await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
 
     df = pd.read_parquet(await corpus.download())
-    records = df[df["split"] == "train"].to_dict("records")[: profile.train_contexts]
+    train_df = df[df["split"] == "train"]
+    if len(train_df) > profile.train_contexts:
+        # Random (fixed-seed) subset, not a head slice: merged corpora are
+        # ordered template-families-then-archetypes, and a head slice
+        # would silently drop whole sources (e.g. every archetype row).
+        train_df = train_df.sample(n=profile.train_contexts, random_state=0)
+    records = train_df.to_dict("records")
     # Family baselines priced per record: the baseline_relative shapes score
     # "cheaper than the rule baseline" directly in the reward.
     baselines = fit_family_baseline(records) if records else {}

@@ -48,8 +48,11 @@ from .grpo import train_tuner
 
 
 @driver_env.task(produces_artifacts=True, report=True)
-async def build_task_corpus(profile_name: str = "smoke", seed: int = 0) -> flyte.io.File:
-    """Sample the task corpus and publish it as tuning-task-corpus."""
+async def build_task_corpus(
+    profile_name: str = "smoke", seed: int = 0, gpu_max_vram_mib: float = 0
+) -> flyte.io.File:
+    """Sample the task corpus and publish it as tuning-task-corpus.
+    `gpu_max_vram_mib` > 0 caps GPU families (14000 → single-T4-only)."""
     import pandas as pd
 
     profile = get_profile(profile_name)
@@ -57,7 +60,12 @@ async def build_task_corpus(profile_name: str = "smoke", seed: int = 0) -> flyte
     rep.kv({"train contexts": profile.train_contexts, "heldout contexts": profile.eval_contexts})
     await rep.flush()
 
-    records = build_corpus(profile.train_contexts, profile.eval_contexts, seed=seed)
+    records = build_corpus(
+        profile.train_contexts,
+        profile.eval_contexts,
+        seed=seed,
+        gpu_max_vram_mib=gpu_max_vram_mib or None,
+    )
     df = pd.DataFrame(records)
     fam = df.groupby("family")["true_peak_memory_mib"]
     rep.h("Composition (analytic footprints)")
@@ -329,6 +337,12 @@ async def archetype_data_release(
     merge_with_templates: bool = True,
     profile_name: str = "smoke",
     seed: int = 0,
+    # Template-side overrides for large releases: 0 = use the profile's
+    # counts. gpu_max_vram_mib > 0 caps template GPU families' VRAM
+    # (14000 → every GPU task fits, and should be proposed, ONE T4).
+    template_train: int = 0,
+    template_heldout: int = 0,
+    gpu_max_vram_mib: float = 0,
 ) -> flyte.io.File:
     """Scale synthetic generation: archetypes × instantiation → 10⁵ tasks.
 
@@ -557,7 +571,12 @@ async def archetype_data_release(
         return synthetic_file
 
     profile = get_profile(profile_name)
-    template_records = build_corpus(profile.train_contexts, profile.eval_contexts, seed=seed)
+    template_records = build_corpus(
+        template_train or profile.train_contexts,
+        template_heldout or profile.eval_contexts,
+        seed=seed,
+        gpu_max_vram_mib=gpu_max_vram_mib or None,
+    )
     merged_path = tempfile.mktemp(suffix=".parquet")
     pd.concat([pd.DataFrame(template_records), pd.DataFrame(records)], ignore_index=True).to_parquet(
         merged_path, index=False

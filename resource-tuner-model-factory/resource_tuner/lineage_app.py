@@ -387,6 +387,8 @@ def _metrics_of(report: dict) -> dict:
         "dollars_saved_per_1k_task_hrs": report.get("dollars_saved_per_1k_task_hrs"),
         "gpu_success_rate": report.get("gpu_success_rate"),
         "gpu_spurious_count": report.get("gpu_spurious_count"),
+        "train_reward_first": report.get("train_reward_first"),
+        "train_reward_last": report.get("train_reward_last"),
     }
 
 
@@ -1198,13 +1200,17 @@ try {
         <div class="cap" style=${{ marginTop: "10px" }}>reward-shape comparison (one row per eval)</div>
         <table class="cmp-table">
           <thead><tr>
-            <th>reward shape</th><th>fit</th><th>waste</th><th>$/task-hr</th>
+            <th>reward shape</th><th>native reward Δ</th><th>fit</th><th>waste</th><th>$/task-hr</th>
             <th>$ saved / 1k hrs</th><th>GPU fit</th><th>gate</th>
           </tr></thead>
           <tbody>
             ${reports.filter((r) => r.reward_stage).map((r) => html`
               <tr>
                 <td class="mono">${r.reward_stage}</td>
+                <td title="each arm's OWN reward curve, first → last logged step — comparable as improvement, not in absolute terms">
+                  ${r.train_reward_first != null && r.train_reward_last != null
+                    ? r.train_reward_first.toFixed(2) + " → " + r.train_reward_last.toFixed(2)
+                    : "—"}</td>
                 <td>${r.success_rate != null ? Math.round(r.success_rate * 100) + "%" : "—"}</td>
                 <td>${r.median_overprovision_pct != null ? Math.round(r.median_overprovision_pct) + "%" : "—"}</td>
                 <td>${r.policy_cost_per_task_hr != null ? "$" + r.policy_cost_per_task_hr.toFixed(4) : "—"}</td>

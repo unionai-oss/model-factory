@@ -217,8 +217,16 @@ _DEV_SHAPED = tuple(
     _dc.replace(DEV, name=f"dev-{stage}", reward_stage=stage) for stage in _SHAPE_ARMS
 )
 
+# Round-8 arms: the 250k mixed corpus (archetypes + templates incl.
+# single-T4 GPU tasks + prior/history context fields), 8x dev's contexts,
+# 2x its steps. Same fixed train-subset seed across arms → controlled.
+_R8_BASE = _dc.replace(DEV, train_contexts=4096, eval_contexts=256, max_steps=300)
+_R8_SHAPED = tuple(
+    _dc.replace(_R8_BASE, name=f"r8-{stage}", reward_stage=stage) for stage in _SHAPE_ARMS
+)
+
 PROFILES: dict[str, TunerProfile] = {
-    p.name: p for p in (SMOKE, SMOKE_COMPOSITE, DEV, FULL, *_DEV_SHAPED)
+    p.name: p for p in (SMOKE, SMOKE_COMPOSITE, DEV, FULL, *_DEV_SHAPED, *_R8_SHAPED)
 }
 
 
