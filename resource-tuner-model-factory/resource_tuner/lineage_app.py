@@ -116,6 +116,205 @@ def _run_fields(run) -> dict:
 
 # Eval-report payloads are immutable per URI; cache for the replica's life.
 _report_cache: dict[str, dict] = {}
+_card_cache: dict[str, dict] = {}
+
+
+def _kv_section(h: str, kv: dict) -> dict:
+    return {"h": h, "kv": {str(k): str(v) for k, v in kv.items()}}
+
+
+def _table_section(h: str, headers: list[str], rows: list[list]) -> dict:
+    return {"h": h, "table": {"headers": headers, "rows": [[str(c) for c in r] for r in rows]}}
+
+
+def _corpus_sections(df, code_lengths) -> list[dict]:
+    """Card sections for a corpus parquet (pure-ish: pandas in, dicts out)."""
+    import json as _json
+
+    peaks = df["true_peak_memory_mib"]
+    label_src = (
+        df["params_json"]
+        .apply(lambda s: _json.loads(s).get("label_source", "measured"))
+        .value_counts()
+    )
+    archetypes = df["params_json"].apply(
+        lambda s: _json.loads(s).get("archetype", "template/single")
+    )
+    sections = [
+        _kv_section(
+            "Contents",
+            {
+                "rows": f"{len(df):,}",
+                "splits": ", ".join(f"{k}:{v:,}" for k, v in df["split"].value_counts().items()),
+                "families": ", ".join(
+                    f"{k}:{v:,}" for k, v in df["family"].value_counts().items()
+                ),
+                "distinct archetypes": archetypes.nunique(),
+                "label sources": ", ".join(f"{k}:{v:,}" for k, v in label_src.items()),
+            },
+        ),
+        _table_section(
+            "Peak memory (MiB)",
+            ["p5", "p25", "median", "p75", "p95", "max"],
+            [[int(peaks.quantile(q)) for q in (0.05, 0.25, 0.5, 0.75, 0.95, 1.0)]],
+        ),
+        _kv_section(
+            "Workload stats",
+            {
+                "cpu cores (median / max)": f"{df['true_cpu_cores'].median():.1f} / "
+                f"{df['true_cpu_cores'].max():.1f}",
+                "duration s (median / max)": f"{df['duration_s'].median():.0f} / "
+                f"{df['duration_s'].max():.0f}",
+                "code length chars (median / p95)": f"{int(code_lengths.quantile(0.5))} / "
+                f"{int(code_lengths.quantile(0.95))}",
+            },
+        ),
+    ]
+    return sections
+
+
+async def _artifact_card(name: str, uri: str) -> dict:
+    """Contents + stats card for one artifact version, by artifact type."""
+    if uri in _card_cache:
+        return _card_cache[uri]
+    card: dict = {"title": name, "subtitle": uri.rsplit("/", 1)[-1], "sections": []}
+    try:
+        if name in (ARTIFACT_TASK_CORPUS, ARTIFACT_SYNTHETIC):
+            import pyarrow.compute as pc
+            import pyarrow.parquet as pq
+
+            local = await flyte.io.File.from_existing_remote(uri).download()
+            pf = pq.ParquetFile(local)
+            meta_cols = [
+                "family", "split", "true_peak_memory_mib", "true_cpu_cores",
+                "duration_s", "params_json",
+            ]
+            df = pq.read_table(local, columns=meta_cols).to_pandas()
+            code_tbl = pq.read_table(local, columns=["source_code"])
+            code_lengths = pc.utf8_length(code_tbl["source_code"]).to_pandas()
+            card["sections"] = _corpus_sections(df, code_lengths)
+            sample = code_tbl["source_code"][0].as_py()
+            card["sections"].append({"h": "Sample task (first row)", "pre": sample[:900]})
+            card["sections"].append(
+                _kv_section("File", {"parquet row groups": pf.num_row_groups, "uri": uri})
+            )
+        elif name == ARTIFACT_TUNER_CHECKPOINT:
+            import os as _os
+
+            local = await flyte.io.Dir.from_existing_remote(uri).download()
+            manifest = {}
+            mpath = _os.path.join(local, "manifest.json")
+            if _os.path.exists(mpath):
+                with open(mpath) as f:
+                    manifest = json.load(f)
+            fm = manifest.get("final_metrics", {}) or {}
+            rewards = [
+                h.get("reward") for h in fm.get("log_history", []) if isinstance(h, dict) and "reward" in h
+            ]
+            card["sections"].append(
+                _kv_section(
+                    "Manifest",
+                    {
+                        "base model": manifest.get("base_model", "?"),
+                        "profile": manifest.get("profile", "?"),
+                        "reward stage": manifest.get("reward_stage", "?"),
+                        "max steps": manifest.get("max_steps", "?"),
+                        "mean reward first → last": f"{fm.get('mean_reward_first')} → "
+                        f"{fm.get('mean_reward_last')}",
+                        "logged steps": len(rewards),
+                    },
+                )
+            )
+            if rewards:
+                card["sections"].append(
+                    _table_section(
+                        "Reward trajectory (per logged step)",
+                        ["step", "mean reward"],
+                        [[i + 1, f"{r:.3f}"] for i, r in enumerate(rewards)],
+                    )
+                )
+            files = []
+            for root, _dirs, names in _os.walk(local):
+                for n in names:
+                    p = _os.path.join(root, n)
+                    files.append((_os.path.relpath(p, local), _os.path.getsize(p)))
+            files.sort(key=lambda x: -x[1])
+            card["sections"].append(
+                _table_section(
+                    "Files",
+                    ["file", "size"],
+                    [[n, f"{s / 1024:.0f} KiB" if s < 2**20 else f"{s / 2**20:.1f} MiB"]
+                     for n, s in files[:14]],
+                )
+            )
+        elif name == ARTIFACT_EVAL_REPORT:
+            report = await _load_report(uri)
+            if "error" in report:
+                raise RuntimeError(report["error"])
+            card["sections"].append(
+                _kv_section(
+                    "Verdict",
+                    {
+                        "gate": "PASS" if report.get("auto_gate_passed") else "fail",
+                        "base model": report.get("base_model"),
+                        "checkpoint": str(report.get("checkpoint_path", ""))[-60:],
+                        "heldout contexts": report.get("n_contexts"),
+                    },
+                )
+            )
+            card["sections"].append(
+                _table_section(
+                    "Metrics (policy vs baseline)",
+                    ["metric", "policy", "baseline"],
+                    [
+                        ["schema validity", f"{(report.get('schema_validity') or 0):.0%}", "—"],
+                        [
+                            "success rate",
+                            f"{(report.get('success_rate') or 0):.0%}",
+                            f"{(report.get('baseline_success_rate') or 0):.0%}",
+                        ],
+                        [
+                            "median overprovision",
+                            f"{report['median_overprovision_pct']:.0f}%"
+                            if report.get("median_overprovision_pct") is not None
+                            else "—",
+                            f"{report['baseline_median_overprovision_pct']:.0f}%"
+                            if report.get("baseline_median_overprovision_pct") is not None
+                            else "—",
+                        ],
+                    ],
+                )
+            )
+            episodes = report.get("cluster_episodes") or []
+            if episodes:
+                card["sections"].append(
+                    _table_section(
+                        "Real episodes",
+                        ["task", "requested MiB", "sim peak", "real RSS", "ok", "oom"],
+                        [
+                            [
+                                e.get("task_id"),
+                                e.get("requested_memory_mib"),
+                                f"{e.get('sim_peak_memory_mib', 0):.0f}",
+                                f"{e.get('real_peak_rss_mib', 0):.0f}",
+                                e.get("ok"),
+                                e.get("oom"),
+                            ]
+                            for e in episodes[:12]
+                        ],
+                    )
+                )
+        else:
+            card["sections"].append(_kv_section("Payload", {"uri": uri}))
+    except Exception as e:  # noqa: BLE001 — a broken payload still gets a card
+        card["sections"].append(_kv_section("Error", {"failed to load": f"{type(e).__name__}: {e}"}))
+    _card_cache[uri] = card
+    return card
+
+
+@app.get("/api/artifact-card")
+async def api_artifact_card(name: str, path: str) -> JSONResponse:
+    return JSONResponse(await _artifact_card(name, path))
 
 
 async def _load_report(uri: str) -> dict:
@@ -500,6 +699,27 @@ _PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .fb-station li { font-size: 11px; padding: 2px 0; }
   .fb-empty { color: var(--dim); font-style: italic; }
   .toast { position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%); background: #24242c; border: 1px solid #383842; color: var(--text); font-size: 0.78rem; padding: 7px 14px; border-radius: 999px; z-index: 50; }
+
+  /* artifact card modal */
+  .card-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 60;
+    display: flex; align-items: flex-start; justify-content: center; padding: 4vh 1rem;
+  }
+  .art-card {
+    width: min(760px, 94vw); max-height: 88vh; overflow-y: auto;
+    background: var(--panel); border: 1px solid #33333c; border-radius: 14px;
+    padding: 1.1rem 1.3rem 1.3rem; box-shadow: 0 18px 60px rgba(0,0,0,0.55);
+  }
+  .art-card h2 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .art-card .close { margin-left: auto; }
+  .art-card .subtitle { color: var(--dim); font-size: 11px; margin: 2px 0 6px; font-family: ui-monospace, Menlo, monospace; }
+  .art-card h3 { margin: 14px 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+  .art-card table { width: auto; }
+  .art-card pre {
+    background: #0e0e12; border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px; font-size: 11px; color: #c9c9cf; overflow-x: auto; max-height: 260px;
+  }
+  .art-card .loading { color: var(--dim); font-size: 12px; padding: 1rem 0; }
 </style>
 </head>
 <body>
@@ -635,6 +855,8 @@ try {
       <div class="latest">
         ${data.latest
           ? html`<span>latest <b>${shortId(data.latest.version)}</b></span>
+              <button class="iconbtn" title="Open artifact card (contents + stats)"
+                      onClick=${(e) => { e.stopPropagation(); data.onCard(data.artifact, data.latest); }}>▤</button>
               <button class="iconbtn" title=${"Open producing run " + data.latest.source}
                       onClick=${(e) => { e.stopPropagation(); openUrl(data.latest.run_url); }}>run ↗</button>`
           : html`<span>awaiting first publish</span>`}
@@ -652,6 +874,8 @@ try {
       <div class="vid">${shortId(data.version)}</div>
       <div class="vrow">
         <span class="vrun">${data.source || "unknown run"}</span>
+        <button class="iconbtn" title="Open artifact card (contents + stats)"
+                onClick=${(e) => { e.stopPropagation(); data.onCard(data.station, data); }}>▤</button>
         <button class="iconbtn" title="Copy object-store path"
                 onClick=${(e) => { e.stopPropagation(); data.onCopy(data.url); }}>⧉</button>
       </div>
@@ -661,6 +885,34 @@ try {
 
   const GroupLabel = ({ data }) => html`
     <div class="group-label"><span class="swatch" style=${{ background: data.color }}></span>${data.label}</div>`;
+
+  // ------------------------------------------------------- artifact card
+  const CardModal = ({ card, onClose }) => html`
+    <div class="card-backdrop" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+      <div class="art-card">
+        <h2>▤ ${card.loading ? "Artifact card" : card.title}
+          <button class="iconbtn close" onClick=${onClose}>✕</button></h2>
+        ${card.loading
+          ? html`<div class="loading">Loading payload & computing stats… (first open per version downloads the artifact)</div>`
+          : html`<${React.Fragment}>
+              <div class="subtitle">${card.subtitle}</div>
+              ${(card.sections || []).map((s, i) => html`
+                <div key=${i}>
+                  ${s.h ? html`<h3>${s.h}</h3>` : null}
+                  ${s.kv ? html`<table><tbody>
+                      ${Object.entries(s.kv).map(([k, v]) => html`
+                        <tr key=${k}><td style=${{ color: "#9a9aa4" }}>${k}</td><td>${v}</td></tr>`)}
+                    </tbody></table>` : null}
+                  ${s.table ? html`<table>
+                      <thead><tr>${s.table.headers.map((h) => html`<th key=${h}>${h}</th>`)}</tr></thead>
+                      <tbody>${s.table.rows.map((r, ri) => html`
+                        <tr key=${ri}>${r.map((c, ci) => html`<td key=${ci}>${c}</td>`)}</tr>`)}</tbody>
+                    </table>` : null}
+                  ${s.pre ? html`<pre>${s.pre}</pre>` : null}
+                </div>`)}
+            <//>`}
+      </div>
+    </div>`;
 
   const nodeTypes = { station: StationNode, version: VersionNode, groupLabel: GroupLabel };
 
@@ -697,6 +949,7 @@ try {
           activeRuns: active[s.artifact] || 0,
           selected: ctx.selected === s.artifact,
           dimmed: ctx.dimStation(s), ringed: ctx.ringStation(s), onSelect: ctx.onSelect,
+          onCard: ctx.onCard,
         },
       };
     });
@@ -760,7 +1013,7 @@ try {
           id: vid, type: "version", parentId: gid, extent: "parent",
           position: { x: PAD_X, y },
           data: {
-            ...v, color, station: s.artifact, onCopy: ctx.onCopy,
+            ...v, color, station: s.artifact, onCopy: ctx.onCopy, onCard: ctx.onCard,
             dimmed: dimmed[vid], ringed: ctx.ringVersion(s, v),
           },
         });
@@ -913,7 +1166,7 @@ try {
       </aside>`;
   };
 
-  const VersionsPanel = ({ station, rows, onCopy, highlightRun, setHighlightRun }) => html`
+  const VersionsPanel = ({ station, rows, onCopy, onCard, highlightRun, setHighlightRun }) => html`
     <section class="panel">
       <h2>Versions <span class="sel">${station ? station.label : ""}</span>
         ${station ? html`<span class="side-count">${rows.length}</span>` : null}</h2>
@@ -935,8 +1188,10 @@ try {
                       : "—"}</td>
                     <td class="mono link" title=${"Copy " + v.url} onClick=${() => onCopy(v.url)}>
                       ${v.url ? v.url.slice(0, 36) + (v.url.length > 36 ? "…" : "") : "—"}</td>
-                    <td>${v.run_url
-                      ? html`<button class="iconbtn" onClick=${() => openUrl(v.run_url)}>↗</button>` : null}</td>
+                    <td><button class="iconbtn" title="Artifact card"
+                          onClick=${() => onCard(station.artifact, v)}>▤</button>
+                      ${v.run_url
+                        ? html`<button class="iconbtn" onClick=${() => openUrl(v.run_url)}>↗</button>` : null}</td>
                   </tr>`)}
               </tbody>
             </table>`
@@ -1006,7 +1261,20 @@ try {
     const [phaseFilter, setPhaseFilter] = React.useState("all");
     const [updatedAt, setUpdatedAt] = React.useState(null);
     const [toast, setToast] = React.useState("");
+    const [card, setCard] = React.useState(null);
     const searchRef = React.useRef(null);
+
+    const openCard = React.useCallback(async (stationArtifact, version) => {
+      setCard({ loading: true });
+      try {
+        const resp = await fetch(
+          "/api/artifact-card?name=" + encodeURIComponent(stationArtifact) +
+          "&path=" + encodeURIComponent(version.url), { cache: "no-store" });
+        setCard(await resp.json());
+      } catch (e) {
+        setCard({ title: "card failed", subtitle: String(e), sections: [] });
+      }
+    }, []);
 
     const onCopy = React.useCallback((text) => {
       if (!text) return;
@@ -1024,14 +1292,15 @@ try {
         const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || "");
         if (e.key === "/" && !typing) { e.preventDefault(); searchRef.current?.focus(); }
         else if (e.key === "Escape") {
-          if (query) setQuery("");
+          if (card) setCard(null);
+          else if (query) setQuery("");
           else if (highlightRun) setHighlightRun(null);
           document.activeElement?.blur?.();
         }
       };
       window.addEventListener("keydown", onKey);
       return () => window.removeEventListener("keydown", onKey);
-    }, [query, highlightRun]);
+    }, [query, highlightRun, card]);
 
     React.useEffect(() => {
       if (!refreshMs) return;
@@ -1105,7 +1374,8 @@ try {
       !!(highlightRun && v.source === highlightRun), [highlightRun]);
 
     const ctx = {
-      selected, onSelect, onCopy, dimStation, ringStation, dimVersion, ringVersion,
+      selected, onSelect, onCopy, onCard: openCard,
+      dimStation, ringStation, dimVersion, ringVersion,
       dimEdge: (a, b) => {
         const find = (id) => data.stations.find((s) => s.artifact === id);
         const sa = find(a), sb = find(b);
@@ -1177,7 +1447,7 @@ try {
         <${EvalPanel} reports=${data.reports || []} />
         <div class="bottom">
           <${VersionsPanel} station=${station} rows=${versionRows} onCopy=${onCopy}
-              highlightRun=${highlightRun} setHighlightRun=${setHighlightRun} />
+              onCard=${openCard} highlightRun=${highlightRun} setHighlightRun=${setHighlightRun} />
           <${RunsPanel} rows=${runRows} stationLabels=${stationLabels} phaseFilter=${phaseFilter}
               setPhaseFilter=${setPhaseFilter} highlightRun=${highlightRun}
               setHighlightRun=${setHighlightRun} onSelect=${onSelect} />
@@ -1186,6 +1456,7 @@ try {
           ? html`<div class="errors">${data.errors.map((e, i) => html`<p key=${i} class="err">${e}</p>`)}</div>`
           : null}
         ${toast ? html`<div class="toast">${toast}</div>` : null}
+        ${card ? html`<${CardModal} card=${card} onClose=${() => setCard(null)} />` : null}
       <//>`;
   };
 

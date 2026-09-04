@@ -32,10 +32,23 @@ percentiles, cpu/duration/code-length stats, label sources).
 | run | what | outcome |
 |---|---|---|
 | [urjghvd6flrj2m29tsjq](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/urjghvd6flrj2m29tsjq) | first 100k launch | ❌ NameError: `run_generated` was imported inside the *other* release task's body — never in scope here (import moved to module top) |
-| [up7jxnw2ldj5wsfq7rhg](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/up7jxnw2ldj5wsfq7rhg) | 100k relaunch (150 archetypes, K=3, teacher qwen38-27b) | (in flight — expected several hours: ~150 serialized teacher generations + ~450 calibration pods at concurrency 24 + instantiation) |
+| [up7jxnw2ldj5wsfq7rhg](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/up7jxnw2ldj5wsfq7rhg) | 100k relaunch (150 archetypes, K=3, teacher qwen38-27b) | ✅ in ~95 min (teacher faster than estimated); ~450 calibration pods; **corpus published: 100,072 rows** |
+| [u925305c74d92284c](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/u925305c74d92284c) | dark train on the 100k-merged corpus (smoke) | ✅ |
+| [u8c04c1a37bbc5c97](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/u8c04c1a37bbc5c97) | dark eval of that checkpoint | ✅ validity 100%, fit 84% vs baseline 56%, waste 83% vs 40%, gate fail (smoke = 10 stage-A steps; waste-training needs dev-scale on this corpus) |
 
-Dark chain: the merged corpus publish should fire train (smoke profile)
-→ checkpoint → dark eval.
+## Corpus produced (from its Artifact Card)
+
+- **100,072 rows** = 100,040 train (archetype variants + calibration rows)
+  + 32 template heldout (eval comparability preserved)
+- **40 distinct archetypes** survived of 150 attempted (yield ~27% —
+  rejection histogram on the run report; JSON truncation and calibration
+  failures dominate; raising the budget/simplifying prompts is the lever)
+- families balanced: etl 23k, batch_inference 20.5k, data_science 20.5k,
+  ml_training 18k, data_engineering 18k
+- peak memory MiB: p5 111 · p25 244 · median 373 · p75 509 · p95 4090 ·
+  max 12288 (orders of magnitude of spread, as designed)
+- cpu median 3.6 cores; duration median 62s; code length median 1580
+  chars (p95 2707)
 
 ## Also fixed this round
 
