@@ -39,6 +39,13 @@ from .policy.actions import InvalidProposal, validate_proposal
 from .policy.parsing import try_extract_proposal
 from .policy.prompts import render_messages
 from .shared import assets
+
+# Static imports on purpose: the app bundler ships only
+# statically-imported modules — a lazy `from .training...` inside the
+# loader left resource_tuner.training out of the bundle entirely
+# (ModuleNotFoundError at /reload; third time this rule has bitten).
+from .contracts import ARTIFACT_ML_BASELINE
+from .training.ml_baseline import MLBaseline, request_to_record
 from .shared.images import gpu_image
 from .shared.reporting import line_chart
 from . import tune_store
@@ -51,7 +58,7 @@ app = FastAPI(title="resource-tuner tune service")
 _state: dict = {"model": None, "tok": None, "checkpoint_path": "", "loading": False}
 # Classical fallback / A/B estimator (quantile GBTs from the
 # ml-baseline-model artifact). Loaded lazily; None until first use.
-_ml_state: dict = {"model": None, "path": "", "tried": False}
+_ml_state: dict = {"model": None, "path": "", "tried": False, "error": ""}
 _load_lock = asyncio.Lock()
 _proposal_cache: dict[str, dict] = {}  # code digest -> proposal kwargs
 _records: list[dict] = []  # recent proposals, newest last (in-memory)
@@ -146,18 +153,18 @@ async def _ensure_ml_loaded() -> None:
         return
     _ml_state["tried"] = True
     try:
-        from .contracts import ARTIFACT_ML_BASELINE
-        from .training.ml_baseline import MLBaseline
-
         ver = await assets.latest_version(ARTIFACT_ML_BASELINE)
         if ver is None:
+            _ml_state["error"] = "no blob-resolvable ml-baseline-model versions"
             print("[tune] no ml-baseline-model artifact — ML estimator unavailable")
             return
         local = await flyte.io.Dir.from_existing_remote(ver.path).download()
         _ml_state["model"] = MLBaseline.load(local)
         _ml_state["path"] = ver.path
+        _ml_state["error"] = ""
         print(f"[tune] ML baseline loaded from {ver.path[-60:]}")
     except Exception as e:  # noqa: BLE001 — the classical arm is optional
+        _ml_state["error"] = f"{type(e).__name__}: {e}"[:300]
         print(f"[tune] ML baseline load failed: {e}")
 
 
@@ -165,8 +172,6 @@ def _ml_propose(source_code: str, input_profile: str, prior: dict, history: list
     """One quantile-GBT Proposal from request fields; None if unavailable."""
     if _ml_state["model"] is None:
         return None
-    from .training.ml_baseline import request_to_record
-
     record = request_to_record(source_code, input_profile, prior or None, history or None)
     return _ml_state["model"].propose(record)
 
@@ -218,6 +223,7 @@ async def health() -> JSONResponse:
             "checkpoint_path": _state["checkpoint_path"],
             "ml_baseline_loaded": _ml_state["model"] is not None,
             "ml_baseline_path": _ml_state["path"],
+            "ml_baseline_error": _ml_state["error"],
             "cached_proposals": len(_proposal_cache),
         }
     )
