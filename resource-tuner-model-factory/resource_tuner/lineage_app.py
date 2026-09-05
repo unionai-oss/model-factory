@@ -389,6 +389,8 @@ def _metrics_of(report: dict) -> dict:
         "gpu_spurious_count": report.get("gpu_spurious_count"),
         "train_reward_first": report.get("train_reward_first"),
         "train_reward_last": report.get("train_reward_last"),
+        "ml_baseline_success_rate": report.get("ml_baseline_success_rate"),
+        "ml_baseline_cost_per_task_hr": report.get("ml_baseline_cost_per_task_hr"),
     }
 
 
@@ -1213,7 +1215,10 @@ try {
                     : "—"}</td>
                 <td>${r.success_rate != null ? Math.round(r.success_rate * 100) + "%" : "—"}</td>
                 <td>${r.median_overprovision_pct != null ? Math.round(r.median_overprovision_pct) + "%" : "—"}</td>
-                <td>${r.policy_cost_per_task_hr != null ? "$" + r.policy_cost_per_task_hr.toFixed(4) : "—"}</td>
+                <td>${r.policy_cost_per_task_hr != null ? "$" + r.policy_cost_per_task_hr.toFixed(4) : "—"}
+                  ${r.ml_baseline_cost_per_task_hr != null
+                    ? html`<span style=${{ color: "#9a9aa4" }}> (ML ${"$" + r.ml_baseline_cost_per_task_hr.toFixed(4)})</span>`
+                    : null}</td>
                 <td style=${{ color: (r.dollars_saved_per_1k_task_hrs || 0) >= 0 ? "#35c48d" : "#F43B3E" }}>
                   ${r.dollars_saved_per_1k_task_hrs != null ? "$" + r.dollars_saved_per_1k_task_hrs.toFixed(2) : "—"}</td>
                 <td>${r.gpu_success_rate != null ? Math.round(r.gpu_success_rate * 100) + "%" : "—"}</td>

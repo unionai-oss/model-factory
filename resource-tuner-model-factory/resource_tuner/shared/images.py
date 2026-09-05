@@ -64,7 +64,9 @@ gpu_image = (
 
 driver_image = (
     flyte.Image.from_debian_base(name="rt-driver", python_version=PYTHON)
-    .with_pip_packages("pandas>=2.2", "pyarrow>=17")
+    # scikit-learn: the classical ML baseline (quantile GBTs) trains inside
+    # eval_tuner on this env.
+    .with_pip_packages("pandas>=2.2", "pyarrow>=17", "scikit-learn>=1.5")
     .with_pip_packages(*_METRICS_LAYER)
     .with_pip_packages(*_FLYTE_REPIN_LAYER)
 )

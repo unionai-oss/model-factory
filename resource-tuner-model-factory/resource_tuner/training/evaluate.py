@@ -35,6 +35,7 @@ from ..policy.actions import Proposal
 from ..policy.parsing import try_extract_proposal
 from ..rewards.rewards import overprovision_fraction
 from ..training.baseline import baseline_proposal, fit_family_baseline
+from ..training.ml_baseline import MLBaseline
 from .envs import driver_env
 
 
@@ -213,6 +214,16 @@ async def eval_tuner(
         [(r, baseline_proposal(baselines, r["family"])) for r in heldout]
     )
 
+    # Classical-ML baseline (quantile GBTs, no LLM): the bar an expensive
+    # policy must clear to justify itself. Trains in-process on the same
+    # train split; failure degrades to "column absent", never a dead eval.
+    ml_stats = None
+    try:
+        ml = MLBaseline().fit(train_records)
+        ml_stats = _summarize([(r, ml.propose(r)) for r in heldout])
+    except Exception as e:  # noqa: BLE001 — comparison column, not the eval
+        print(f"[eval] ML baseline failed (column omitted): {e}")
+
     # Which reward produced this checkpoint — the manifest carries the full
     # shape config so a human reading the report knows the experiment arm.
     ckpt_dir = await checkpoint.download()
@@ -276,38 +287,29 @@ async def eval_tuner(
             }
         )
 
-    rep.h("Simulated scoring (policy vs baseline)")
+    def _stat_row(label, key, fmt):
+        row = [esc(label), esc(fmt(policy_stats[key])), esc(fmt(baseline_stats[key]))]
+        if ml_stats is not None:
+            row.append(esc(fmt(ml_stats[key])))
+        return row
+
+    headers = ["metric", "policy (LLM)", "rule baseline"]
+    if ml_stats is not None:
+        headers.append("ML baseline (quantile GBT)")
+    rep.h("Simulated scoring (policy vs baselines)")
     rep.table(
-        ["metric", "policy", "baseline"],
+        headers,
         [
-            [esc(m), esc(p), esc(b)]
-            for m, p, b in [
-                (
-                    "success rate",
-                    f"{policy_stats['success_rate']:.0%}",
-                    f"{baseline_stats['success_rate']:.0%}",
-                ),
-                (
-                    "$ / task-hour",
-                    _usd(policy_stats["cost_per_task_hr"]),
-                    _usd(baseline_stats["cost_per_task_hr"]),
-                ),
-                (
-                    "median overprovision",
-                    _pct(policy_stats["median_overprovision_pct"]),
-                    _pct(baseline_stats["median_overprovision_pct"]),
-                ),
-                (
-                    "median mem overprovision",
-                    _pct(policy_stats["median_mem_overprovision_pct"]),
-                    _pct(baseline_stats["median_mem_overprovision_pct"]),
-                ),
-                (
-                    "median cpu overprovision",
-                    _pct(policy_stats["median_cpu_overprovision_pct"]),
-                    _pct(baseline_stats["median_cpu_overprovision_pct"]),
-                ),
-            ]
+            _stat_row("success rate", "success_rate", lambda v: f"{v:.0%}"),
+            _stat_row("$ / task-hour", "cost_per_task_hr", _usd),
+            _stat_row("median overprovision", "median_overprovision_pct", _pct),
+            _stat_row("median mem overprovision", "median_mem_overprovision_pct", _pct),
+            _stat_row("median cpu overprovision", "median_cpu_overprovision_pct", _pct),
+            _stat_row(
+                "GPU-task success",
+                "gpu_success_rate",
+                lambda v: "-" if v is None else f"{v:.0%}",
+            ),
         ],
     )
 
@@ -432,6 +434,13 @@ async def eval_tuner(
         "policy_cost_per_task_hr": policy_stats["cost_per_task_hr"],
         "baseline_cost_per_task_hr": baseline_stats["cost_per_task_hr"],
         "dollars_saved_per_1k_task_hrs": (saved * 1000 if saved is not None else None),
+        # ── classical-ML baseline (quantile GBTs; None if it failed) ──
+        "ml_baseline_success_rate": ml_stats["success_rate"] if ml_stats else None,
+        "ml_baseline_cost_per_task_hr": ml_stats["cost_per_task_hr"] if ml_stats else None,
+        "ml_baseline_median_overprovision_pct": (
+            ml_stats["median_overprovision_pct"] if ml_stats else None
+        ),
+        "ml_baseline_gpu_success_rate": ml_stats["gpu_success_rate"] if ml_stats else None,
         # ── GPU estimation ──
         "gpu_contexts": policy_stats["gpu_contexts"],
         "gpu_success_rate": policy_stats["gpu_success_rate"],
