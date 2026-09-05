@@ -44,6 +44,12 @@ CORPUS_COLUMNS = [
     "split",  # "train" | "heldout"
 ]
 
+# tuner-checkpoint-intermediate: same Dir shape as tuner-checkpoint, but
+# published mid-training by publish_intermediate_checkpoint. A separate
+# artifact name on purpose: the eval-on-new-checkpoint trigger binds to
+# tuner-checkpoint, so intermediates never fire dark evals.
+ARTIFACT_TUNER_CHECKPOINT_INTERMEDIATE = "tuner-checkpoint-intermediate"
+
 # tuner-checkpoint: Dir with a PEFT adapter + tokenizer + manifest.json.
 CHECKPOINT_MANIFEST_KEYS = ["base_model", "profile", "reward_stage", "max_steps", "final_metrics"]
 

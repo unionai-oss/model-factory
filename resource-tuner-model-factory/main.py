@@ -13,7 +13,10 @@
 from resource_tuner.environment.harness import harness_env, run_generated  # noqa: F401
 from resource_tuner.training.envs import driver_env, trainer_env  # noqa: F401
 from resource_tuner.training.evaluate import eval_tuner  # noqa: F401
-from resource_tuner.training.grpo import train_tuner  # noqa: F401
+from resource_tuner.training.grpo import (  # noqa: F401
+    publish_intermediate_checkpoint,
+    train_tuner,
+)
 from resource_tuner.training.stations import (  # noqa: F401
     archetype_data_release,
     build_task_corpus,

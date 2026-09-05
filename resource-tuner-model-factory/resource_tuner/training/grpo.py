@@ -25,7 +25,13 @@ import flyte.io
 
 from .. import pricing
 from ..config import TunerProfile, WANDB_PROJECT, get_profile
-from ..contracts import ARTIFACT_TASK_CORPUS, ARTIFACT_TUNER_CHECKPOINT, publish
+from ..contracts import (
+    ARTIFACT_TASK_CORPUS,
+    ARTIFACT_TUNER_CHECKPOINT,
+    ARTIFACT_TUNER_CHECKPOINT_INTERMEDIATE,
+    publish,
+)
+from ..shared import assets
 from ..environment.simulator import simulate_episode
 from ..policy.parsing import try_extract_proposal
 from ..policy.prompts import parse_context_fields, render_messages
@@ -33,7 +39,7 @@ from ..rewards import shaping
 from ..rewards.rewards import invalid_proposal_reward, score_episode
 from ..shared.reporting import GOOD, Reporter, esc, line_chart, pill
 from .baseline import baseline_proposal, fit_family_baseline
-from .envs import trainer_env
+from .envs import driver_env, trainer_env
 
 
 def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_steps: int = 0):
@@ -264,6 +270,69 @@ async def _upload_checkpoint(out_dir: str, manifest: dict) -> "flyte.io.Dir":
     return await flyte.io.Dir.from_local(out_dir)
 
 
+def find_trl_checkpoint(root: str) -> str | None:
+    """Locate a resumable TRL checkpoint under a restored tree.
+
+    flyte.Checkpoint tarballs a saved directory; depending on layout the
+    restore lands either as the checkpoint dir's CONTENTS (trainer_state
+    at root) or as `checkpoint-<N>/` subdirs. Handles both; picks the
+    highest step. Pure function — unit-tested."""
+    import pathlib
+
+    p = pathlib.Path(root)
+    if (p / "trainer_state.json").exists():
+        return str(p)
+    cands = []
+    for d in p.glob("**/checkpoint-*"):
+        if d.is_dir() and (d / "trainer_state.json").exists():
+            try:
+                cands.append((int(d.name.rsplit("-", 1)[-1]), d))
+            except ValueError:
+                continue
+    return str(max(cands)[1]) if cands else None
+
+
+@driver_env.task(produces_artifacts=True)
+async def publish_intermediate_checkpoint(
+    ckpt: flyte.io.Dir, step: int, profile_name: str, reward_stage: str
+) -> flyte.io.Dir:
+    """Version a mid-training adapter as a Union artifact.
+
+    A separate task on purpose: publish() versions an artifact only when
+    the wrapped value is RETURNED from a task, and a distinct artifact
+    name (tuner-checkpoint-intermediate) keeps the eval-on-new-checkpoint
+    trigger quiet until the FINAL checkpoint lands."""
+    return publish(
+        ckpt,
+        ARTIFACT_TUNER_CHECKPOINT_INTERMEDIATE,
+        description=f"step {step} — {profile_name}/{reward_stage} (intermediate)",
+        kind="model",
+    )
+
+
+async def _resolve_resume(
+    resume_from: "flyte.io.Dir | None", resume_from_artifact: str
+) -> tuple["flyte.io.Dir | None", str]:
+    """(Dir to warm-start from, human-readable source). The imperative
+    path resolves the newest version of a named artifact via
+    flyte.remote.Artifact (assets: always the s3 blob URI, never the
+    console URL)."""
+    if resume_from is not None:
+        return resume_from, f"dir:{getattr(resume_from, 'path', '')}"
+    if resume_from_artifact:
+        ver = await assets.latest_version(resume_from_artifact)
+        if ver is None:
+            raise RuntimeError(
+                f"resume_from_artifact={resume_from_artifact!r} has no "
+                "blob-resolvable versions — train once with "
+                "artifact_checkpoint_every > 0 first"
+            )
+        return flyte.io.Dir.from_existing_remote(ver.path), (
+            f"artifact:{resume_from_artifact}@{ver.path[-32:]}"
+        )
+    return None, ""
+
+
 # Dark-mode wiring: a new corpus version IS the request to train.
 _train_trigger = flyte.Trigger(
     name="train-on-new-corpus",
@@ -276,12 +345,36 @@ _train_trigger = flyte.Trigger(
 
 @trainer_env.task(
     triggers=[_train_trigger],
-    timeout=flyte.Timeout(max_runtime=6 * 3600),
+    # Long-run posture: 3-day ceiling, and retries>0 so a lost pod
+    # RESUMES from the intra-task checkpoint instead of restarting.
+    timeout=flyte.Timeout(max_runtime=72 * 3600, max_queued_time=6 * 3600),
+    retries=3,
     produces_artifacts=True,
     report=True,
 )
-async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> flyte.io.Dir:
-    """Train the policy on the corpus's train split; emit tuner-checkpoint."""
+async def train_tuner(
+    corpus: flyte.io.File,
+    profile_name: str = "smoke",
+    resume_from: flyte.io.Dir | None = None,
+    resume_from_artifact: str = "",
+    fail_at_step: int = 0,
+) -> flyte.io.Dir:
+    """Train the policy on the corpus's train split; emit tuner-checkpoint.
+
+    Checkpointing layers (all optional, driven by the profile):
+    - intra-task (profile.save_steps): TRL writes full trainer state every
+      N steps and flyte's Checkpoint uploads it; a retried attempt resumes
+      at the last saved step (optimizer/scheduler/global_step intact).
+    - artifact checkpoints (profile.artifact_checkpoint_every): the
+      adapter is published mid-run as tuner-checkpoint-intermediate via a
+      child task — Union-native lineage + a warm-start input for later runs.
+    - warm start (resume_from / resume_from_artifact): initialize the LoRA
+      adapter from a previous (intermediate or final) checkpoint Dir; the
+      artifact form resolves the newest version imperatively.
+
+    `fail_at_step` is a chaos hook for testing the intra-task path: the
+    FIRST attempt raises after that step; retries then prove the resume.
+    """
     import asyncio
 
     import pandas as pd
@@ -326,6 +419,35 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
 
+    # Warm start: initialize the adapter from a previous (intermediate or
+    # final) checkpoint instead of fresh LoRA init.
+    peft_config = lora
+    resume_dir, resume_source = await _resolve_resume(resume_from, resume_from_artifact)
+    if resume_dir is not None:
+        from peft import PeftModel
+
+        local_resume = await resume_dir.download()
+        model = PeftModel.from_pretrained(model, local_resume, is_trainable=True)
+        peft_config = None  # already wrapped — GRPOTrainer must not re-wrap
+        meta["resume"] = resume_source
+        await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
+
+    # Intra-task checkpoint: if a previous ATTEMPT of this action saved
+    # trainer state, restore it and resume mid-run (optimizer/scheduler/
+    # global_step intact) instead of restarting from step 0.
+    try:
+        cp = flyte.ctx().checkpoint
+    except Exception:  # noqa: BLE001 — local runs have no checkpoint prefix
+        cp = None
+    intra_resume = None
+    if profile.save_steps and cp is not None and cp.prev_exists():
+        restored = await cp.load()
+        if restored is not None:
+            intra_resume = find_trl_checkpoint(str(restored))
+            if intra_resume:
+                meta["intra_task_resume"] = intra_resume.rsplit("/", 1)[-1]
+                print(f"[ckpt] resuming attempt from intra-task checkpoint {intra_resume}")
+
     out_dir = tempfile.mkdtemp(prefix="tuner-ckpt-")
     wandb_on = bool(os.environ.get("WANDB_API_KEY"))
     if wandb_on:
@@ -345,6 +467,10 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
     extra_cfg = {}
     if any(f.name == "chat_template_kwargs" for f in dataclasses.fields(GRPOConfig)):
         extra_cfg["chat_template_kwargs"] = {"enable_thinking": False}
+    if profile.save_steps:
+        # Full trainer state on disk every N steps; the checkpoint callback
+        # ships the newest one to the flyte Checkpoint prefix.
+        extra_cfg.update(save_steps=profile.save_steps, save_total_limit=2)
 
     config = GRPOConfig(
         output_dir=out_dir,
@@ -366,7 +492,7 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
         bf16=bf16,
         fp16=not bf16,
         logging_steps=1,
-        save_strategy="no",
+        save_strategy="steps" if profile.save_steps else "no",
         report_to="wandb" if wandb_on else "none",
         **extra_cfg,
     )
@@ -390,6 +516,69 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
                 flyte.report.replace.aio(html, do_flush=True), loop
             )
 
+    pending_publishes: list = []
+
+    class _CheckpointCallback(TrainerCallback):
+        """Fires on every TRL save (profile.save_steps cadence): uploads
+        the trainer-state dir to the flyte Checkpoint (intra-task resume),
+        and every artifact_checkpoint_every steps snapshots the adapter and
+        schedules publish_intermediate_checkpoint (a child task) on the
+        main event loop."""
+
+        def on_save(self, args, state, control, **cb_kwargs):
+            step = state.global_step
+            latest = find_trl_checkpoint(out_dir)
+            if cp is not None and latest:
+                try:
+                    # Blocks the trainer thread for the upload — adapters
+                    # are tens of MB, seconds at most.
+                    asyncio.run_coroutine_threadsafe(cp.save(latest), loop).result(timeout=900)
+                    print(f"[ckpt] intra-task checkpoint uploaded at step {step}")
+                except Exception as e:  # noqa: BLE001 — a failed save must not kill training
+                    print(f"[ckpt] intra-task save failed at step {step}: {e}")
+            every = profile.artifact_checkpoint_every
+            if every and step and step % every == 0 and step < profile.max_steps:
+                snap = tempfile.mkdtemp(prefix=f"tuner-inter-{step}-")
+                mdl = cb_kwargs.get("model") or trainer.model
+                mdl.save_pretrained(snap)
+                tok.save_pretrained(snap)
+                with open(os.path.join(snap, "manifest.json"), "w") as f:
+                    json.dump(
+                        {
+                            "base_model": profile.base_model,
+                            "profile": profile.name,
+                            "reward_stage": profile.reward_stage,
+                            "step": step,
+                            "intermediate": True,
+                        },
+                        f,
+                    )
+
+                async def _publish(snap=snap, step=step):
+                    d = await flyte.io.Dir.from_local(snap)
+                    return await publish_intermediate_checkpoint(
+                        ckpt=d,
+                        step=step,
+                        profile_name=profile.name,
+                        reward_stage=profile.reward_stage,
+                    )
+
+                pending_publishes.append(asyncio.run_coroutine_threadsafe(_publish(), loop))
+                print(f"[ckpt] intermediate artifact publish scheduled at step {step}")
+            # Chaos hook: first attempt dies after this step; the retry
+            # must resume from the checkpoint just uploaded.
+            if (
+                fail_at_step
+                and profile.save_steps
+                and step >= fail_at_step
+                and not (cp is not None and cp.prev_exists())
+            ):
+                raise RuntimeError(
+                    f"[chaos] injected failure at step {step} "
+                    f"(fail_at_step={fail_at_step}) — the retried attempt "
+                    "should resume from the intra-task checkpoint"
+                )
+
     trainer = GRPOTrainer(
         model=model,
         args=config,
@@ -400,13 +589,13 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
             num_generations=profile.num_generations,
             max_steps=profile.max_steps,
         ),
-        peft_config=lora,
+        peft_config=peft_config,
         processing_class=tok,
-        callbacks=[_ReportCallback()],
+        callbacks=[_ReportCallback(), _CheckpointCallback()],
     )
     # The trainer is blocking for the whole run; keep the event loop alive.
     try:
-        await asyncio.to_thread(trainer.train)
+        await asyncio.to_thread(trainer.train, resume_from_checkpoint=intra_resume)
     except torch.cuda.OutOfMemoryError as e:
         # Explicit OOM handling: fail with a pointed message instead of a
         # bare CUDA traceback (the fix is a knob, not a retry).
@@ -415,6 +604,14 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
             f"Reduce per_device_batch/num_generations/max_completion_length "
             f"or set use_qlora for {profile.base_model}."
         ) from e
+
+    # Drain intermediate publishes before the final upload — every
+    # scheduled artifact either lands or is reported, never silently lost.
+    for fut in pending_publishes:
+        try:
+            await asyncio.wrap_future(fut)
+        except Exception as e:  # noqa: BLE001 — an intermediate is best-effort
+            print(f"[ckpt] intermediate publish failed: {e}")
 
     history = [
         {k: v for k, v in row.items() if isinstance(v, (int, float))}
@@ -437,6 +634,10 @@ async def train_tuner(corpus: flyte.io.File, profile_name: str = "smoke") -> fly
             else None
         ),
         "max_steps": profile.max_steps,
+        "resume": meta.get("resume", ""),
+        "intra_task_resume": meta.get("intra_task_resume", ""),
+        "save_steps": profile.save_steps,
+        "artifact_checkpoint_every": profile.artifact_checkpoint_every,
         "final_metrics": {
             "mean_reward_first": mean_rewards[0] if mean_rewards else None,
             "mean_reward_last": mean_rewards[-1] if mean_rewards else None,

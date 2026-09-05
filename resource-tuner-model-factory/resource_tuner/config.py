@@ -129,6 +129,15 @@ class TunerProfile:
     cluster_episode_fraction: float
     # on-cluster validation episodes in eval
     eval_cluster_episodes: int
+    # ── checkpointing (defaults off; long runs turn these on) ──
+    # intra-task cadence: TRL saves full trainer state every N steps and
+    # the flyte Checkpoint uploads it, so a retried attempt resumes
+    # mid-run instead of restarting. 0 = no intra-task saves.
+    save_steps: int = 0
+    # every N steps, publish the adapter as a tuner-checkpoint-intermediate
+    # artifact via a child task (Union-native lineage; resumable input for
+    # a later train_tuner via resume_from_artifact). 0 = off.
+    artifact_checkpoint_every: int = 0
 
 
 SMOKE = TunerProfile(
@@ -217,6 +226,36 @@ _DEV_SHAPED = tuple(
     _dc.replace(DEV, name=f"dev-{stage}", reward_stage=stage) for stage in _SHAPE_ARMS
 )
 
+# Checkpointing smoke rung: 10 steps with aggressive save/publish cadence
+# so the whole intra-task + artifact-checkpoint + resume surface can be
+# exercised end-to-end in minutes.
+SMOKE_CKPT = _dc.replace(
+    SMOKE, name="smoke-ckpt", save_steps=4, artifact_checkpoint_every=5
+)
+
+# The most ambitious rung: 0.5M-row corpus, ~3-day budget on a SINGLE T4
+# (minimal GPU spend), 4B-class model via QLoRA. Qwen3.5-4B first; if the
+# known TRL-multimodal blocker (trl#5269) still bites, the text-only
+# Qwen3-4B is the 4B-class fallback.
+AMBITIOUS = TunerProfile(
+    name="ambitious",
+    base_model=MODEL_LADDER["m-qwen35"],
+    train_contexts=16384,
+    eval_contexts=512,
+    reward_stage="c-cost",  # round-7's best arm on the business metric
+    max_steps=1200,
+    num_generations=8,
+    per_device_batch=8,
+    max_completion_length=128,
+    learning_rate=5e-6,
+    lora_r=32,
+    use_qlora=True,
+    cluster_episode_fraction=0.0,
+    eval_cluster_episodes=24,
+    save_steps=25,
+    artifact_checkpoint_every=100,
+)
+
 # Round-8 arms: the 250k mixed corpus (archetypes + templates incl.
 # single-T4 GPU tasks + prior/history context fields), 8x dev's contexts,
 # 2x its steps. Same fixed train-subset seed across arms → controlled.
@@ -226,7 +265,8 @@ _R8_SHAPED = tuple(
 )
 
 PROFILES: dict[str, TunerProfile] = {
-    p.name: p for p in (SMOKE, SMOKE_COMPOSITE, DEV, FULL, *_DEV_SHAPED, *_R8_SHAPED)
+    p.name: p
+    for p in (SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, *_DEV_SHAPED, *_R8_SHAPED)
 }
 
 
