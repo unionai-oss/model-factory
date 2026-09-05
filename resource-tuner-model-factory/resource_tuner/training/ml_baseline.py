@@ -247,6 +247,32 @@ class MLBaseline:
         )
 
 
+def out_of_fold_hints(records: list[dict], k: int = 3) -> list[Proposal | None]:
+    """Per-record GBT proposals where each record's hint comes from a model
+    that NEVER saw it (k-fold). Train-time hints must carry serve-time
+    noise — an in-fold GBT is an oracle the policy would learn to copy
+    blindly and then miss at serve time."""
+    n = len(records)
+    hints: list[Proposal | None] = [None] * n
+    if n < k * 8:  # too small to fold meaningfully
+        return hints
+    folds = [i % k for i in range(n)]
+    for fold in range(k):
+        train = [r for r, f in zip(records, folds) if f != fold]
+        try:
+            model = MLBaseline().fit(train)
+        except Exception as e:  # noqa: BLE001 — hints are optional context
+            print(f"[gbt-hint] fold {fold} fit failed: {e}")
+            continue
+        for i, (r, f) in enumerate(zip(records, folds)):
+            if f == fold:
+                try:
+                    hints[i] = model.propose(r)
+                except Exception:  # noqa: BLE001
+                    hints[i] = None
+    return hints
+
+
 def request_to_record(
     source_code: str, input_profile: str, prior: dict | None, history: list | None
 ) -> dict:

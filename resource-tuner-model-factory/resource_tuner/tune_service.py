@@ -119,7 +119,15 @@ async def _load_latest() -> str:
     path = await _pick_checkpoint()
     local = await flyte.io.Dir.from_existing_remote(path).download()
     with open(f"{local}/manifest.json") as f:
-        base_model = json.load(f)["base_model"]
+        ckpt_manifest = json.load(f)
+    base_model = ckpt_manifest["base_model"]
+    # gbt_hint arms were TRAINED with a statistical estimate in the
+    # prompt; serving must supply one too (hint-naive checkpoints get none).
+    _state["gbt_hint_trained"] = bool(ckpt_manifest.get("gbt_hint"))
+
+    # Full-finetune checkpoints (use_lora=False arms) have no adapter —
+    # they ARE the model.
+    is_adapter = os.path.exists(f"{local}/adapter_config.json")
 
     def load():
         import torch
@@ -129,13 +137,14 @@ async def _load_latest() -> str:
         bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
         tok = AutoTokenizer.from_pretrained(local, padding_side="left")
         model = AutoModelForCausalLM.from_pretrained(
-            base_model,
+            base_model if is_adapter else str(local),
             dtype=torch.bfloat16 if bf16 else torch.float16,
             device_map="auto",
             attn_implementation="eager",
             trust_remote_code=True,
         )
-        model = PeftModel.from_pretrained(model, local)
+        if is_adapter:
+            model = PeftModel.from_pretrained(model, local)
         model.eval()
         return model, tok
 
@@ -191,11 +200,14 @@ def _generate_sync(
     input_profile: str,
     prior: dict | None = None,
     history: list | None = None,
+    ml_estimate: dict | None = None,
 ) -> str:
     import torch
 
     model, tok = _state["model"], _state["tok"]
-    messages = render_messages(source_code, input_profile, prior=prior, history=history)
+    messages = render_messages(
+        source_code, input_profile, prior=prior, history=history, ml_estimate=ml_estimate
+    )
     try:
         prompt = tok.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
@@ -286,8 +298,18 @@ async def propose(body: dict) -> JSONResponse:
             record.update(proposal=kwargs, source="ml_baseline")
         else:
             await _ensure_loaded()
+            ml_estimate = None
+            if _state.get("gbt_hint_trained"):
+                await _ensure_ml_loaded()
+                hint = _ml_propose(source_code, input_profile, prior, history)
+                ml_estimate = hint.to_kwargs() if hint is not None else None
             text = await asyncio.to_thread(
-                _generate_sync, source_code, input_profile, prior or None, history or None
+                _generate_sync,
+                source_code,
+                input_profile,
+                prior or None,
+                history or None,
+                ml_estimate,
             )
             proposal = try_extract_proposal(text)
             if proposal is None:

@@ -33,10 +33,10 @@ from ..contracts import (
 )
 from ..shared import assets
 from ..environment.simulator import simulate_episode
-from ..policy.parsing import try_extract_proposal
+from ..policy.parsing import format_credit, try_extract_proposal
 from ..policy.prompts import parse_context_fields, render_messages
 from ..rewards import shaping
-from ..rewards.rewards import invalid_proposal_reward, score_episode
+from ..rewards.rewards import FORMAT_REWARD, invalid_proposal_reward, score_episode
 from ..shared.reporting import GOOD, Reporter, esc, line_chart, pill
 from .baseline import baseline_proposal, fit_family_baseline
 from .envs import ckpt_publisher_env, trainer_env
@@ -79,7 +79,11 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
             text = completion[0]["content"] if isinstance(completion, list) else completion
             proposal = try_extract_proposal(text)
             if proposal is None:
-                rewards.append(invalid_proposal_reward().total)
+                # Graded parseability: prose scores 0, near-JSON scores
+                # partial format credit — a gradient toward the schema
+                # instead of a cliff (round-7/8's invalid completions all
+                # scored identically to garbage).
+                rewards.append(format_credit(text) * FORMAT_REWARD)
                 oks.append(False)
                 costs.append(None)
                 continue
@@ -114,15 +118,26 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
     return resource_reward
 
 
-def _record_to_row(r: dict, baselines: dict | None = None) -> dict:
+def _record_to_row(r: dict, baselines: dict | None = None, ml_hint=None) -> dict:
     base_cost = None
-    if baselines:
+    if ml_hint is not None:
+        # GBT-hint composition: the savings reference IS the GBT's cost —
+        # the policy earns baseline_relative bonus only by beating the
+        # strongest classical estimator.
+        base_cost = pricing.dollars_per_hr(
+            ml_hint.cpu, ml_hint.memory_mib, ml_hint.gpu_type, ml_hint.gpu
+        )
+    elif baselines:
         bp = baseline_proposal(baselines, r["family"])
         base_cost = pricing.dollars_per_hr(bp.cpu, bp.memory_mib, bp.gpu_type, bp.gpu)
     prior, history = parse_context_fields(r.get("prior_json"), r.get("history_json"))
     return {
         "prompt": render_messages(
-            r["source_code"], r["input_profile"], prior=prior, history=history
+            r["source_code"],
+            r["input_profile"],
+            prior=prior,
+            history=history,
+            ml_estimate=ml_hint.to_kwargs() if ml_hint is not None else None,
         ),
         "true_peak_memory_mib": r["true_peak_memory_mib"],
         "true_cpu_cores": r["true_cpu_cores"],
@@ -133,10 +148,15 @@ def _record_to_row(r: dict, baselines: dict | None = None) -> dict:
     }
 
 
-def _records_to_dataset(records: list[dict], baselines: dict | None = None):
+def _records_to_dataset(
+    records: list[dict], baselines: dict | None = None, ml_hints: list | None = None
+):
     from datasets import Dataset
 
-    return Dataset.from_list([_record_to_row(r, baselines) for r in records])
+    hints = ml_hints or [None] * len(records)
+    return Dataset.from_list(
+        [_record_to_row(r, baselines, ml_hint=h) for r, h in zip(records, hints)]
+    )
 
 
 # Deliberately NOT @flyte.trace'd: traced functions serialize inputs AND
@@ -399,7 +419,15 @@ async def train_tuner(
     # Family baselines priced per record: the baseline_relative shapes score
     # "cheaper than the rule baseline" directly in the reward.
     baselines = fit_family_baseline(records) if records else {}
-    dataset = _records_to_dataset(records, baselines=baselines)
+    ml_hints = None
+    if profile.gbt_hint and records:
+        from .ml_baseline import out_of_fold_hints
+
+        ml_hints = out_of_fold_hints(records)
+        n_hints = sum(1 for h in ml_hints if h is not None)
+        meta["gbt_hints"] = f"{n_hints}/{len(records)} (out-of-fold)"
+        print(f"[gbt-hint] {n_hints}/{len(records)} train contexts carry GBT hints")
+    dataset = _records_to_dataset(records, baselines=baselines, ml_hints=ml_hints)
     meta["n_contexts"] = len(records)
 
     model, tok, bf16 = _load_model(profile)
@@ -410,18 +438,29 @@ async def train_tuner(
     )
     meta["dtype"] = "bf16" if bf16 else "fp16"
     await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+    if profile.lora_mlp:
+        # Capacity arm: adapters on the MLP projections too (~3x adapter
+        # params with r; the honest capacity test before full FT).
+        target_modules += ["gate_proj", "up_proj", "down_proj"]
     lora = LoraConfig(
         r=profile.lora_r,
         lora_alpha=profile.lora_r * 2,
         lora_dropout=0.0,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_modules=target_modules,
     )
 
     # Warm start: initialize the adapter from a previous (intermediate or
-    # final) checkpoint instead of fresh LoRA init.
-    peft_config = lora
+    # final) checkpoint instead of fresh LoRA init. Full-FT arms train the
+    # whole model — no adapters, no warm-start-from-adapter.
+    peft_config = lora if profile.use_lora else None
+    if not profile.use_lora and (resume_from is not None or resume_from_artifact):
+        raise ValueError(
+            "resume_from/resume_from_artifact carry LoRA adapters — not "
+            "loadable into a full-finetune arm (use_lora=False)"
+        )
     resume_dir, resume_source = await _resolve_resume(resume_from, resume_from_artifact)
     if resume_dir is not None:
         from peft import PeftModel
@@ -472,6 +511,10 @@ async def train_tuner(
         # Full trainer state on disk every N steps; the checkpoint callback
         # ships the newest one to the flyte Checkpoint prefix.
         extra_cfg.update(save_steps=profile.save_steps, save_total_limit=2)
+    if not profile.use_lora:
+        # Full FT on small cards: 8-bit Adam keeps optimizer state at
+        # ~2 bytes/param (a 0.6B full-FT fits a T4 at ~5-6GB total).
+        extra_cfg.update(optim="adamw_bnb_8bit")
 
     config = GRPOConfig(
         output_dir=out_dir,
@@ -642,6 +685,10 @@ async def train_tuner(
             else None
         ),
         "max_steps": profile.max_steps,
+        # Round-11 arm descriptors — eval and serving adapt to these.
+        "use_lora": profile.use_lora,
+        "lora_mlp": profile.lora_mlp,
+        "gbt_hint": profile.gbt_hint,
         "resume": meta.get("resume", ""),
         "intra_task_resume": meta.get("intra_task_resume", ""),
         "save_steps": profile.save_steps,

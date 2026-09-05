@@ -137,6 +137,18 @@ class TunerProfile:
     # artifact via a child task (Union-native lineage; resumable input for
     # a later train_tuner via resume_from_artifact). 0 = off.
     artifact_checkpoint_every: int = 0
+    # ── round-11 arms ──
+    # extend LoRA to the MLP projections (gate/up/down_proj) — the honest
+    # capacity test before anything more radical.
+    lora_mlp: bool = False
+    # False = FULL fine-tune (no adapters; 8-bit Adam; small rungs only —
+    # a 0.6B fits a T4 at ~5-6GB with grad checkpointing).
+    use_lora: bool = True
+    # GBT-hint composition: quantile-GBT estimates ride in the prompt
+    # (out-of-fold at train time) AND the baseline_relative reward term
+    # references the GBT's cost — the policy is paid for beating the
+    # strongest classical estimator, not the family-median strawman.
+    gbt_hint: bool = False
 
 
 SMOKE = TunerProfile(
@@ -277,11 +289,25 @@ _R8_SHAPED = tuple(
     _dc.replace(_R8_BASE, name=f"r8-{stage}", reward_stage=stage) for stage in _SHAPE_ARMS
 )
 
+# Round-11 arms: r8 scale (4096 ctx / 300 steps, c-cost reward — the
+# round-7/8 winner) so results drop straight into the standing comparison
+# table. One variable each:
+_R11_BASE = _dc.replace(_R8_BASE, reward_stage="c-cost")
+R11_R64 = _dc.replace(_R11_BASE, name="r11-r64-mlp", lora_r=64, lora_mlp=True)
+R11_GBT = _dc.replace(_R11_BASE, name="r11-gbt-hint", gbt_hint=True)
+R11_FULLFT = _dc.replace(
+    _R11_BASE,
+    name="r11-fullft-06b",
+    base_model=MODEL_LADDER["xs"],  # Qwen3-0.6B — full FT fits a T4
+    use_lora=False,
+    use_qlora=False,
+)
+
 PROFILES: dict[str, TunerProfile] = {
     p.name: p
     for p in (
         SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, PROBE_QWEN35,
-        *_DEV_SHAPED, *_R8_SHAPED,
+        *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT,
     )
 }
 

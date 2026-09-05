@@ -104,7 +104,10 @@ def _summarize(pairs: list[tuple[dict, Proposal]]) -> dict:
 
 
 async def _generate_proposals(
-    records: list[dict], checkpoint_path: str, invalid_examples: list[str] | None = None
+    records: list[dict],
+    checkpoint_path: str,
+    invalid_examples: list[str] | None = None,
+    hint_kwargs: list | None = None,
 ) -> list[Proposal | None]:
     """Greedy proposals via the reusable generator env.
 
@@ -121,7 +124,9 @@ async def _generate_proposals(
 
     from .generator import generate_proposal
 
-    async def one(record: dict) -> Proposal | None:
+    hints = hint_kwargs or [None] * len(records)
+
+    async def one(record: dict, hint: dict | None) -> Proposal | None:
         try:
             text = await generate_proposal(
                 checkpoint_path=checkpoint_path,
@@ -129,6 +134,7 @@ async def _generate_proposals(
                 input_profile=record["input_profile"],
                 prior_json=str(record.get("prior_json", "") or ""),
                 history_json=str(record.get("history_json", "") or ""),
+                ml_hint_json=json.dumps(hint) if hint else "",
             )
         except flyte.errors.OOMError as e:
             print(f"[eval] generator OOM for {record['task_id']}: {e}")
@@ -143,7 +149,7 @@ async def _generate_proposals(
             invalid_examples.append(f"{record['task_id']} [{record.get('family', '?')}]: {text[:220]}")
         return proposal
 
-    return list(await asyncio.gather(*(one(r) for r in records)))
+    return list(await asyncio.gather(*(one(r, h) for r, h in zip(records, hints))))
 
 
 # Dark-mode wiring: a new checkpoint version IS the request to evaluate.
@@ -194,16 +200,48 @@ async def eval_tuner(
     train_records = df[df["split"] == "train"].to_dict("records")
 
     ckpt_path = getattr(checkpoint, "path", "") or ""
+    # Manifest FIRST: hint-trained checkpoints (gbt_hint arms) must see
+    # GBT estimates at generation time, exactly as they will at serving.
+    ckpt_dir = await checkpoint.download()
+    with open(f"{ckpt_dir}/manifest.json") as f:
+        manifest = json.load(f)
+
+    # Classical-ML baseline (quantile GBTs, no LLM): the bar an expensive
+    # policy must clear to justify itself, and — for gbt_hint arms — the
+    # hint provider. Trains in-process on the same train split; failure
+    # degrades to "column absent", never a dead eval.
+    ml = None
+    ml_stats = None
+    try:
+        ml = MLBaseline().fit(train_records)
+        ml_stats = _summarize([(r, ml.propose(r)) for r in heldout])
+    except Exception as e:  # noqa: BLE001 — comparison column, not the eval
+        print(f"[eval] ML baseline failed (column omitted): {e}")
+
+    hint_kwargs: list[dict | None] = [None] * len(heldout)
+    if manifest.get("gbt_hint") and ml is not None:
+        # Heldout hints from a train-split-fitted GBT are honestly
+        # out-of-sample (same regime the policy saw via k-fold hints).
+        hint_kwargs = []
+        for r in heldout:
+            try:
+                hint_kwargs.append(ml.propose(r).to_kwargs())
+            except Exception:  # noqa: BLE001
+                hint_kwargs.append(None)
+
     rep.reset_body().kv(
         {
             "heldout contexts": len(heldout),
             "train contexts (baseline fit)": len(train_records),
             "checkpoint": ckpt_path[-60:],
+            "gbt hints": "on" if manifest.get("gbt_hint") else "off",
         }
     ).p("Generating proposals via the reusable batched generator…")
     await rep.flush()
     invalid_examples: list[str] = []
-    proposals = await _generate_proposals(heldout, ckpt_path, invalid_examples)
+    proposals = await _generate_proposals(
+        heldout, ckpt_path, invalid_examples, hint_kwargs=hint_kwargs
+    )
 
     valid = [(r, p) for r, p in zip(heldout, proposals) if p is not None]
     policy_stats = _summarize(valid)
@@ -213,22 +251,6 @@ async def eval_tuner(
     baseline_stats = _summarize(
         [(r, baseline_proposal(baselines, r["family"])) for r in heldout]
     )
-
-    # Classical-ML baseline (quantile GBTs, no LLM): the bar an expensive
-    # policy must clear to justify itself. Trains in-process on the same
-    # train split; failure degrades to "column absent", never a dead eval.
-    ml_stats = None
-    try:
-        ml = MLBaseline().fit(train_records)
-        ml_stats = _summarize([(r, ml.propose(r)) for r in heldout])
-    except Exception as e:  # noqa: BLE001 — comparison column, not the eval
-        print(f"[eval] ML baseline failed (column omitted): {e}")
-
-    # Which reward produced this checkpoint — the manifest carries the full
-    # shape config so a human reading the report knows the experiment arm.
-    ckpt_dir = await checkpoint.download()
-    with open(f"{ckpt_dir}/manifest.json") as f:
-        manifest = json.load(f)
     base_model = manifest["base_model"]
     reward_stage = manifest.get("reward_stage", "?")
     reward_shape = manifest.get("reward_shape")
