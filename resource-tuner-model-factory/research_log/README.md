@@ -26,6 +26,9 @@ Conventions:
 | 2026-09-04 | [round-4-archetype-100k](2026-09-04-round-4-archetype-100k.md) | 100k-pipeline corpus via teacher archetypes × oracle-calibrated instantiation; hash-salt reproducibility fix |
 | 2026-09-04 | [round-5-last-mile-tune-service](2026-09-04-round-5-last-mile-tune-service.md) | Tune service + @tune.resources; FINAL A/B: OOM 13%→0%, fit 87%→100%, waste 54%→47% vs hard-coded prior; serve-best + batcher-await lessons |
 | 2026-09-04 | [round-6-value-ledger](2026-09-04-round-6-value-ledger.md) | Append-only Dir value ledger + rt-tune dashboard (cumulative savings, task registry); 3-workflow × 2-scale demo; TunedTask duck-typing + weakref-prior fixes; uniform-4Gi OOMs embed/large |
+| 2026-09-04 | [round-7-reward-shaping](2026-09-04-round-7-reward-shaping.md) | Reward-shape menu + \$ pricing + GPU estimation; all dev-scale arms LOSE money; c-cost least bad; GPU proposals 0% valid |
+| 2026-09-05 | [round-8-scale-arms](2026-09-05-round-8-scale-arms.md) | Same arms at 250k/4096-ctx/300-step scale: ALL arms save \$52-55/1k task-hrs (+31%); shapes barely separate; gate still fails on waste/fit |
+| 2026-09-04 | [round-9-checkpointing](2026-09-04-round-9-checkpointing.md) | Intra-task + artifact checkpoints + warm start, all proven via chaos runs (2 bugs caught); Qwen3.5 RL unblocked; 500k corpus + ambitious 4B run launched |
 
 ## Standing results (as of 2026-09-03)
 
