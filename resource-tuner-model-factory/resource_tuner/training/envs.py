@@ -11,6 +11,18 @@ from ..environment.harness import harness_env
 from ..shared.images import driver_image, gpu_image, secrets
 from .generator import generator_env
 
+# Tiny CPU env for artifact-checkpoint publishing. Its own env (not
+# driver_env) because a parent can only spawn children whose envs are in
+# its dependency closure — round-9 run ujv65cq2 failed publishes with
+# "Environment 'rt-driver' not found in image" when the GPU trainer tried
+# to spawn a driver-env child.
+ckpt_publisher_env = flyte.TaskEnvironment(
+    name="rt-ckpt",
+    image=driver_image,
+    resources=flyte.Resources(cpu=1, memory="2Gi"),
+    env_vars=cluster_env_vars(),
+)
+
 trainer_env = flyte.TaskEnvironment(
     name="rt-trainer",
     image=gpu_image,
@@ -22,7 +34,7 @@ trainer_env = flyte.TaskEnvironment(
         "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
         "TOKENIZERS_PARALLELISM": "false",
     },
-    depends_on=[harness_env],
+    depends_on=[harness_env, ckpt_publisher_env],
 )
 
 driver_env = flyte.TaskEnvironment(

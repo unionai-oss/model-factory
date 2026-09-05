@@ -82,12 +82,11 @@ def cpu_resources():
 
 
 # ── model ladder ────────────────────────────────────────────────────────
-# Parameterized via RT_MODEL. Default is TEXT-ONLY Qwen3-1.7B: the Qwen3.5
-# small tier (0.8B/2B/4B/9B) is the target ladder, but every Qwen3.5
-# checkpoint is natively multimodal (Qwen3_5ForConditionalGeneration) and
-# TRL GRPO currently fails on that arch (weight paths nested under
-# language_model.*; open upstream: trl#5269, vllm#39993). Swap the default
-# once those close — nothing else in the pipeline assumes the model family.
+# Parameterized via RT_MODEL. Default is TEXT-ONLY Qwen3-1.7B (fastest
+# rung that trains well). The Qwen3.5 multimodal-arch TRL blocker
+# (trl#5269 / vllm#39993) no longer reproduces: probe run
+# u2248fp4bgnpds44b24q (2026-09-04) trained Qwen3.5-4B QLoRA GRPO on a T4
+# with real gradients — the *-qwen35 rungs are live.
 DEFAULT_MODEL = os.environ.get("RT_MODEL", "Qwen/Qwen3-1.7B")
 MODEL_LADDER: dict[str, str] = {
     # text-only tier: known-good with TRL GRPO today

@@ -39,7 +39,7 @@ from ..rewards import shaping
 from ..rewards.rewards import invalid_proposal_reward, score_episode
 from ..shared.reporting import GOOD, Reporter, esc, line_chart, pill
 from .baseline import baseline_proposal, fit_family_baseline
-from .envs import driver_env, trainer_env
+from .envs import ckpt_publisher_env, trainer_env
 
 
 def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_steps: int = 0):
@@ -292,7 +292,7 @@ def find_trl_checkpoint(root: str) -> str | None:
     return str(max(cands)[1]) if cands else None
 
 
-@driver_env.task(produces_artifacts=True)
+@ckpt_publisher_env.task(produces_artifacts=True)
 async def publish_intermediate_checkpoint(
     ckpt: flyte.io.Dir, step: int, profile_name: str, reward_stage: str
 ) -> flyte.io.Dir:
