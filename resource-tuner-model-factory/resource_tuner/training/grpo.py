@@ -536,6 +536,26 @@ async def train_tuner(
                     print(f"[ckpt] intra-task checkpoint uploaded at step {step}")
                 except Exception as e:  # noqa: BLE001 — a failed save must not kill training
                     print(f"[ckpt] intra-task save failed at step {step}: {e}")
+            # Chaos hook: first attempt dies after this step; the retry
+            # must resume from the checkpoint just uploaded.
+            if (
+                fail_at_step
+                and profile.save_steps
+                and step >= fail_at_step
+                and not (cp is not None and cp.prev_exists())
+            ):
+                raise RuntimeError(
+                    f"[chaos] injected failure at step {step} "
+                    f"(fail_at_step={fail_at_step}) — the retried attempt "
+                    "should resume from the intra-task checkpoint"
+                )
+
+        # Artifact cadence lives on on_step_end, NOT on_save: on_save only
+        # fires every save_steps, so gating publishes there silently reduces
+        # the cadence to the LCM of the two knobs (found by the round-9
+        # chaos smoke: save 4 / publish 5 → zero intermediates published).
+        def on_step_end(self, args, state, control, **cb_kwargs):
+            step = state.global_step
             every = profile.artifact_checkpoint_every
             if every and step and step % every == 0 and step < profile.max_steps:
                 snap = tempfile.mkdtemp(prefix=f"tuner-inter-{step}-")
@@ -565,19 +585,6 @@ async def train_tuner(
 
                 pending_publishes.append(asyncio.run_coroutine_threadsafe(_publish(), loop))
                 print(f"[ckpt] intermediate artifact publish scheduled at step {step}")
-            # Chaos hook: first attempt dies after this step; the retry
-            # must resume from the checkpoint just uploaded.
-            if (
-                fail_at_step
-                and profile.save_steps
-                and step >= fail_at_step
-                and not (cp is not None and cp.prev_exists())
-            ):
-                raise RuntimeError(
-                    f"[chaos] injected failure at step {step} "
-                    f"(fail_at_step={fail_at_step}) — the retried attempt "
-                    "should resume from the intra-task checkpoint"
-                )
 
     trainer = GRPOTrainer(
         model=model,

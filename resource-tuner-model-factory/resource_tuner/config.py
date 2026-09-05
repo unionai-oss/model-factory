@@ -233,6 +233,11 @@ SMOKE_CKPT = _dc.replace(
     SMOKE, name="smoke-ckpt", save_steps=4, artifact_checkpoint_every=5
 )
 
+# 5-step trainability probe for the Qwen3.5 tier (trl#5269 gate): cheap
+# way to learn whether the multimodal-arch blocker still bites before
+# committing a 3-day run to the model.
+PROBE_QWEN35 = None  # defined after AMBITIOUS (needs _dc)
+
 # The most ambitious rung: 0.5M-row corpus, ~3-day budget on a SINGLE T4
 # (minimal GPU spend), 4B-class model via QLoRA. Qwen3.5-4B first; if the
 # known TRL-multimodal blocker (trl#5269) still bites, the text-only
@@ -256,6 +261,15 @@ AMBITIOUS = TunerProfile(
     artifact_checkpoint_every=100,
 )
 
+PROBE_QWEN35 = _dc.replace(
+    SMOKE,
+    name="probe-qwen35",
+    base_model=MODEL_LADDER["m-qwen35"],
+    use_qlora=True,
+    max_steps=5,
+    train_contexts=32,
+)
+
 # Round-8 arms: the 250k mixed corpus (archetypes + templates incl.
 # single-T4 GPU tasks + prior/history context fields), 8x dev's contexts,
 # 2x its steps. Same fixed train-subset seed across arms → controlled.
@@ -266,7 +280,10 @@ _R8_SHAPED = tuple(
 
 PROFILES: dict[str, TunerProfile] = {
     p.name: p
-    for p in (SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, *_DEV_SHAPED, *_R8_SHAPED)
+    for p in (
+        SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, PROBE_QWEN35,
+        *_DEV_SHAPED, *_R8_SHAPED,
+    )
 }
 
 
