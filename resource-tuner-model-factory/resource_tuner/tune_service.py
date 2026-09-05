@@ -272,6 +272,63 @@ async def outcome(body: dict) -> JSONResponse:
     return JSONResponse({"ok": True, "stored": uri.rsplit("/", 1)[-1]})
 
 
+def _info(tip: str) -> str:
+    """Hover ⓘ explaining how to read a metric (pure CSS tooltip)."""
+    return f'<span class="rt-info">ⓘ<span class="rt-tip">{tip}</span></span>'
+
+
+_INFO_CSS = """<style>
+.rt-info{position:relative;display:inline-block;margin-left:6px;color:#8b9bff;cursor:help;
+  font-size:12px;font-weight:400;text-transform:none;letter-spacing:normal}
+.rt-info .rt-tip{visibility:hidden;opacity:0;transition:opacity .15s;position:absolute;left:18px;
+  top:-6px;z-index:10;width:360px;background:#1c1c22;border:1px solid #2e2e36;border-radius:8px;
+  padding:10px 12px;color:#c9c9cf;font-size:12px;line-height:1.5;text-transform:none;
+  font-weight:400;letter-spacing:normal;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+.rt-info:hover .rt-tip{visibility:visible;opacity:1}
+.rt-cap{font-size:12px;color:#9a9aa4;margin:16px 0 4px}
+</style>"""
+
+TIP_TOTALS = (
+    "Lifetime counters from the append-only ledger. 'Proposals' counts every "
+    "/v1/propose answer (including repeats for the same task); 'outcomes' are "
+    "runs that reported back what actually happened. Fit rate = outcomes that "
+    "succeeded under the tuned request. All 'cumulative saved' numbers are "
+    "REQUEST-side and NET (see the chart tooltips) — multiply the $/hr figure "
+    "by task runtime to estimate real dollars."
+)
+TIP_USD = (
+    "Net $/hr trimmed off resource REQUESTS vs each task's declared prior, "
+    "accumulated per proposal and priced at this tenant's node-group rates "
+    "(CPU + memory at Fargate unit prices, GPUs at per-card residuals — see "
+    "pricing.py). Dips are proposals that requested MORE than the prior "
+    "(added safety headroom). This is the business metric the reward shapes "
+    "are judged on."
+)
+TIP_MEM = (
+    "Cumulative NET MiB of memory requests trimmed vs priors. Request-side "
+    "accounting: it measures what was asked of the scheduler, not measured "
+    "usage. Usually monotone because memory is the axis the tuner cuts "
+    "hardest — a dip means a proposal asked for more memory than its prior."
+)
+TIP_CPU = (
+    "Cumulative NET cores trimmed vs priors — the signed sum of "
+    "(prior − proposed) per proposal, so it goes DOWN whenever the tuner adds "
+    "CPU headroom. That's expected behavior: CPU is the cheap axis (~$0.04/"
+    "core-hr vs memory + GPU), so the model often adds a core or two while "
+    "cutting memory. Judge net value on the $ chart, which prices both."
+)
+TIP_REGISTRY = (
+    "Every task the tuner has ever been asked to size, newest first. "
+    "'Proposals' counts requests (repeat invocations included); 'prior' is "
+    "the author's hard-coded declaration; 'source' says how the last answer "
+    "was produced (model = fresh inference, cache = same code+inputs+context "
+    "seen before, fallback_prior = service degraded and echoed the prior). "
+    "'Outcomes fit' is succeeded/reported runs (OOMs flagged); 'last peak' "
+    "is the most recent measured RSS — compare it to the proposal to see "
+    "remaining headroom."
+)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard() -> str:
     """The value dashboard: cumulative CPU/mem saved over time + the
@@ -282,17 +339,17 @@ async def dashboard() -> str:
     registry = tune_store.task_registry(records)
 
     mem_chart = line_chart(
-        [("cumulative memory saved vs prior (MiB)", "#35c48d", series["cum_mem_saved_mib"])],
+        [("cumulative net memory saved vs prior (MiB)", "#35c48d", series["cum_mem_saved_mib"])],
         y_fmt="{:.0f}",
     )
     cpu_chart = line_chart(
-        [("cumulative CPU cores saved vs prior", "#4d65ff", series["cum_cpu_saved"])],
+        [("cumulative net CPU cores saved vs prior", "#4d65ff", series["cum_cpu_saved"])],
         y_fmt="{:.1f}",
     )
     usd_chart = line_chart(
         [
             (
-                "cumulative $/hr saved vs prior (pricing.py rates)",
+                "cumulative net $/hr saved vs prior (pricing.py rates)",
                 "#e69812",
                 series["cum_dollars_saved_per_hr"],
             )
@@ -331,15 +388,21 @@ async def dashboard() -> str:
 
     rows = "".join(_row(r) for r in registry[:50])
     th = 'style="text-align:left;padding:4px 10px;color:#9a9aa4;font-size:11px;text-transform:uppercase"'
-    return f"""<!doctype html><html><head><meta charset="utf-8"><title>rt-tune — value dashboard</title></head>
+    return f"""<!doctype html><html><head><meta charset="utf-8"><title>rt-tune — value dashboard</title>{_INFO_CSS}</head>
 <body style="font-family:-apple-system,sans-serif;background:#0b0b0d;color:#f2f2f3;margin:2rem">
 <h1 style="font-size:18px">Resource tuner — value dashboard</h1>
 <p style="color:#9a9aa4;font-size:13px">Append-only store: <code>{tune_store.store_uri()}</code> · {len(records)} records ·
 <a style="color:#8b9bff" href="/records">recent proposals</a> · <a style="color:#8b9bff" href="/health">health</a></p>
+<h2 style="font-size:13px;color:#9a9aa4;text-transform:uppercase;margin-top:14px">Totals{_info(TIP_TOTALS)}</h2>
 <table style="border-collapse:collapse;background:#131316;border-radius:10px">{kv}</table>
 <h2 style="font-size:13px;color:#9a9aa4;text-transform:uppercase;margin-top:20px">Savings over time (requested resources vs hard-coded priors)</h2>
-{usd_chart}<br/>{mem_chart}<br/>{cpu_chart}
-<h2 style="font-size:13px;color:#9a9aa4;text-transform:uppercase;margin-top:20px">Task registry ({len(registry)} tasks)</h2>
+<div class="rt-cap">net $ saved per hour of tuned requests{_info(TIP_USD)}</div>
+{usd_chart}
+<div class="rt-cap">net memory-request savings (MiB){_info(TIP_MEM)}</div>
+{mem_chart}
+<div class="rt-cap">net CPU-request savings (cores){_info(TIP_CPU)}</div>
+{cpu_chart}
+<h2 style="font-size:13px;color:#9a9aa4;text-transform:uppercase;margin-top:20px">Task registry ({len(registry)} tasks){_info(TIP_REGISTRY)}</h2>
 <table style="border-collapse:collapse;background:#131316;border-radius:10px">
 <thead><tr><th {th}>task</th><th {th}>proposals</th><th {th}>prior</th><th {th}>last proposal</th>
 <th {th}>source</th><th {th}>outcomes fit</th><th {th}>last peak</th></tr></thead>
