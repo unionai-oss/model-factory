@@ -430,6 +430,7 @@ async def train_tuner(
         model = PeftModel.from_pretrained(model, local_resume, is_trainable=True)
         peft_config = None  # already wrapped — GRPOTrainer must not re-wrap
         meta["resume"] = resume_source
+        print(f"[ckpt] warm-starting adapter from {resume_source}")
         await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
 
     # Intra-task checkpoint: if a previous ATTEMPT of this action saved
