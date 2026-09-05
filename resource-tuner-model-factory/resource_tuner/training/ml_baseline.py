@@ -185,6 +185,42 @@ class MLBaseline:
             )
         return self
 
+    def save(self, dir_path: str) -> str:
+        """Persist the fitted estimator bundle (joblib) into `dir_path`;
+        returns the file path. sklearn models pickle stably within a
+        version — the manifest records versions for the reader."""
+        import os
+
+        import joblib
+        import sklearn
+
+        path = os.path.join(dir_path, "ml_baseline.joblib")
+        joblib.dump(
+            {
+                "feature_names": self.feature_names,
+                "families": self.families,
+                "mem": self._mem,
+                "cpu": self._cpu,
+                "gpu_cls": self._gpu_cls,
+                "gpu_mem": self._gpu_mem,
+                "sklearn_version": sklearn.__version__,
+            },
+            path,
+        )
+        return path
+
+    @classmethod
+    def load(cls, dir_path: str) -> "MLBaseline":
+        import os
+
+        import joblib
+
+        bundle = joblib.load(os.path.join(dir_path, "ml_baseline.joblib"))
+        m = cls(feature_names=bundle["feature_names"], families=bundle["families"])
+        m._mem, m._cpu = bundle["mem"], bundle["cpu"]
+        m._gpu_cls, m._gpu_mem = bundle["gpu_cls"], bundle["gpu_mem"]
+        return m
+
     def propose(self, record: dict) -> Proposal:
         import numpy as np
 
@@ -209,3 +245,19 @@ class MLBaseline:
             gpu=gpu,
             gpu_type=gpu_type,
         )
+
+
+def request_to_record(
+    source_code: str, input_profile: str, prior: dict | None, history: list | None
+) -> dict:
+    """A /v1/propose request → the corpus-row shape extract_features eats.
+    Serve time has no params_json and no family — those features honestly
+    degrade to zeros (the cold-start regime the GBT was also trained on)."""
+    return {
+        "source_code": source_code or "",
+        "input_profile": input_profile or "",
+        "prior_json": json.dumps(prior) if prior else "",
+        "history_json": json.dumps(history) if history else "",
+        "params_json": "",
+        "family": "",
+    }

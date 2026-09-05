@@ -57,6 +57,9 @@ gpu_image = (
         "pandas>=2.2",
         "pyarrow>=17",
         "wandb>=0.28",
+        # tune service serves the joblib'd quantile-GBT baseline as a
+        # fallback/AB estimator next to the LLM.
+        "scikit-learn>=1.5",
     )
     .with_pip_packages(*_METRICS_LAYER)
     .with_pip_packages(*_FLYTE_REPIN_LAYER)

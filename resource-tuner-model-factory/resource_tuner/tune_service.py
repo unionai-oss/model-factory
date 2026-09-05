@@ -49,6 +49,9 @@ APP_NAME = "rt-tune"
 app = FastAPI(title="resource-tuner tune service")
 
 _state: dict = {"model": None, "tok": None, "checkpoint_path": "", "loading": False}
+# Classical fallback / A/B estimator (quantile GBTs from the
+# ml-baseline-model artifact). Loaded lazily; None until first use.
+_ml_state: dict = {"model": None, "path": "", "tried": False}
 _load_lock = asyncio.Lock()
 _proposal_cache: dict[str, dict] = {}  # code digest -> proposal kwargs
 _records: list[dict] = []  # recent proposals, newest last (in-memory)
@@ -135,6 +138,39 @@ async def _load_latest() -> str:
     return path
 
 
+async def _ensure_ml_loaded() -> None:
+    """Load the newest ml-baseline-model artifact once; a missing or
+    broken artifact leaves the estimator None (LLM/prior paths still
+    work). /reload clears `tried` so a fresh artifact gets picked up."""
+    if _ml_state["model"] is not None or _ml_state["tried"]:
+        return
+    _ml_state["tried"] = True
+    try:
+        from .contracts import ARTIFACT_ML_BASELINE
+        from .training.ml_baseline import MLBaseline
+
+        ver = await assets.latest_version(ARTIFACT_ML_BASELINE)
+        if ver is None:
+            print("[tune] no ml-baseline-model artifact — ML estimator unavailable")
+            return
+        local = await flyte.io.Dir.from_existing_remote(ver.path).download()
+        _ml_state["model"] = MLBaseline.load(local)
+        _ml_state["path"] = ver.path
+        print(f"[tune] ML baseline loaded from {ver.path[-60:]}")
+    except Exception as e:  # noqa: BLE001 — the classical arm is optional
+        print(f"[tune] ML baseline load failed: {e}")
+
+
+def _ml_propose(source_code: str, input_profile: str, prior: dict, history: list):
+    """One quantile-GBT Proposal from request fields; None if unavailable."""
+    if _ml_state["model"] is None:
+        return None
+    from .training.ml_baseline import request_to_record
+
+    record = request_to_record(source_code, input_profile, prior or None, history or None)
+    return _ml_state["model"].propose(record)
+
+
 async def _ensure_loaded() -> None:
     async with _load_lock:
         if _state["model"] is None:
@@ -180,6 +216,8 @@ async def health() -> JSONResponse:
             "loaded": _state["model"] is not None,
             "loading": _state["loading"],
             "checkpoint_path": _state["checkpoint_path"],
+            "ml_baseline_loaded": _ml_state["model"] is not None,
+            "ml_baseline_path": _ml_state["path"],
             "cached_proposals": len(_proposal_cache),
         }
     )
@@ -204,7 +242,15 @@ async def propose(body: dict) -> JSONResponse:
     # first propose after a cold start is history-free, the next isn't.
     history = tune_store.history_of(_store_reader.cached(), task_id)
     tune_store.fire_and_forget(_store_reader.load(), _bg_writes)
-    context_key = json.dumps({"prior": prior, "history": history}, sort_keys=True)
+    # Estimator selection (A/B surface): "llm" (default) or "ml" — per
+    # request via body.estimator, fleet-wide via RT_TUNE_ESTIMATOR. The
+    # estimator is part of the cache key so arms never share answers.
+    estimator = str(
+        body.get("estimator") or os.environ.get("RT_TUNE_ESTIMATOR", "llm")
+    ).lower()
+    context_key = json.dumps(
+        {"prior": prior, "history": history, "estimator": estimator}, sort_keys=True
+    )
     digest = _digest(source_code, input_profile, context_key)
 
     record = {
@@ -213,11 +259,25 @@ async def propose(body: dict) -> JSONResponse:
         "ts": time.time(),
         "prior": prior,
         "history_used": len(history),
+        "estimator": estimator,
     }
+
+    def _clamped_kwargs(proposal) -> dict:
+        clamped, _ = clamp_for_execution(proposal)
+        return clamped.to_kwargs()
+
     try:
         if digest in _proposal_cache:
             kwargs = _proposal_cache[digest]
             record.update(proposal=kwargs, source="cache")
+        elif estimator == "ml":
+            await _ensure_ml_loaded()
+            ml_proposal = _ml_propose(source_code, input_profile, prior, history)
+            if ml_proposal is None:
+                raise RuntimeError("ml estimator unavailable (no ml-baseline-model artifact)")
+            kwargs = _clamped_kwargs(ml_proposal)
+            _proposal_cache[digest] = kwargs
+            record.update(proposal=kwargs, source="ml_baseline")
         else:
             await _ensure_loaded()
             text = await asyncio.to_thread(
@@ -226,12 +286,28 @@ async def propose(body: dict) -> JSONResponse:
             proposal = try_extract_proposal(text)
             if proposal is None:
                 raise InvalidProposal(f"unparseable completion: {text[:120]!r}")
-            clamped, _ = clamp_for_execution(proposal)
-            kwargs = clamped.to_kwargs()
+            kwargs = _clamped_kwargs(proposal)
             _proposal_cache[digest] = kwargs
             record.update(proposal=kwargs, source="model")
     except Exception as e:  # noqa: BLE001 — degraded, never dead
-        record.update(proposal=prior or None, source="fallback_prior", error=str(e)[:200])
+        # Degradation ladder: LLM failure falls to the classical estimator
+        # before echoing the prior — reliability-ranked, and every rung is
+        # visible in `source` (never silent).
+        ml_rescue = None
+        if estimator != "ml":
+            try:
+                await _ensure_ml_loaded()
+                ml_rescue = _ml_propose(source_code, input_profile, prior, history)
+            except Exception as ml_e:  # noqa: BLE001
+                print(f"[tune] ML rescue failed too: {ml_e}")
+        if ml_rescue is not None:
+            record.update(
+                proposal=_clamped_kwargs(ml_rescue),
+                source="ml_fallback",
+                error=str(e)[:200],
+            )
+        else:
+            record.update(proposal=prior or None, source="fallback_prior", error=str(e)[:200])
     _records.append(record)
     del _records[:-500]
     # Persist to the append-only Dir store (off the request path).
@@ -414,7 +490,12 @@ async def dashboard() -> str:
 async def reload() -> JSONResponse:
     async with _load_lock:
         path = await _load_latest()
-    return JSONResponse({"ok": True, "checkpoint_path": path})
+    # Pick up a fresh ml-baseline-model artifact too.
+    _ml_state.update(model=None, path="", tried=False)
+    await _ensure_ml_loaded()
+    return JSONResponse(
+        {"ok": True, "checkpoint_path": path, "ml_baseline_path": _ml_state["path"]}
+    )
 
 
 @app.get("/records")

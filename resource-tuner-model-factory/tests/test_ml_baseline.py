@@ -85,3 +85,28 @@ def test_gpu_classification_separates_families(corpus, fitted):
 def test_fit_fails_loudly_on_empty_split():
     with pytest.raises(ValueError):
         MLBaseline().fit([])
+
+
+def test_joblib_roundtrip_preserves_proposals(tmp_path, corpus, fitted):
+    fitted.save(str(tmp_path))
+    reloaded = MLBaseline.load(str(tmp_path))
+    heldout = [r for r in corpus if r["split"] == "heldout"][:25]
+    for r in heldout:
+        assert reloaded.propose(r) == fitted.propose(r)
+
+
+def test_serve_time_record_shape_degrades_honestly(fitted):
+    """The tune service has no params_json/family — proposals must still
+    come out grid-valid from profile/code/prior/history features alone."""
+    from resource_tuner.policy.actions import CPU_GRID, MEMORY_GRID_MIB
+    from resource_tuner.training.ml_baseline import request_to_record
+
+    rec = request_to_record(
+        "import torch\nmodel.to('cuda')",
+        "invoked with kwargs={'rows': 8000000}",
+        {"cpu": 4, "memory": "8Gi"},
+        [{"resources": {"cpu": 2, "memory": "2Gi"}, "peak": "812MiB", "ok": True}],
+    )
+    assert rec["family"] == "" and rec["params_json"] == ""
+    p = fitted.propose(rec)
+    assert p.cpu in CPU_GRID and p.memory_mib in MEMORY_GRID_MIB

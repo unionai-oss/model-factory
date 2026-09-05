@@ -50,6 +50,11 @@ CORPUS_COLUMNS = [
 # tuner-checkpoint, so intermediates never fire dark evals.
 ARTIFACT_TUNER_CHECKPOINT_INTERMEDIATE = "tuner-checkpoint-intermediate"
 
+# ml-baseline-model: Dir with ml_baseline.joblib + manifest.json — the
+# fitted quantile-GBT estimator, versioned so the tune service can serve
+# it as a fallback / A/B arm against the LLM checkpoint.
+ARTIFACT_ML_BASELINE = "ml-baseline-model"
+
 # tuner-checkpoint: Dir with a PEFT adapter + tokenizer + manifest.json.
 CHECKPOINT_MANIFEST_KEYS = ["base_model", "profile", "reward_stage", "max_steps", "final_metrics"]
 
