@@ -44,11 +44,18 @@ def test_reward_fn_grades_invalid_completions():
 
 
 def test_round11_profiles():
+    from resource_tuner.config import R11_FULLFT_32B
+
     assert R11_R64.lora_r == 64 and R11_R64.lora_mlp and R11_R64.use_lora
     assert R11_GBT.gbt_hint and R11_GBT.use_lora
     assert not R11_FULLFT.use_lora and not R11_FULLFT.use_qlora
     assert "0.6B" in R11_FULLFT.base_model
-    for p in (R11_R64, R11_GBT, R11_FULLFT):
+    # the expanded-budget redo: biggest single-node full-FT Qwen
+    assert "32B" in R11_FULLFT_32B.base_model
+    assert not R11_FULLFT_32B.use_lora and not R11_FULLFT_32B.use_qlora
+    assert R11_FULLFT_32B.artifact_checkpoint_every == 0  # no 64GB intermediates
+    assert R11_FULLFT_32B.save_steps == 100  # ~128GB tarballs, sparse cadence
+    for p in (R11_R64, R11_GBT, R11_FULLFT, R11_FULLFT_32B):
         assert p.reward_stage == "c-cost" and p.name in PROFILES
         assert (p.max_steps, p.train_contexts) == (300, 4096)  # r8-comparable
 

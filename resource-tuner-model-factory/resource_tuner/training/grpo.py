@@ -589,8 +589,9 @@ async def train_tuner(
             if cp is not None and latest:
                 try:
                     # Blocks the trainer thread for the upload — adapters
-                    # are tens of MB, seconds at most.
-                    asyncio.run_coroutine_threadsafe(cp.save(latest), loop).result(timeout=900)
+                    # are tens of MB (seconds); FULL-FT trainer states can
+                    # be ~2x model size (a 32B is ~128GB), hence the hour.
+                    asyncio.run_coroutine_threadsafe(cp.save(latest), loop).result(timeout=3600)
                     print(f"[ckpt] intra-task checkpoint uploaded at step {step}")
                 except Exception as e:  # noqa: BLE001 — a failed save must not kill training
                     print(f"[ckpt] intra-task save failed at step {step}: {e}")

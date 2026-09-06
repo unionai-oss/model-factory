@@ -93,6 +93,11 @@ MODEL_LADDER: dict[str, str] = {
     "xs": "Qwen/Qwen3-0.6B",
     "s": "Qwen/Qwen3-1.7B",
     "m": "Qwen/Qwen3-4B",
+    "l": "Qwen/Qwen3-14B",
+    # Biggest dense Qwen that full-fine-tunes on ONE node: 8x L40S
+    # (g6e.48xlarge, 384GB VRAM) holds bf16 weights + grads + 8-bit Adam
+    # (~6B/param ≈ 192GB) with room for activations + generation KV.
+    "xl": "Qwen/Qwen3-32B",
     # Qwen3.5 tier: blocked on trl#5269 / vllm#39993 for RL as of 2026-09
     "xs-qwen35": "Qwen/Qwen3.5-0.8B",
     "s-qwen35": "Qwen/Qwen3.5-2B",
@@ -302,12 +307,29 @@ R11_FULLFT = _dc.replace(
     use_lora=False,
     use_qlora=False,
 )
+# The expanded-budget redo: full FT of Qwen3-32B on one g6e.48xlarge
+# (8x L40S, launched with RT_TRAIN_GPU="L40S:8"). Naive model-parallel
+# via device_map — slow steps, but single-node as specified. Intra-task
+# saves are ~128GB tarballs, so cadence drops to every 100 steps and
+# intermediate ARTIFACTS stay off (the final checkpoint is the artifact).
+R11_FULLFT_32B = _dc.replace(
+    _R11_BASE,
+    name="r11-fullft-32b",
+    base_model=MODEL_LADDER["xl"],
+    use_lora=False,
+    use_qlora=False,
+    learning_rate=1e-6,  # full-FT RL wants a gentler lr than LoRA
+    num_generations=8,
+    per_device_batch=8,
+    save_steps=100,
+    artifact_checkpoint_every=0,
+)
 
 PROFILES: dict[str, TunerProfile] = {
     p.name: p
     for p in (
         SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, PROBE_QWEN35,
-        *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT,
+        *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT, R11_FULLFT_32B,
     )
 }
 
