@@ -93,6 +93,7 @@ MODEL_LADDER: dict[str, str] = {
     "xs": "Qwen/Qwen3-0.6B",
     "s": "Qwen/Qwen3-1.7B",
     "m": "Qwen/Qwen3-4B",
+    "m8": "Qwen/Qwen3-8B",
     "l": "Qwen/Qwen3-14B",
     # Biggest dense Qwen that full-fine-tunes on ONE node: 8x L40S
     # (g6e.48xlarge, 384GB VRAM) holds bf16 weights + grads + 8-bit Adam
@@ -314,6 +315,22 @@ R11_FULLFT = _dc.replace(
 # model-parallel via device_map — single-node as specified. Intra-task
 # saves are ~56GB tarballs, so cadence stays at every 100 steps and
 # intermediate ARTIFACTS stay off (the final checkpoint is the artifact).
+# Provisioning-ladder fallback: Qwen3-8B on g6.12xlarge (L4:4, 96GB —
+# ~48GB of full-FT states). Same recipe one rung down; the 32B/L40s:8
+# and 14B/L40s:4 configs stay on the ladder for when big nodes provision.
+R11_FULLFT_8B = _dc.replace(
+    _R11_BASE,
+    name="r11-fullft-8b",
+    base_model=MODEL_LADDER["m8"],
+    use_lora=False,
+    use_qlora=False,
+    learning_rate=1e-6,
+    num_generations=8,
+    per_device_batch=8,
+    save_steps=100,
+    artifact_checkpoint_every=0,
+)
+
 R11_FULLFT_14B = _dc.replace(
     _R11_BASE,
     name="r11-fullft-14b",
@@ -331,7 +348,8 @@ PROFILES: dict[str, TunerProfile] = {
     p.name: p
     for p in (
         SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, PROBE_QWEN35,
-        *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT, R11_FULLFT_14B,
+        *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT, R11_FULLFT_8B,
+        R11_FULLFT_14B,
     )
 }
 
