@@ -34,3 +34,15 @@ def test_flush_never_raises_outside_a_run_context():
     # flyte.report outside a task context must degrade to a print, not
     # kill the caller — observability never breaks the work.
     asyncio.run(Reporter("T").p("x").flush())
+
+
+def test_highlight_python_colors_and_escapes():
+    from resource_tuner.shared.reporting import code_block, highlight_python
+
+    html = highlight_python('def run():  # go\n    x = "a<b" + f"{n:,}"\n    return 42')
+    assert '<span style="color:' in html
+    assert "a&lt;b" in html and "<b" not in html.replace("<br", "")  # escaped
+    assert ">def</span>" in html and "# go</span>" in html and ">42</span>" in html
+    block = code_block("x = 1\n" * 4000, cap=100)
+    assert "truncated at 100" in block
+    assert "overflow-x:auto" in code_block("def f(): pass")

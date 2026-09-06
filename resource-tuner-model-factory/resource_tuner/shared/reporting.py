@@ -17,6 +17,7 @@ Pattern per task:
 from __future__ import annotations
 
 import html as _html
+import re as _re
 
 _STYLE = (
     "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
@@ -44,6 +45,60 @@ def pill(text: str, color: str = MUTED) -> str:
 
 def ok_pill(ok: bool, yes: str = "ok", no: str = "failed") -> str:
     return pill(yes, GOOD) if ok else pill(no, BAD)
+
+
+# ── syntax-highlighted code blocks (pure regex, no pygments dep) ────────
+# Union dark palette: keywords indigo, strings green, comments muted,
+# numbers amber, decorators periwinkle.
+_PY_KEYWORDS = (
+    "def|return|if|elif|else|for|while|in|not|and|or|import|from|as|class|"
+    "try|except|finally|with|lambda|yield|async|await|pass|break|continue|"
+    "raise|global|nonlocal|del|assert|is|None|True|False"
+)
+_PY_TOKEN_RE = _re.compile(
+    r"(?P<comment>#[^\n]*)"
+    r"|(?P<string>[rbfuRBFU]{0,2}(?:\"\"\"[\s\S]*?\"\"\"|'''[\s\S]*?'''"
+    r"|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'))"
+    r"|(?P<decorator>@\w[\w.]*)"
+    r"|(?P<keyword>\b(?:" + _PY_KEYWORDS + r")\b)"
+    r"|(?P<number>\b\d[\d_]*\.?\d*(?:[eE][+-]?\d+)?\b)"
+)
+_TOKEN_COLORS = {
+    "comment": MUTED,
+    "string": GOOD,
+    "decorator": "#8b9bff",
+    "keyword": "#7d8dff",
+    "number": WARN,
+}
+
+
+def highlight_python(code: str) -> str:
+    """Python source → escaped HTML with colored token spans."""
+    out, pos = [], 0
+    for m in _PY_TOKEN_RE.finditer(code):
+        out.append(esc(code[pos:m.start()]))
+        color = _TOKEN_COLORS[m.lastgroup]
+        out.append(f'<span style="color:{color}">{esc(m.group(0))}</span>')
+        pos = m.end()
+    out.append(esc(code[pos:]))
+    return "".join(out)
+
+
+def code_block(code: str, cap: int = 6000) -> str:
+    """A syntax-highlighted, scrollable code panel for reports."""
+    clipped = code[:cap]
+    note = (
+        f'<div style="color:{MUTED};font-size:10px;margin-top:2px">'
+        f"(truncated at {cap} of {len(code)} chars)</div>"
+        if len(code) > cap
+        else ""
+    )
+    return (
+        '<pre style="background:#131316;border:1px solid #1b1b21;padding:12px;'
+        'border-radius:8px;font-size:11.5px;line-height:1.5;color:#c9c9cf;'
+        f'overflow-x:auto;font-family:ui-monospace,monospace">{highlight_python(clipped)}</pre>'
+        + note
+    )
 
 
 def line_chart(
