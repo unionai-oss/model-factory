@@ -59,6 +59,9 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
     shaped = shaping.is_shaped_stage(stage)
     shape = shaping.get_shape(stage) if shaped else None
     calls = {"n": 0}
+    # Per-step means of every reward component — the trajectory the report
+    # charts so a human can see WHICH term is moving, not just the sum.
+    component_history: list[dict] = []
 
     def resource_reward(
         completions, true_peak_memory_mib, true_cpu_cores, duration_s, **kwargs
@@ -72,6 +75,12 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
         rewards: list[float] = []
         oks: list[bool] = []
         costs: list[float | None] = []
+        comp_sums: dict[str, float] = {}
+
+        def add_comps(comps: dict) -> None:
+            for k, v in comps.items():
+                comp_sums[k] = comp_sums.get(k, 0.0) + v
+
         for completion, peak, cpu, dur, gpu_mem, base_cost in zip(
             completions, true_peak_memory_mib, true_cpu_cores, duration_s,
             gpu_col, base_cost_col,
@@ -83,7 +92,9 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
                 # partial format credit — a gradient toward the schema
                 # instead of a cliff (round-7/8's invalid completions all
                 # scored identically to garbage).
-                rewards.append(format_credit(text) * FORMAT_REWARD)
+                credit = format_credit(text) * FORMAT_REWARD
+                rewards.append(credit)
+                add_comps({"format": credit, "invalid_rate": 1.0})
                 oks.append(False)
                 costs.append(None)
                 continue
@@ -91,7 +102,17 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
                 episode = simulate_episode(
                     proposal, float(peak), float(cpu), int(dur), rng=jitter_rng
                 )
-                rewards.append(score_episode(stage, episode).total)
+                bd_ab = score_episode(stage, episode)
+                rewards.append(bd_ab.total)
+                add_comps(
+                    {
+                        "format": bd_ab.format,
+                        "success": bd_ab.success,
+                        "waste": bd_ab.waste_penalty,
+                        "oom": bd_ab.oom_penalty,
+                        "throttle": bd_ab.throttle_penalty,
+                    }
+                )
                 oks.append(episode.ok)
                 costs.append(None)
                 continue
@@ -107,14 +128,21 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
                 baseline_cost_per_hr=base_cost,
             )
             rewards.append(bd.total)
+            add_comps(bd.components)
             oks.append(all(e.ok for e in episodes))
             costs.append(shaping.episode_dollars_per_hr(episodes[0]))
         if shaped:
+            pre = sum(rewards)
             rewards = shaping.apply_group_tiebreak(
                 shape, rewards, oks, costs, num_generations
             )
+            comp_sums["tiebreak"] = sum(rewards) - pre
+        component_history.append(
+            {"step": calls["n"], **{k: v / n for k, v in comp_sums.items()}}
+        )
         return rewards
 
+    resource_reward.component_history = component_history
     return resource_reward
 
 
@@ -246,6 +274,19 @@ def _report_html(profile: TunerProfile, rows: list[dict], meta: dict | None = No
     )
     rep.h("Reward")
     rep.raw(line_chart([("mean reward", GOOD, rewards)], y_fmt="{:.2f}"))
+    comp_hist = meta.get("component_history") or []
+    if comp_hist:
+        palette = ["#35c48d", "#4d65ff", "#e69812", "#F43B3E", "#8b9bff",
+                   "#c9c9cf", "#d67ab1", "#5ad0d0", "#9a9aa4"]
+        keys = sorted({k for row in comp_hist for k in row if k != "step"})
+        series = []
+        for i, key in enumerate(keys):
+            vals = [row.get(key, 0.0) for row in comp_hist]
+            if any(abs(v) > 1e-9 for v in vals):  # skip terms that never fire
+                series.append((key, palette[i % len(palette)], vals))
+        if series:
+            rep.h("Reward components (mean per step — which term is moving)")
+            rep.raw(line_chart(series, y_fmt="{:.2f}"))
     rep.h("Group health (all-pass/all-fail groups yield no gradient)")
     rep.raw(
         line_chart(
@@ -645,16 +686,20 @@ async def train_tuner(
                 pending_publishes.append(asyncio.run_coroutine_threadsafe(_publish(), loop))
                 print(f"[ckpt] intermediate artifact publish scheduled at step {step}")
 
+    reward_fn = make_reward_fn(
+        profile.reward_stage,
+        jitter_rng=random.Random(0),
+        num_generations=profile.num_generations,
+        max_steps=profile.max_steps,
+    )
+    # Live list reference: the report callback re-renders with whatever
+    # component means have accumulated so far.
+    meta["component_history"] = reward_fn.component_history
     trainer = GRPOTrainer(
         model=model,
         args=config,
         train_dataset=dataset,
-        reward_funcs=make_reward_fn(
-            profile.reward_stage,
-            jitter_rng=random.Random(0),
-            num_generations=profile.num_generations,
-            max_steps=profile.max_steps,
-        ),
+        reward_funcs=reward_fn,
         peft_config=peft_config,
         processing_class=tok,
         callbacks=[_ReportCallback(), _CheckpointCallback()],
@@ -714,6 +759,9 @@ async def train_tuner(
             "mean_reward_first": mean_rewards[0] if mean_rewards else None,
             "mean_reward_last": mean_rewards[-1] if mean_rewards else None,
             "log_history": history,
+            # Per-step means of every reward component — the shape
+            # diagnosis travels with the checkpoint.
+            "component_history": reward_fn.component_history,
         },
     }
     ckpt = await _upload_checkpoint(out_dir, manifest)
