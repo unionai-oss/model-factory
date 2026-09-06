@@ -4,9 +4,9 @@
 - OnArtifact triggers (train_tuner: on tuning-task-corpus; eval_tuner: on
   tuner-checkpoint) run the same stations dark — publishing a corpus IS the
   request to train, a checkpoint IS the request to evaluate. Triggers
-  deploy `auto_activate=False`; activate them to go dark, and remember a
-  trigger keeps firing the task version it was deployed with — re-deploy
-  after any fix dark mode should pick up.
+  deploy `auto_activate=True` — dark mode is LIVE after every deploy —
+  and a trigger fires the task version it was deployed with, so
+  re-deploy after any fix dark mode should pick up.
 
 The synthetic station widens the corpus with teacher-LLM tasks whose
 labels come from the execution oracle (a harness pod measures what the

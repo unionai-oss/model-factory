@@ -403,7 +403,7 @@ _train_trigger = flyte.Trigger(
     automation=flyte.OnArtifact(name=ARTIFACT_TASK_CORPUS),
     inputs={"corpus": flyte.TriggeredArtifact, "profile_name": "smoke"},
     description="New tuning-task-corpus version -> GRPO training",
-    auto_activate=False,
+    auto_activate=True,
 )
 
 

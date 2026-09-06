@@ -161,7 +161,7 @@ _eval_trigger = flyte.Trigger(
     automation=flyte.OnArtifact(name=ARTIFACT_TUNER_CHECKPOINT),
     inputs={"checkpoint": flyte.TriggeredArtifact},
     description="New tuner-checkpoint version -> eval vs baseline",
-    auto_activate=False,
+    auto_activate=True,
 )
 
 
