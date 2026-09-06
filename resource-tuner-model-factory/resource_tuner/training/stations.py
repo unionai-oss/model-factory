@@ -328,11 +328,12 @@ async def synthetic_data_release(
     )
 
 
-@driver_env.task(timeout=flyte.Timeout(max_runtime=8 * 3600), produces_artifacts=True, report=True)
+@driver_env.task(timeout=flyte.Timeout(max_runtime=24 * 3600), produces_artifacts=True, report=True)
 async def archetype_data_release(
     total_tasks: int = 100_000,
     n_archetypes: int = 150,
     calibration_k: int = 3,
+    # Comma-separated teacher list — style diversity by construction.
     teacher: str = "qwen38-27b",
     merge_with_templates: bool = True,
     profile_name: str = "smoke",
@@ -343,32 +344,49 @@ async def archetype_data_release(
     template_train: int = 0,
     template_heldout: int = 0,
     gpu_max_vram_mib: float = 0,
+    # Round-12 label-fidelity + quality gates:
+    holdout_k: int = 2,          # extra oracle pods per archetype, fit-error check
+    holdout_max_err: float = 0.25,  # reject archetypes whose labels miss by more
+    enforce_quality: bool = True,   # fail the release on quality-gate misses
 ) -> flyte.io.File:
-    """Scale synthetic generation: archetypes × instantiation → 10⁵ tasks.
+    """Scale synthetic generation: archetypes × instantiation → 10⁵-10⁶ tasks.
 
-    The teacher writes ~10² parameterized archetypes; the oracle calibrates
-    each at `calibration_k` parameter points (real pods, measured RSS/CPU);
-    a per-archetype fit labels sampled instantiations up to `total_tasks`.
-    Labels are measurement-anchored — `label_source` marks measured
-    (calibration rows) vs fitted (interpolated variants).
-
-    The report shows SUMMARY stats + head/tail of the archetype table only
-    (a 10⁵-row table in a report helps no one).
+    Round-12 shape: teachers (plural) write scenario-grounded archetypes
+    (domain × data-shape × structure sampled per call, with an avoid-list
+    of prior descriptions); the oracle calibrates each at `calibration_k`
+    log-spaced points PLUS 2 random full-param draws; power-law fits label
+    peak/cpu/duration (and VRAM for GPU archetypes, calibrated on T4
+    pods); `holdout_k` extra pods measure fit error and reject archetypes
+    whose labels lie; every variant gets its own input_profile (sampled
+    scale rendered in) and synthetic prior/history context; and the
+    release fails loudly if quality gates (near-dup rate, footprint
+    coverage, concentration, label error) miss.
     """
     import asyncio
     import random
 
     import pandas as pd
 
-    candidates = llm_client.resolve_teacher_candidates(teacher)
-    base_url = candidates[0]
+    teacher_names = [t.strip() for t in teacher.split(",") if t.strip()]
+    base_url = "(waking)"
     rng = random.Random(seed)
 
+    def _hint_for(idx: int) -> tuple[str, str, bool]:
+        """(family, hint, is_gpu): 1-in-8 archetypes are GPU workloads,
+        calibrated on T4 pods; the rest rotate the CPU families."""
+        if idx % 8 == 7:
+            fam, hint = syn.GPU_FAMILY_HINTS[(idx // 8) % len(syn.GPU_FAMILY_HINTS)]
+            return fam, hint, True
+        fam, hint = syn.FAMILY_HINTS[idx % len(syn.FAMILY_HINTS)]
+        return fam, hint, False
+
     astatus: list[dict] = [
-        {"stage": "queued", "detail": "", "family": syn.FAMILY_HINTS[i % len(syn.FAMILY_HINTS)][0]}
+        {"stage": "queued", "detail": "", "family": _hint_for(i)[0]}
         for i in range(n_archetypes)
     ]
-    counters = {"calib_done": 0, "calib_total": 0, "variants": 0}
+    counters = {"calib_done": 0, "calib_total": 0, "variants": 0, "holdout_rejects": 0}
+    kept_descriptions: list[str] = []  # the avoid-list fed back to teachers
+    label_errors: list[float] = []
     rep = Reporter("Archetype data release", f"teacher={teacher} target={total_tasks:,}")
     rep_lock = asyncio.Lock()
     last_flush = {"t": 0.0}
@@ -423,30 +441,41 @@ async def archetype_data_release(
             )
             await rep.flush()
 
-    await render("waking teacher", force=True)
+    await render("waking teachers", force=True)
     loop = asyncio.get_running_loop()
 
     def on_status(s: str) -> None:
-        asyncio.run_coroutine_threadsafe(render(f"waking teacher — {s}", force=True), loop)
+        asyncio.run_coroutine_threadsafe(render(f"waking teachers — {s}", force=True), loop)
 
-    base_url = await asyncio.to_thread(
-        llm_client.wait_until_ready, candidates, 1800, 15, on_status
-    )
+    async def wake(name: str) -> str:
+        cands = llm_client.resolve_teacher_candidates(name)
+        return await asyncio.to_thread(llm_client.wait_until_ready, cands, 1800, 15, on_status)
 
-    teacher_sem = asyncio.Semaphore(3)  # llama.cpp serializes anyway; keep a small queue
+    base_urls = list(await asyncio.gather(*(wake(n) for n in teacher_names)))
+    base_url = " + ".join(base_urls)
+
+    # Per-teacher small queues (llama.cpp serializes anyway).
+    teacher_sems = [asyncio.Semaphore(3) for _ in base_urls]
     oracle_sem = asyncio.Semaphore(24)
 
-    async def build_archetype(idx: int) -> tuple[arch.Archetype, list[tuple[float, dict]], dict] | None:
-        family, hint = syn.FAMILY_HINTS[idx % len(syn.FAMILY_HINTS)]
-        prompt = arch.ARCHETYPE_PROMPT.format(
-            family_hint=hint, duration_s=60, allowed=", ".join(sorted(syn.ALLOWED_IMPORTS))
+    async def build_archetype(idx: int):
+        family, hint, is_gpu = _hint_for(idx)
+        arng = random.Random(seed * 1_000_003 + idx)
+        prompt = arch.render_archetype_prompt(
+            family_hint=hint,
+            scenario=syn.build_scenario(arng),
+            avoid=list(kept_descriptions),
+            allowed=", ".join(sorted(syn.ALLOWED_IMPORTS)),
+            duration_s=arng.choice([45, 60, 90, 150]),
+            gpu=is_gpu,
         )
         astatus[idx].update(stage="asking teacher")
         await render("generating")
+        t_i = idx % len(base_urls)
         try:
-            async with teacher_sem:
+            async with teacher_sems[t_i]:
                 text = await asyncio.to_thread(
-                    llm_client.chat, base_url, [{"role": "user", "content": prompt}], 6144
+                    llm_client.chat, base_urls[t_i], [{"role": "user", "content": prompt}], 6144
                 )
             archetype = arch.parse_archetype_response(text)
         except (syn.RejectedTask, llm_client.TeacherError) as e:
@@ -455,48 +484,86 @@ async def archetype_data_release(
             return None
 
         astatus[idx].update(stage="calibrating", detail=archetype.description[:100])
-        counters["calib_total"] += calibration_k
+        n_pods = calibration_k + 2 + holdout_k
+        counters["calib_total"] += n_pods
         await render("generating")
-        points: list[tuple[float, dict]] = []
-        stats: dict = {"cpu": [], "dur": []}
+        # measured: [(peak, cpu, dur, vram, params)]
+        measured_pts: list[tuple[float, float, float, float, dict]] = []
 
-        async def calibrate(point: dict) -> None:
+        oracle_res = (
+            flyte.Resources(cpu=4, memory="14Gi", gpu="T4:1", disk="20Gi")
+            if is_gpu
+            else flyte.Resources(cpu=4, memory="20Gi", disk="10Gi")
+        )
+
+        async def run_point(point: dict, tag: str, sink: list) -> None:
             code = arch.instantiate(archetype, point)
-            oracle = run_generated.override(
-                resources=flyte.Resources(cpu=4, memory="14Gi", disk="10Gi")
-            )
+            oracle = run_generated.override(resources=oracle_res)
             try:
                 async with oracle_sem:
-                    # Per-archetype group: ~450 calibration pods fold into
-                    # one box per archetype in the run view.
                     with flyte.group(f"calibrate-arch-{idx}"):
-                        measured = await oracle(
-                            harness_code=code, task_id=f"arch-{seed}-{idx}-c{len(points)}"
-                        )
-            except Exception as e:  # noqa: BLE001 — pod died (likely footprint > 14Gi)
-                print(f"[arch {idx}] calibration pod failed: {e}")
+                        m = await oracle(harness_code=code, task_id=f"arch-{seed}-{idx}-{tag}")
+            except Exception as e:  # noqa: BLE001 — pod died (likely over budget)
+                print(f"[arch {idx}] {tag} pod failed: {e}")
                 return
             finally:
                 counters["calib_done"] += 1
-            if syn.curate_measurement(measured) is None:
-                points.append((measured["peak_rss_mib"], point))
-                stats["cpu"].append(measured.get("cpu_avg_cores", 1.0))
-                stats["dur"].append(measured["duration_s"])
+            if syn.curate_measurement(m, max_mib=16384) is not None:
+                return
+            vram = float(m.get("gpu_peak_mib", 0.0) or 0.0)
+            if is_gpu and (vram < 64 or vram > 14000):
+                # A "GPU" archetype that never touched CUDA (or blew past a
+                # T4) teaches the wrong lesson — drop the point.
+                print(f"[arch {idx}] {tag}: gpu archetype vram {vram:.0f}MiB out of bounds")
+                return
+            sink.append(
+                (m["peak_rss_mib"], m.get("cpu_avg_cores", 1.0), m["duration_s"], vram, point)
+            )
 
-        await asyncio.gather(*(calibrate(p) for p in arch.calibration_points(archetype, calibration_k)))
-        if len(points) < 2:
+        cal_points = arch.calibration_points(archetype, calibration_k, rng=arng, n_random=2)
+        await asyncio.gather(
+            *(run_point(p, f"c{i}", measured_pts) for i, p in enumerate(cal_points))
+        )
+        if len(measured_pts) < 3:
             astatus[idx].update(
-                stage="rejected", detail=f"calibration: only {len(points)}/{calibration_k} valid"
+                stage="rejected", detail=f"calibration: only {len(measured_pts)}/{len(cal_points)} valid"
             )
             await render("generating")
             return None
+
+        mem_param = archetype.memory_param
+        peak_fit = arch.ParamFit([(p[0], p[4]) for p in measured_pts], mem_param, floor=32.0)
+
+        # Holdout: extra pods at RANDOM variant params measure how honest
+        # the fitted labels will be; a lying fit rejects the archetype.
+        holdout_pts: list[tuple[float, float, float, float, dict]] = []
+        await asyncio.gather(
+            *(
+                run_point(arch.sample_params(archetype, arng), f"h{i}", holdout_pts)
+                for i in range(holdout_k)
+            )
+        )
+        err = arch.holdout_error(peak_fit, [(p[0], p[4]) for p in holdout_pts])
+        if err is not None:
+            label_errors.append(err)
+            if err > holdout_max_err:
+                counters["holdout_rejects"] += 1
+                astatus[idx].update(
+                    stage="rejected", detail=f"holdout label error {err:.0%} > {holdout_max_err:.0%}"
+                )
+                await render("generating")
+                return None
+        measured_pts += holdout_pts  # honest extra fit points once accepted
+
         astatus[idx].update(
             stage="kept",
-            detail=f"{archetype.description[:80]} · {len(points)} pts "
-            f"{min(p[0] for p in points):.0f}–{max(p[0] for p in points):.0f}MiB",
+            detail=f"{archetype.description[:70]} · {len(measured_pts)} pts "
+            f"{min(p[0] for p in measured_pts):.0f}–{max(p[0] for p in measured_pts):.0f}MiB"
+            + (f" · err {err:.0%}" if err is not None else ""),
         )
+        kept_descriptions.append(archetype.description)
         await render("generating")
-        return archetype, points, {"family": family, "cpu": stats["cpu"], "dur": stats["dur"]}
+        return archetype, measured_pts, {"family": family, "gpu": is_gpu, "holdout_err": err}
 
     built = await asyncio.gather(*(build_archetype(i) for i in range(n_archetypes)))
     kept = [b for b in built if b]
@@ -505,61 +572,100 @@ async def archetype_data_release(
         raise RuntimeError(f"0/{n_archetypes} archetypes survived; see report for reasons")
 
     records: list[dict] = []
-    # Calibration rows first: measured labels, real instantiated code.
+    import zlib as _zlib
+
+    from ..taskgen import quality as qual
+    from ..taskgen.corpus import context_fields_json
+
+    def _row(ai, tag, archetype, meta, values, peak, cpu, dur, vram, source):
+        crng = random.Random(_zlib.crc32(f"arch-{seed}-{ai}-{tag}".encode()))
+        prior_json, history_json = context_fields_json(peak, cpu, vram, crng)
+        return {
+            "task_id": f"arch-{seed}-{ai}-{tag}",
+            "family": meta["family"],
+            "source_code": arch.instantiate(archetype, values),
+            "harness_code": arch.instantiate(archetype, values),
+            # Round-12 fix: every variant renders ITS OWN sampled scale —
+            # a static per-archetype profile trained profile-blindness.
+            "input_profile": arch.variant_profile(archetype.description, values),
+            "params_json": json.dumps({"archetype": ai, "label_source": source, **values}),
+            "prior_json": prior_json,
+            "history_json": history_json,
+            "true_peak_memory_mib": float(min(max(peak, 64.0), 16384.0)),
+            "true_cpu_cores": max(0.5, round(float(cpu), 1)),
+            "true_gpu_mem_mib": float(vram),
+            "duration_s": int(min(max(dur, 30), 400)),
+            "split": "train",
+        }
+
+    # Calibration/holdout rows first: measured labels, real code.
     for ai, (archetype, points, meta) in enumerate(kept):
-        for pi, (peak, point) in enumerate(points):
+        for pi, (peak, cpu, dur, vram, point) in enumerate(points):
             records.append(
-                {
-                    "task_id": f"arch-{seed}-{ai}-cal{pi}",
-                    "family": meta["family"],
-                    "source_code": arch.instantiate(archetype, point),
-                    "harness_code": arch.instantiate(archetype, point),
-                    "input_profile": archetype.description,
-                    "params_json": json.dumps(
-                        {"archetype": ai, "label_source": "measured", **point}
-                    ),
-                    "prior_json": "",
-                    "history_json": "",
-                    "true_peak_memory_mib": float(peak),
-                    "true_cpu_cores": max(1.0, round(sum(meta["cpu"]) / len(meta["cpu"]), 1)),
-                    "true_gpu_mem_mib": 0.0,  # oracle pods are CPU-only
-                    "duration_s": int(sum(meta["dur"]) / len(meta["dur"])),
-                    "split": "train",
-                }
+                _row(ai, f"cal{pi}", archetype, meta, point, peak, cpu, dur, vram, "measured")
             )
+
     per = max((total_tasks - len(records)) // len(kept), 1)
     for ai, (archetype, points, meta) in enumerate(kept):
-        fit = arch.FootprintFit(points)
-        cpu_label = max(1.0, round(sum(meta["cpu"]) / len(meta["cpu"]), 1))
-        dur_label = int(sum(meta["dur"]) / len(meta["dur"]))
+        mem_param = archetype.memory_param
+        peak_fit = arch.ParamFit([(p[0], p[4]) for p in points], mem_param, floor=32.0)
+        cpu_fit = arch.ParamFit([(p[1], p[4]) for p in points], mem_param, floor=0.5)
+        dur_fit = arch.ParamFit([(p[2], p[4]) for p in points], mem_param, floor=20.0)
+        vram_fit = (
+            arch.ParamFit([(p[3], p[4]) for p in points], mem_param, floor=0.0)
+            if meta["gpu"]
+            else None
+        )
         for vi in range(per):
             if len(records) >= total_tasks:
                 break
             values = arch.sample_params(archetype, rng)
-            peak = fit.predict(values[archetype.memory_param], archetype.memory_param)
+            x = values[mem_param]
             records.append(
-                {
-                    "task_id": f"arch-{seed}-{ai}-v{vi}",
-                    "family": meta["family"],
-                    "source_code": arch.instantiate(archetype, values),
-                    "harness_code": arch.instantiate(archetype, values),
-                    "input_profile": archetype.description,
-                    "params_json": json.dumps(
-                        {"archetype": ai, "label_source": "fitted", **values}
-                    ),
-                    "prior_json": "",
-                    "history_json": "",
-                    "true_peak_memory_mib": float(min(max(peak, 96.0), 12288.0)),
-                    "true_cpu_cores": cpu_label,
-                    "true_gpu_mem_mib": 0.0,
-                    "duration_s": dur_label,
-                    "split": "train",
-                }
+                _row(
+                    ai, f"v{vi}", archetype, meta, values,
+                    peak_fit.predict(x),
+                    cpu_fit.predict(x),
+                    dur_fit.predict(x),
+                    min(vram_fit.predict(x), 14000.0) if vram_fit else 0.0,
+                    "fitted",
+                )
             )
         counters["variants"] = len(records)
         await render("instantiating")
 
     counters["variants"] = len(records)
+
+    # ── quality gates: measured, rendered, ENFORCED ─────────────────────
+    await render("scoring corpus quality", force=True)
+    qreport = qual.quality_report(
+        [a.code for a, _, _ in kept], records, label_errors=label_errors
+    )
+    fails = qual.gate_failures(qreport)
+    fmt = lambda v: "-" if v is None else (f"{v:.0%}" if isinstance(v, float) else str(v))  # noqa: E731
+    rep.h("Quality gates")
+    rep.table(
+        ["metric", "value"],
+        [
+            [esc("archetype near-dup rate"), esc(fmt(qreport["near_dup_rate"]))],
+            [esc("token entropy (bits)"), esc(qreport["token_entropy_bits"])],
+            [esc("footprint grid coverage"), esc(fmt(qreport["coverage"]["coverage"]))],
+            [esc("max archetype share of rows"), esc(fmt(qreport["max_archetype_share"]))],
+            [esc("label error p50 / p90"),
+             esc(f"{fmt(qreport['label_error_p50'])} / {fmt(qreport['label_error_p90'])}")],
+            [esc("holdout-rejected archetypes"), esc(counters["holdout_rejects"])],
+            [esc("family mixture"),
+             esc(", ".join(f"{f}:{s:.0%}" for f, s in qreport["mixture"].items()))],
+        ],
+    )
+    if fails:
+        rep.h("GATE FAILURES")
+        for f in fails:
+            rep.p(f, color="#F43B3E")
+    await rep.flush()
+    if fails and enforce_quality:
+        raise RuntimeError(f"corpus quality gates failed: {'; '.join(fails)}")
+
     await render(f"writing parquet ({len(records):,} rows)", force=True)
     path = tempfile.mktemp(suffix=".parquet")
     pd.DataFrame(records).to_parquet(path, index=False)

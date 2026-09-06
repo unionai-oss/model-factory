@@ -76,11 +76,23 @@ async def run_generated(harness_code: str, task_id: str = "") -> dict:
     # Sustained parallelism ≈ CPU-seconds / wall-seconds. This is the
     # oracle's cpu label for synthetic tasks (rusage has no CPU peak).
     cpu_s = (ru1.ru_utime - ru0.ru_utime) + (ru1.ru_stime - ru0.ru_stime)
+    # VRAM ground truth for GPU-archetype calibration (0 on CPU pods /
+    # CPU workloads). max_memory_allocated is the honest per-process
+    # number — nvidia-smi "used" would count the CUDA context too.
+    gpu_peak_mib = 0.0
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            gpu_peak_mib = torch.cuda.max_memory_allocated() / (1024 * 1024)
+    except Exception:  # noqa: BLE001 — no torch / no CUDA = CPU task
+        pass
     measured = {
         "ok": ok,
         "error": error,
         "peak_rss_mib": float(peak_rss_mib),
         "cpu_avg_cores": float(cpu_s / duration) if duration > 0 else 0.0,
+        "gpu_peak_mib": float(gpu_peak_mib),
         "duration_s": float(duration),
         "result": result or {},
     }
@@ -92,6 +104,11 @@ async def run_generated(harness_code: str, task_id: str = "") -> dict:
         {
             "peak RSS": f"{measured['peak_rss_mib']:.0f} MiB",
             "avg CPU": f"{measured['cpu_avg_cores']:.2f} cores",
+            **(
+                {"peak VRAM": f"{measured['gpu_peak_mib']:.0f} MiB"}
+                if measured["gpu_peak_mib"]
+                else {}
+            ),
             "duration": f"{measured['duration_s']:.1f}s",
             "ok": str(ok),
             **({"error": error[:300]} if error else {}),
