@@ -106,6 +106,32 @@ async def _get_batcher(checkpoint_path: str):
     from flyte.extras import DynamicBatcher
 
     async with _load_lock:
+        if checkpoint_path not in _engines and _engines:
+            # One checkpoint per replica: hosting N base models OOM-thrashed
+            # the T4 when four evals with different checkpoints shared the
+            # env (round-11 evals: 2x 4B + 2x 1.7B > 16GB — every batch hit
+            # the OOM-retry path and 1,280 calls crawled into a timeout).
+            for path, batcher in list(_batchers.items()):
+                try:
+                    stop = getattr(batcher, "stop", None)
+                    if stop is not None:
+                        res = stop()
+                        if asyncio.iscoroutine(res):
+                            await res
+                except Exception as e:  # noqa: BLE001 — eviction is best-effort
+                    print(f"[generator] batcher stop failed for {path[-24:]}: {e}")
+            _batchers.clear()
+            _engines.clear()
+            try:
+                import gc
+
+                import torch
+
+                gc.collect()
+                torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+            print(f"[generator] evicted engines; loading {checkpoint_path[-40:]}")
         if checkpoint_path not in _engines:
             _engines[checkpoint_path] = await _load_engine(checkpoint_path)
         if checkpoint_path not in _batchers:
