@@ -27,7 +27,7 @@ from ..contracts import (
 )
 from .. import pricing
 from ..shared import assets
-from ..shared.reporting import GOOD, MUTED, Reporter, esc, ok_pill, pill
+from ..shared.reporting import GOOD, MUTED, Reporter, esc, markdown_block, ok_pill, pill
 from ..environment.episodes import run_cluster_episode
 from ..environment.metrics import harness_action_peaks, metrics_available
 from ..environment.simulator import simulate_episode
@@ -268,6 +268,9 @@ async def eval_tuner(
         return "-" if v is None else f"${v:.4f}"
 
     rep.reset_body()
+    if manifest.get("hypothesis_description"):
+        rep.h("Hypothesis this checkpoint was trained to test")
+        rep.raw(markdown_block(manifest["hypothesis_description"]))
     rep.h("Reward configuration under evaluation")
     shape_kv = {"reward stage": reward_stage, "trained profile": manifest.get("profile", "?")}
     if reward_shape:
@@ -439,6 +442,7 @@ async def eval_tuner(
         # humans and the lineage dashboard.
         "reward_stage": reward_stage,
         "reward_shape": reward_shape,
+        "hypothesis_description": manifest.get("hypothesis_description", ""),
         "train_reward_first": train_reward_first,
         "train_reward_last": train_reward_last,
         # Links this report to the checkpoint version it scored — the

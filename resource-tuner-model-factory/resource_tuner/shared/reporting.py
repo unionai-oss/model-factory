@@ -84,6 +84,50 @@ def highlight_python(code: str) -> str:
     return "".join(out)
 
 
+def markdown_block(md: str, cap: int = 4000) -> str:
+    """Small, safe markdown→HTML for user-supplied text (hypothesis
+    descriptions and the like). Escapes EVERYTHING first, then renders a
+    deliberately minimal subset: #/##/### headings, **bold**, *italic*,
+    `code`, - bullet lists, [text](http-links), blank-line paragraphs."""
+    text = esc(md[:cap].strip())
+    text = _re.sub(r"`([^`\n]+)`", r'<code style="background:#1b1b21;padding:1px 5px;border-radius:4px">\1</code>', text)
+    text = _re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", text)
+    text = _re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", text)
+    text = _re.sub(
+        r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)",
+        r'<a style="color:#8b9bff" href="\2">\1</a>',
+        text,
+    )
+    lines_out: list[str] = []
+    in_list = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            if not in_list:
+                lines_out.append('<ul style="margin:4px 0 4px 18px;padding:0">')
+                in_list = True
+            lines_out.append(f'<li style="margin:2px 0">{stripped[2:]}</li>')
+            continue
+        if in_list:
+            lines_out.append("</ul>")
+            in_list = False
+        m = _re.match(r"(#{1,3})\s+(.*)", stripped)
+        if m:
+            size = {1: 15, 2: 13.5, 3: 12.5}[len(m.group(1))]
+            lines_out.append(
+                f'<div style="font-size:{size}px;font-weight:600;margin:8px 0 2px">{m.group(2)}</div>'
+            )
+        elif stripped:
+            lines_out.append(f'<div style="margin:3px 0">{stripped}</div>')
+    if in_list:
+        lines_out.append("</ul>")
+    return (
+        '<div style="background:#131316;border:1px solid #1b1b21;border-left:3px solid '
+        '#4d65ff;border-radius:8px;padding:10px 14px;font-size:12.5px;line-height:1.55;'
+        f'color:#c9c9cf">{"".join(lines_out)}</div>'
+    )
+
+
 def code_block(code: str, cap: int = 6000) -> str:
     """A syntax-highlighted, scrollable code panel for reports."""
     clipped = code[:cap]

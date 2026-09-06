@@ -46,3 +46,21 @@ def test_highlight_python_colors_and_escapes():
     block = code_block("x = 1\n" * 4000, cap=100)
     assert "truncated at 100" in block
     assert "overflow-x:auto" in code_block("def f(): pass")
+
+
+def test_markdown_block_renders_safely():
+    from resource_tuner.shared.reporting import markdown_block
+
+    md = (
+        "## Hypothesis\n"
+        "**Bigger adapters** close the *fit gap*.\n"
+        "- arm: `r11-r64-mlp`\n"
+        "- risk: <script>alert(1)</script>\n"
+        "See [round 8](https://example.com/r8)."
+    )
+    html = markdown_block(md)
+    assert "Hypothesis</div>" in html and "<strong>Bigger adapters</strong>" in html
+    assert "<em>fit gap</em>" in html and "<li" in html
+    assert 'href="https://example.com/r8"' in html
+    assert "<script>" not in html and "&lt;script&gt;" in html  # escaped, always
+    assert "x" * 4001 not in markdown_block("x" * 9000)  # capped at 4000

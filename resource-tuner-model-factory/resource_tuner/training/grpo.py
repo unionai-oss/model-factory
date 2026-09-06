@@ -37,7 +37,7 @@ from ..policy.parsing import format_credit, try_extract_proposal
 from ..policy.prompts import parse_context_fields, render_messages
 from ..rewards import shaping
 from ..rewards.rewards import FORMAT_REWARD, invalid_proposal_reward, score_episode
-from ..shared.reporting import GOOD, Reporter, esc, line_chart, pill
+from ..shared.reporting import GOOD, Reporter, esc, line_chart, markdown_block, pill
 from .baseline import baseline_proposal, fit_family_baseline
 from .envs import ckpt_publisher_env, trainer_env
 
@@ -223,6 +223,9 @@ def _report_html(profile: TunerProfile, rows: list[dict], meta: dict | None = No
         "train contexts": meta.get("n_contexts", "?"),
         "corpus": str(meta.get("corpus", ""))[-60:] or "?",
     }
+    if meta.get("hypothesis"):
+        rep.h("Hypothesis under test")
+        rep.raw(markdown_block(meta["hypothesis"]))
     if meta.get("wandb_url"):
         rep.raw(
             f'<p style="margin:6px 0"><a style="color:#8b9bff" href="{esc(meta["wandb_url"])}">'
@@ -378,6 +381,7 @@ async def train_tuner(
     resume_from: flyte.io.Dir | None = None,
     resume_from_artifact: str = "",
     fail_at_step: int = 0,
+    hypothesis_description: str | None = None,
 ) -> flyte.io.Dir:
     """Train the policy on the corpus's train split; emit tuner-checkpoint.
 
@@ -394,6 +398,12 @@ async def train_tuner(
 
     `fail_at_step` is a chaos hook for testing the intra-task path: the
     FIRST attempt raises after that step; retries then prove the resume.
+
+    `hypothesis_description` is a markdown note stating WHAT QUESTION this
+    run is asking (supplied by the human or agent launching it). It renders
+    at the top of the live report, rides the checkpoint manifest into the
+    eval report and dashboard, and lands in the W&B run notes — so a
+    checkpoint can always answer "why was this trained?".
     """
     import asyncio
 
@@ -404,6 +414,8 @@ async def train_tuner(
 
     profile = get_profile(profile_name)
     meta: dict = {"corpus": getattr(corpus, "path", "")}
+    if hypothesis_description:
+        meta["hypothesis"] = hypothesis_description
     # Page up immediately: the model download/load takes minutes and the
     # run page should say so rather than sit blank.
     await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
@@ -499,6 +511,8 @@ async def train_tuner(
             pass
         os.environ.setdefault("WANDB_NAME", f"{profile.name}-{run_name or 'local'}")
         os.environ.setdefault("WANDB_TAGS", f"{profile.reward_stage},{profile.base_model}")
+        if hypothesis_description:
+            os.environ.setdefault("WANDB_NOTES", hypothesis_description[:1000])
     import dataclasses
     import random
 
@@ -685,6 +699,8 @@ async def train_tuner(
             else None
         ),
         "max_steps": profile.max_steps,
+        # Why this run exists — travels to the eval report and dashboard.
+        "hypothesis_description": hypothesis_description or "",
         # Round-11 arm descriptors — eval and serving adapt to these.
         "use_lora": profile.use_lora,
         "lora_mlp": profile.lora_mlp,
