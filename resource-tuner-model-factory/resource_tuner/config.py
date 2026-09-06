@@ -307,15 +307,17 @@ R11_FULLFT = _dc.replace(
     use_lora=False,
     use_qlora=False,
 )
-# The expanded-budget redo: full FT of Qwen3-32B on one g6e.48xlarge
-# (8x L40S, launched with RT_TRAIN_GPU="L40S:8"). Naive model-parallel
-# via device_map — slow steps, but single-node as specified. Intra-task
-# saves are ~128GB tarballs, so cadence drops to every 100 steps and
+# The expanded-budget redo: full FT of the biggest Qwen that fits a
+# RELIABLY-provisionable node — Qwen3-14B on g6e.12xlarge (L40s:4,
+# 192GB VRAM; ~84GB of bf16 weights+grads+8-bit-Adam states). The 32B/
+# 8-GPU variant needs g6e.48xlarge, which rarely provisions. Naive
+# model-parallel via device_map — single-node as specified. Intra-task
+# saves are ~56GB tarballs, so cadence stays at every 100 steps and
 # intermediate ARTIFACTS stay off (the final checkpoint is the artifact).
-R11_FULLFT_32B = _dc.replace(
+R11_FULLFT_14B = _dc.replace(
     _R11_BASE,
-    name="r11-fullft-32b",
-    base_model=MODEL_LADDER["xl"],
+    name="r11-fullft-14b",
+    base_model=MODEL_LADDER["l"],
     use_lora=False,
     use_qlora=False,
     learning_rate=1e-6,  # full-FT RL wants a gentler lr than LoRA
@@ -329,7 +331,7 @@ PROFILES: dict[str, TunerProfile] = {
     p.name: p
     for p in (
         SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, PROBE_QWEN35,
-        *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT, R11_FULLFT_32B,
+        *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT, R11_FULLFT_14B,
     )
 }
 
