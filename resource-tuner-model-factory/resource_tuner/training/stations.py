@@ -447,11 +447,17 @@ async def archetype_data_release(
     def on_status(s: str) -> None:
         asyncio.run_coroutine_threadsafe(render(f"waking teachers — {s}", force=True), loop)
 
-    async def wake(name: str) -> str:
+    async def wake(name: str) -> str | None:
         cands = llm_client.resolve_teacher_candidates(name)
-        return await asyncio.to_thread(llm_client.wait_until_ready, cands, 1800, 15, on_status)
+        try:
+            return await asyncio.to_thread(llm_client.wait_until_ready, cands, 1800, 15, on_status)
+        except Exception as e:  # noqa: BLE001 — one dead teacher ≠ dead release
+            print(f"[teachers] {name} failed to wake: {e} — continuing without it")
+            return None
 
-    base_urls = list(await asyncio.gather(*(wake(n) for n in teacher_names)))
+    base_urls = [u for u in await asyncio.gather(*(wake(n) for n in teacher_names)) if u]
+    if not base_urls:
+        raise RuntimeError(f"no teacher woke up (tried {teacher_names})")
     base_url = " + ".join(base_urls)
 
     # Per-teacher small queues (llama.cpp serializes anyway).
