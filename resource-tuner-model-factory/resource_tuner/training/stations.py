@@ -356,7 +356,7 @@ async def _teacher_write_archetype(base_url: str, prompt: str, max_tokens: int) 
 @driver_env.task(timeout=flyte.Timeout(max_runtime=24 * 3600), produces_artifacts=True, report=True)
 async def archetype_data_release(
     total_tasks: int = 100_000,
-    n_archetypes: int = 150,
+    n_archetypes: int = 150,  # FIRST wave's size; later waves size by yield
     calibration_k: int = 3,
     # Comma-separated teacher list — style diversity by construction.
     teacher: str = "qwen38-27b",
@@ -378,6 +378,15 @@ async def archetype_data_release(
     # above the episode-era 24 when the release is big.
     oracle_concurrency: int = 24,
     teacher_concurrency: int = 3,   # per teacher; llama.cpp serializes anyway
+    # ── scale: waves until the row target is reachable ──
+    # Rows = archetypes x variants. The cap on variants is what forces
+    # DIVERSITY at scale: 1M rows needs ~2.5k archetypes at 400 each, not
+    # 30 archetypes photocopied 33,000 times.
+    variants_per_archetype: int = 400,
+    max_waves: int = 12,
+    max_wave_size: int = 600,
+    generation_deadline_s: float = 16 * 3600,
+    require_target: bool = True,  # fail loudly rather than ship short
 ) -> flyte.io.File:
     """Scale synthetic generation: archetypes × instantiation → 10⁵-10⁶ tasks.
 
@@ -391,6 +400,12 @@ async def archetype_data_release(
     scale rendered in) and synthetic prior/history context; and the
     release fails loudly if quality gates (near-dup rate, footprint
     coverage, concentration, label error) miss.
+
+    Scale is target-driven, not count-driven: the row target divided by
+    `variants_per_archetype` sets how many archetypes must SURVIVE, and
+    generation runs in waves (each sized from the observed keep rate)
+    until that many exist, the wave/deadline budget runs out, or —
+    with `require_target` — the run fails rather than shipping short.
     """
     import asyncio
     import random
@@ -435,12 +450,20 @@ async def archetype_data_release(
                 {
                     "endpoint": base_url,
                     "phase": phase,
-                    "archetypes kept / settled / total": f"{kept} / {settled} / {n_archetypes}",
+                    "archetypes kept / settled / attempted": (
+                        f"{kept} / {settled} / {len(astatus)}"
+                    ),
+                    "archetypes needed for target": (
+                        f"{-(-total_tasks // max(variants_per_archetype, 1)):,} "
+                        f"({variants_per_archetype} variants each)"
+                    ),
                     "calibration pods": f"{counters['calib_done']}/{counters['calib_total']}",
                     "variants written": f"{counters['variants']:,}/{total_tasks:,}",
                 }
             )
-            rep.progress(settled, n_archetypes, "archetypes")
+            rep.progress(
+                kept, -(-total_tasks // max(variants_per_archetype, 1)), "archetypes kept"
+            )
             if counters["calib_total"]:
                 rep.progress(counters["calib_done"], counters["calib_total"], "calibrations")
             reasons: dict[str, int] = {}
@@ -489,7 +512,7 @@ async def archetype_data_release(
             rep.h("Archetypes (head / tail)")
             shown = (
                 list(enumerate(astatus))[:4] + list(enumerate(astatus))[-4:]
-                if n_archetypes > 8
+                if len(astatus) > 8
                 else list(enumerate(astatus))
             )
             colors = {"kept": GOOD, "rejected": "#F43B3E"}
@@ -696,11 +719,70 @@ async def archetype_data_release(
             "teacher": t_name,
         }
 
-    built = await asyncio.gather(*(build_archetype(i) for i in range(n_archetypes)))
-    kept = [b for b in built if b]
-    await render(f"instantiating from {len(kept)} archetypes", force=True)
+    # ── generate in WAVES until the row target is reachable ─────────────
+    # Rows come from archetypes x variants, and variants-per-archetype is
+    # capped (concentration is a quality gate, so 1M rows from 30
+    # archetypes is not a corpus, it is 30 tasks photocopied). So the
+    # archetype count is DERIVED from the target, and waves keep running
+    # until enough archetypes survive — teacher yield varies, so a fixed
+    # n_archetypes either overshoots or silently under-delivers.
+    kept: list = []
+    wave = 0
+    started_at = time.monotonic()
+    needed = -(-total_tasks // max(variants_per_archetype, 1))  # ceil
+    next_idx = n_archetypes  # astatus slots beyond the first wave
+
+    while len(kept) < needed and wave < max_waves:
+        remaining = needed - len(kept)
+        # Size the wave by observed yield (first wave: the caller's number).
+        if wave == 0:
+            size = n_archetypes
+        else:
+            yield_rate = max(len(kept) / max(next_idx, 1), 0.05)
+            size = min(int(remaining / yield_rate) + 8, max_wave_size)
+        while len(astatus) < next_idx + size:
+            i = len(astatus)
+            astatus.append(
+                {"stage": "queued", "detail": "", "family": _hint_for(i)[0], "teacher": "?"}
+            )
+        idxs = list(range(next_idx if wave else 0, (next_idx if wave else 0) + size))
+        next_idx = idxs[-1] + 1
+        await render(
+            f"wave {wave + 1}: generating {size} archetypes "
+            f"({len(kept)}/{needed} kept for {total_tasks:,} rows)",
+            force=True,
+        )
+        built = await asyncio.gather(*(build_archetype(i) for i in idxs))
+        kept += [b for b in built if b]
+        wave += 1
+        elapsed = time.monotonic() - started_at
+        print(
+            f"[waves] wave {wave}: {len(kept)}/{needed} archetypes kept "
+            f"after {elapsed / 60:.0f}m"
+        )
+        if elapsed > generation_deadline_s:
+            print("[waves] generation deadline reached; stopping archetype waves")
+            break
+
+    await render(
+        f"instantiating from {len(kept)} archetypes ({wave} waves)", force=True
+    )
     if not kept:
-        raise RuntimeError(f"0/{n_archetypes} archetypes survived; see report for reasons")
+        raise RuntimeError(
+            f"0 archetypes survived {wave} waves; see report for reasons"
+        )
+    reachable = len(kept) * variants_per_archetype
+    if reachable < total_tasks:
+        # Say it plainly rather than silently shipping a smaller corpus
+        # padded by over-instantiating a few archetypes.
+        msg = (
+            f"only {len(kept)} archetypes survived {wave} waves — at "
+            f"{variants_per_archetype} variants each that is {reachable:,} rows, "
+            f"short of the {total_tasks:,} requested"
+        )
+        if require_target:
+            raise RuntimeError(msg)
+        print(f"[waves] WARNING: {msg}")
 
     records: list[dict] = []
     import zlib as _zlib
@@ -736,7 +818,13 @@ async def archetype_data_release(
                 _row(ai, f"cal{pi}", archetype, meta, point, peak, cpu, dur, vram, "measured")
             )
 
-    per = max((total_tasks - len(records)) // len(kept), 1)
+    # Variants per archetype: enough to hit the target, never more than
+    # the cap (which is what keeps one archetype from dominating the
+    # corpus and tripping the concentration gate).
+    per = min(
+        variants_per_archetype,
+        max(-(-(total_tasks - len(records)) // len(kept)), 1),
+    )
     for ai, (archetype, points, meta) in enumerate(kept):
         mem_param = archetype.memory_param
         peak_fit = arch.ParamFit([(p[0], p[4]) for p in points], mem_param, floor=32.0)

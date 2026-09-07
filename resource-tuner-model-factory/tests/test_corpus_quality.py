@@ -187,3 +187,30 @@ def test_concentration_gate_scales_with_archetype_count():
     # with many archetypes the 2% target still applies
     many = {**even_33, "n_archetypes": 200, "max_archetype_share": 0.05}
     assert any("fair share" in r for r in qual.gate_failures(many))
+
+
+def test_wave_sizing_and_variant_cap_arithmetic():
+    """The scale contract: archetypes needed is derived from the target,
+    waves size by observed yield, and variants stay capped so 1M rows
+    can't come from a handful of photocopied archetypes."""
+    total, cap = 1_000_000, 400
+    needed = -(-total // cap)
+    assert needed == 2500
+
+    # wave sizing: at a 20% keep rate, ask for ~5x what remains
+    kept, attempted = 100, 500
+    yield_rate = max(kept / attempted, 0.05)
+    remaining = needed - kept
+    size = min(int(remaining / yield_rate) + 8, 600)
+    assert size == 600  # clamped by max_wave_size
+    kept2, attempted2 = 2400, 3000
+    size2 = min(int((needed - kept2) / max(kept2 / attempted2, 0.05)) + 8, 600)
+    assert 100 < size2 < 200  # near the target it asks for far less
+
+    # variant cap: per-archetype never exceeds the cap
+    for n_kept in (2500, 5000):
+        per = min(cap, max(-(-total // n_kept), 1))
+        assert per <= cap
+        assert n_kept * per >= total or per == cap
+    # a thin corpus is bounded by the cap (and would fail require_target)
+    assert 30 * min(cap, max(-(-total // 30), 1)) == 30 * cap < total
