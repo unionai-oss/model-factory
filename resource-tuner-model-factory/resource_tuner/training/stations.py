@@ -349,6 +349,11 @@ async def archetype_data_release(
     holdout_k: int = 2,          # extra oracle pods per archetype, fit-error check
     holdout_max_err: float = 0.25,  # reject archetypes whose labels miss by more
     enforce_quality: bool = True,   # fail the release on quality-gate misses
+    # Calibration is the throughput bottleneck of a large release: pods
+    # are 3 CPU / 12Gi (t3a.xlarge, 3-250 nodes), so this can go well
+    # above the episode-era 24 when the release is big.
+    oracle_concurrency: int = 24,
+    teacher_concurrency: int = 3,   # per teacher; llama.cpp serializes anyway
 ) -> flyte.io.File:
     """Scale synthetic generation: archetypes × instantiation → 10⁵-10⁶ tasks.
 
@@ -483,8 +488,8 @@ async def archetype_data_release(
     base_url = " + ".join(base_urls)
 
     # Per-teacher small queues (llama.cpp serializes anyway).
-    teacher_sems = [asyncio.Semaphore(3) for _ in base_urls]
-    oracle_sem = asyncio.Semaphore(24)
+    teacher_sems = [asyncio.Semaphore(teacher_concurrency) for _ in base_urls]
+    oracle_sem = asyncio.Semaphore(oracle_concurrency)
 
     async def build_archetype(idx: int):
         family, hint, is_gpu = _hint_for(idx)
