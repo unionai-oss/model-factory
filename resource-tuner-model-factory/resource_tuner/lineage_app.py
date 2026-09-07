@@ -389,6 +389,9 @@ def _metrics_of(report: dict) -> dict:
         "gpu_spurious_count": report.get("gpu_spurious_count"),
         "train_reward_first": report.get("train_reward_first"),
         "train_reward_last": report.get("train_reward_last"),
+        "ml_baseline_success_rate": report.get("ml_baseline_success_rate"),
+        "ml_baseline_cost_per_task_hr": report.get("ml_baseline_cost_per_task_hr"),
+        "hypothesis_description": report.get("hypothesis_description") or "",
     }
 
 
@@ -1206,14 +1209,18 @@ try {
           <tbody>
             ${reports.filter((r) => r.reward_stage).map((r) => html`
               <tr>
-                <td class="mono">${r.reward_stage}</td>
+                <td class="mono" title=${r.hypothesis_description || "no hypothesis recorded for this run"}>
+                  ${r.reward_stage}${r.hypothesis_description ? " ℹ" : ""}</td>
                 <td title="each arm's OWN reward curve, first → last logged step — comparable as improvement, not in absolute terms">
                   ${r.train_reward_first != null && r.train_reward_last != null
                     ? r.train_reward_first.toFixed(2) + " → " + r.train_reward_last.toFixed(2)
                     : "—"}</td>
                 <td>${r.success_rate != null ? Math.round(r.success_rate * 100) + "%" : "—"}</td>
                 <td>${r.median_overprovision_pct != null ? Math.round(r.median_overprovision_pct) + "%" : "—"}</td>
-                <td>${r.policy_cost_per_task_hr != null ? "$" + r.policy_cost_per_task_hr.toFixed(4) : "—"}</td>
+                <td>${r.policy_cost_per_task_hr != null ? "$" + r.policy_cost_per_task_hr.toFixed(4) : "—"}
+                  ${r.ml_baseline_cost_per_task_hr != null
+                    ? html`<span style=${{ color: "#9a9aa4" }}> (ML ${"$" + r.ml_baseline_cost_per_task_hr.toFixed(4)})</span>`
+                    : null}</td>
                 <td style=${{ color: (r.dollars_saved_per_1k_task_hrs || 0) >= 0 ? "#35c48d" : "#F43B3E" }}>
                   ${r.dollars_saved_per_1k_task_hrs != null ? "$" + r.dollars_saved_per_1k_task_hrs.toFixed(2) : "—"}</td>
                 <td>${r.gpu_success_rate != null ? Math.round(r.gpu_success_rate * 100) + "%" : "—"}</td>

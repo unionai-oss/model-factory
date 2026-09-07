@@ -38,7 +38,9 @@ def secrets() -> list[flyte.Secret]:
 
 harness_image = (
     flyte.Image.from_debian_base(name="rt-harness", python_version=PYTHON)
-    .with_pip_packages("numpy>=1.26", "pandas>=2.2", "scikit-learn>=1.5")
+    # scipy/pyarrow: the round-12 synthetic allowlist admits sparse and
+    # columnar workloads — the oracle must be able to run them.
+    .with_pip_packages("numpy>=1.26", "pandas>=2.2", "scikit-learn>=1.5", "scipy>=1.13", "pyarrow>=17")
     # CPU wheel: the harness never sees a GPU, the CUDA wheel is ~5GB dead weight.
     .with_pip_packages("torch>=2.4", index_url="https://download.pytorch.org/whl/cpu")
 )
@@ -57,6 +59,9 @@ gpu_image = (
         "pandas>=2.2",
         "pyarrow>=17",
         "wandb>=0.28",
+        # tune service serves the joblib'd quantile-GBT baseline as a
+        # fallback/AB estimator next to the LLM.
+        "scikit-learn>=1.5",
     )
     .with_pip_packages(*_METRICS_LAYER)
     .with_pip_packages(*_FLYTE_REPIN_LAYER)
@@ -64,7 +69,9 @@ gpu_image = (
 
 driver_image = (
     flyte.Image.from_debian_base(name="rt-driver", python_version=PYTHON)
-    .with_pip_packages("pandas>=2.2", "pyarrow>=17")
+    # scikit-learn: the classical ML baseline (quantile GBTs) trains inside
+    # eval_tuner on this env.
+    .with_pip_packages("pandas>=2.2", "pyarrow>=17", "scikit-learn>=1.5")
     .with_pip_packages(*_METRICS_LAYER)
     .with_pip_packages(*_FLYTE_REPIN_LAYER)
 )

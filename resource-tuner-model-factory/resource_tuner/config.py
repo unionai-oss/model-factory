@@ -93,6 +93,12 @@ MODEL_LADDER: dict[str, str] = {
     "xs": "Qwen/Qwen3-0.6B",
     "s": "Qwen/Qwen3-1.7B",
     "m": "Qwen/Qwen3-4B",
+    "m8": "Qwen/Qwen3-8B",
+    "l": "Qwen/Qwen3-14B",
+    # Biggest dense Qwen that full-fine-tunes on ONE node: 8x L40S
+    # (g6e.48xlarge, 384GB VRAM) holds bf16 weights + grads + 8-bit Adam
+    # (~6B/param ≈ 192GB) with room for activations + generation KV.
+    "xl": "Qwen/Qwen3-32B",
     # Qwen3.5 tier: blocked on trl#5269 / vllm#39993 for RL as of 2026-09
     "xs-qwen35": "Qwen/Qwen3.5-0.8B",
     "s-qwen35": "Qwen/Qwen3.5-2B",
@@ -137,6 +143,18 @@ class TunerProfile:
     # artifact via a child task (Union-native lineage; resumable input for
     # a later train_tuner via resume_from_artifact). 0 = off.
     artifact_checkpoint_every: int = 0
+    # ── round-11 arms ──
+    # extend LoRA to the MLP projections (gate/up/down_proj) — the honest
+    # capacity test before anything more radical.
+    lora_mlp: bool = False
+    # False = FULL fine-tune (no adapters; 8-bit Adam; small rungs only —
+    # a 0.6B fits a T4 at ~5-6GB with grad checkpointing).
+    use_lora: bool = True
+    # GBT-hint composition: quantile-GBT estimates ride in the prompt
+    # (out-of-fold at train time) AND the baseline_relative reward term
+    # references the GBT's cost — the policy is paid for beating the
+    # strongest classical estimator, not the family-median strawman.
+    gbt_hint: bool = False
 
 
 SMOKE = TunerProfile(
@@ -277,11 +295,77 @@ _R8_SHAPED = tuple(
     _dc.replace(_R8_BASE, name=f"r8-{stage}", reward_stage=stage) for stage in _SHAPE_ARMS
 )
 
+# Round-11 arms: r8 scale (4096 ctx / 300 steps, c-cost reward — the
+# round-7/8 winner) so results drop straight into the standing comparison
+# table. One variable each:
+_R11_BASE = _dc.replace(_R8_BASE, reward_stage="c-cost")
+R11_R64 = _dc.replace(_R11_BASE, name="r11-r64-mlp", lora_r=64, lora_mlp=True)
+R11_GBT = _dc.replace(_R11_BASE, name="r11-gbt-hint", gbt_hint=True)
+R11_FULLFT = _dc.replace(
+    _R11_BASE,
+    name="r11-fullft-06b",
+    base_model=MODEL_LADDER["xs"],  # Qwen3-0.6B — full FT fits a T4
+    use_lora=False,
+    use_qlora=False,
+)
+# The expanded-budget redo: full FT of the biggest Qwen that fits a
+# RELIABLY-provisionable node — Qwen3-14B on g6e.12xlarge (L40s:4,
+# 192GB VRAM; ~84GB of bf16 weights+grads+8-bit-Adam states). The 32B/
+# 8-GPU variant needs g6e.48xlarge, which rarely provisions. Naive
+# model-parallel via device_map — single-node as specified. Intra-task
+# saves are ~56GB tarballs, so cadence stays at every 100 steps and
+# intermediate ARTIFACTS stay off (the final checkpoint is the artifact).
+# Bottom provisioning rung that RELIABLY schedules: Qwen3-4B full FT on
+# ONE L40S (g6e.2xlarge — the pool llm-service cold-starts routinely).
+# ~24GB training state in 48GB VRAM, and no naive-MP tax: single GPU.
+R11_FULLFT_4B = _dc.replace(
+    _R11_BASE,
+    name="r11-fullft-4b",
+    base_model=MODEL_LADDER["m"],
+    use_lora=False,
+    use_qlora=False,
+    learning_rate=1e-6,
+    num_generations=8,
+    per_device_batch=8,
+    save_steps=100,
+    artifact_checkpoint_every=0,
+)
+
+# Provisioning-ladder fallback: Qwen3-8B on g6.12xlarge (L4:4, 96GB —
+# ~48GB of full-FT states). Same recipe one rung down; the 32B/L40s:8
+# and 14B/L40s:4 configs stay on the ladder for when big nodes provision.
+R11_FULLFT_8B = _dc.replace(
+    _R11_BASE,
+    name="r11-fullft-8b",
+    base_model=MODEL_LADDER["m8"],
+    use_lora=False,
+    use_qlora=False,
+    learning_rate=1e-6,
+    num_generations=8,
+    per_device_batch=8,
+    save_steps=100,
+    artifact_checkpoint_every=0,
+)
+
+R11_FULLFT_14B = _dc.replace(
+    _R11_BASE,
+    name="r11-fullft-14b",
+    base_model=MODEL_LADDER["l"],
+    use_lora=False,
+    use_qlora=False,
+    learning_rate=1e-6,  # full-FT RL wants a gentler lr than LoRA
+    num_generations=8,
+    per_device_batch=8,
+    save_steps=100,
+    artifact_checkpoint_every=0,
+)
+
 PROFILES: dict[str, TunerProfile] = {
     p.name: p
     for p in (
         SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, PROBE_QWEN35,
-        *_DEV_SHAPED, *_R8_SHAPED,
+        *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT, R11_FULLFT_4B,
+        R11_FULLFT_8B, R11_FULLFT_14B,
     )
 }
 

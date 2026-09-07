@@ -27,7 +27,7 @@ from ..contracts import (
 )
 from .. import pricing
 from ..shared import assets
-from ..shared.reporting import GOOD, MUTED, Reporter, esc, ok_pill, pill
+from ..shared.reporting import GOOD, MUTED, Reporter, esc, markdown_block, ok_pill, pill
 from ..environment.episodes import run_cluster_episode
 from ..environment.metrics import harness_action_peaks, metrics_available
 from ..environment.simulator import simulate_episode
@@ -35,6 +35,7 @@ from ..policy.actions import Proposal
 from ..policy.parsing import try_extract_proposal
 from ..rewards.rewards import overprovision_fraction
 from ..training.baseline import baseline_proposal, fit_family_baseline
+from ..training.ml_baseline import MLBaseline
 from .envs import driver_env
 
 
@@ -103,7 +104,10 @@ def _summarize(pairs: list[tuple[dict, Proposal]]) -> dict:
 
 
 async def _generate_proposals(
-    records: list[dict], checkpoint_path: str, invalid_examples: list[str] | None = None
+    records: list[dict],
+    checkpoint_path: str,
+    invalid_examples: list[str] | None = None,
+    hint_kwargs: list | None = None,
 ) -> list[Proposal | None]:
     """Greedy proposals via the reusable generator env.
 
@@ -120,7 +124,9 @@ async def _generate_proposals(
 
     from .generator import generate_proposal
 
-    async def one(record: dict) -> Proposal | None:
+    hints = hint_kwargs or [None] * len(records)
+
+    async def one(record: dict, hint: dict | None) -> Proposal | None:
         try:
             text = await generate_proposal(
                 checkpoint_path=checkpoint_path,
@@ -128,6 +134,7 @@ async def _generate_proposals(
                 input_profile=record["input_profile"],
                 prior_json=str(record.get("prior_json", "") or ""),
                 history_json=str(record.get("history_json", "") or ""),
+                ml_hint_json=json.dumps(hint) if hint else "",
             )
         except flyte.errors.OOMError as e:
             print(f"[eval] generator OOM for {record['task_id']}: {e}")
@@ -142,7 +149,7 @@ async def _generate_proposals(
             invalid_examples.append(f"{record['task_id']} [{record.get('family', '?')}]: {text[:220]}")
         return proposal
 
-    return list(await asyncio.gather(*(one(r) for r in records)))
+    return list(await asyncio.gather(*(one(r, h) for r, h in zip(records, hints))))
 
 
 # Dark-mode wiring: a new checkpoint version IS the request to evaluate.
@@ -154,7 +161,7 @@ _eval_trigger = flyte.Trigger(
     automation=flyte.OnArtifact(name=ARTIFACT_TUNER_CHECKPOINT),
     inputs={"checkpoint": flyte.TriggeredArtifact},
     description="New tuner-checkpoint version -> eval vs baseline",
-    auto_activate=False,
+    auto_activate=True,
 )
 
 
@@ -193,16 +200,48 @@ async def eval_tuner(
     train_records = df[df["split"] == "train"].to_dict("records")
 
     ckpt_path = getattr(checkpoint, "path", "") or ""
+    # Manifest FIRST: hint-trained checkpoints (gbt_hint arms) must see
+    # GBT estimates at generation time, exactly as they will at serving.
+    ckpt_dir = await checkpoint.download()
+    with open(f"{ckpt_dir}/manifest.json") as f:
+        manifest = json.load(f)
+
+    # Classical-ML baseline (quantile GBTs, no LLM): the bar an expensive
+    # policy must clear to justify itself, and — for gbt_hint arms — the
+    # hint provider. Trains in-process on the same train split; failure
+    # degrades to "column absent", never a dead eval.
+    ml = None
+    ml_stats = None
+    try:
+        ml = MLBaseline().fit(train_records)
+        ml_stats = _summarize([(r, ml.propose(r)) for r in heldout])
+    except Exception as e:  # noqa: BLE001 — comparison column, not the eval
+        print(f"[eval] ML baseline failed (column omitted): {e}")
+
+    hint_kwargs: list[dict | None] = [None] * len(heldout)
+    if manifest.get("gbt_hint") and ml is not None:
+        # Heldout hints from a train-split-fitted GBT are honestly
+        # out-of-sample (same regime the policy saw via k-fold hints).
+        hint_kwargs = []
+        for r in heldout:
+            try:
+                hint_kwargs.append(ml.propose(r).to_kwargs())
+            except Exception:  # noqa: BLE001
+                hint_kwargs.append(None)
+
     rep.reset_body().kv(
         {
             "heldout contexts": len(heldout),
             "train contexts (baseline fit)": len(train_records),
             "checkpoint": ckpt_path[-60:],
+            "gbt hints": "on" if manifest.get("gbt_hint") else "off",
         }
     ).p("Generating proposals via the reusable batched generator…")
     await rep.flush()
     invalid_examples: list[str] = []
-    proposals = await _generate_proposals(heldout, ckpt_path, invalid_examples)
+    proposals = await _generate_proposals(
+        heldout, ckpt_path, invalid_examples, hint_kwargs=hint_kwargs
+    )
 
     valid = [(r, p) for r, p in zip(heldout, proposals) if p is not None]
     policy_stats = _summarize(valid)
@@ -212,12 +251,6 @@ async def eval_tuner(
     baseline_stats = _summarize(
         [(r, baseline_proposal(baselines, r["family"])) for r in heldout]
     )
-
-    # Which reward produced this checkpoint — the manifest carries the full
-    # shape config so a human reading the report knows the experiment arm.
-    ckpt_dir = await checkpoint.download()
-    with open(f"{ckpt_dir}/manifest.json") as f:
-        manifest = json.load(f)
     base_model = manifest["base_model"]
     reward_stage = manifest.get("reward_stage", "?")
     reward_shape = manifest.get("reward_shape")
@@ -235,6 +268,9 @@ async def eval_tuner(
         return "-" if v is None else f"${v:.4f}"
 
     rep.reset_body()
+    if manifest.get("hypothesis_description"):
+        rep.h("Hypothesis this checkpoint was trained to test")
+        rep.raw(markdown_block(manifest["hypothesis_description"]))
     rep.h("Reward configuration under evaluation")
     shape_kv = {"reward stage": reward_stage, "trained profile": manifest.get("profile", "?")}
     if reward_shape:
@@ -276,38 +312,29 @@ async def eval_tuner(
             }
         )
 
-    rep.h("Simulated scoring (policy vs baseline)")
+    def _stat_row(label, key, fmt):
+        row = [esc(label), esc(fmt(policy_stats[key])), esc(fmt(baseline_stats[key]))]
+        if ml_stats is not None:
+            row.append(esc(fmt(ml_stats[key])))
+        return row
+
+    headers = ["metric", "policy (LLM)", "rule baseline"]
+    if ml_stats is not None:
+        headers.append("ML baseline (quantile GBT)")
+    rep.h("Simulated scoring (policy vs baselines)")
     rep.table(
-        ["metric", "policy", "baseline"],
+        headers,
         [
-            [esc(m), esc(p), esc(b)]
-            for m, p, b in [
-                (
-                    "success rate",
-                    f"{policy_stats['success_rate']:.0%}",
-                    f"{baseline_stats['success_rate']:.0%}",
-                ),
-                (
-                    "$ / task-hour",
-                    _usd(policy_stats["cost_per_task_hr"]),
-                    _usd(baseline_stats["cost_per_task_hr"]),
-                ),
-                (
-                    "median overprovision",
-                    _pct(policy_stats["median_overprovision_pct"]),
-                    _pct(baseline_stats["median_overprovision_pct"]),
-                ),
-                (
-                    "median mem overprovision",
-                    _pct(policy_stats["median_mem_overprovision_pct"]),
-                    _pct(baseline_stats["median_mem_overprovision_pct"]),
-                ),
-                (
-                    "median cpu overprovision",
-                    _pct(policy_stats["median_cpu_overprovision_pct"]),
-                    _pct(baseline_stats["median_cpu_overprovision_pct"]),
-                ),
-            ]
+            _stat_row("success rate", "success_rate", lambda v: f"{v:.0%}"),
+            _stat_row("$ / task-hour", "cost_per_task_hr", _usd),
+            _stat_row("median overprovision", "median_overprovision_pct", _pct),
+            _stat_row("median mem overprovision", "median_mem_overprovision_pct", _pct),
+            _stat_row("median cpu overprovision", "median_cpu_overprovision_pct", _pct),
+            _stat_row(
+                "GPU-task success",
+                "gpu_success_rate",
+                lambda v: "-" if v is None else f"{v:.0%}",
+            ),
         ],
     )
 
@@ -415,6 +442,7 @@ async def eval_tuner(
         # humans and the lineage dashboard.
         "reward_stage": reward_stage,
         "reward_shape": reward_shape,
+        "hypothesis_description": manifest.get("hypothesis_description", ""),
         "train_reward_first": train_reward_first,
         "train_reward_last": train_reward_last,
         # Links this report to the checkpoint version it scored — the
@@ -432,6 +460,13 @@ async def eval_tuner(
         "policy_cost_per_task_hr": policy_stats["cost_per_task_hr"],
         "baseline_cost_per_task_hr": baseline_stats["cost_per_task_hr"],
         "dollars_saved_per_1k_task_hrs": (saved * 1000 if saved is not None else None),
+        # ── classical-ML baseline (quantile GBTs; None if it failed) ──
+        "ml_baseline_success_rate": ml_stats["success_rate"] if ml_stats else None,
+        "ml_baseline_cost_per_task_hr": ml_stats["cost_per_task_hr"] if ml_stats else None,
+        "ml_baseline_median_overprovision_pct": (
+            ml_stats["median_overprovision_pct"] if ml_stats else None
+        ),
+        "ml_baseline_gpu_success_rate": ml_stats["gpu_success_rate"] if ml_stats else None,
         # ── GPU estimation ──
         "gpu_contexts": policy_stats["gpu_contexts"],
         "gpu_success_rate": policy_stats["gpu_success_rate"],

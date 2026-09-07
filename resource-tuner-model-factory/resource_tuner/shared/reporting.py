@@ -17,6 +17,7 @@ Pattern per task:
 from __future__ import annotations
 
 import html as _html
+import re as _re
 
 _STYLE = (
     "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
@@ -46,16 +47,117 @@ def ok_pill(ok: bool, yes: str = "ok", no: str = "failed") -> str:
     return pill(yes, GOOD) if ok else pill(no, BAD)
 
 
+# ── syntax-highlighted code blocks (pure regex, no pygments dep) ────────
+# Union dark palette: keywords indigo, strings green, comments muted,
+# numbers amber, decorators periwinkle.
+_PY_KEYWORDS = (
+    "def|return|if|elif|else|for|while|in|not|and|or|import|from|as|class|"
+    "try|except|finally|with|lambda|yield|async|await|pass|break|continue|"
+    "raise|global|nonlocal|del|assert|is|None|True|False"
+)
+_PY_TOKEN_RE = _re.compile(
+    r"(?P<comment>#[^\n]*)"
+    r"|(?P<string>[rbfuRBFU]{0,2}(?:\"\"\"[\s\S]*?\"\"\"|'''[\s\S]*?'''"
+    r"|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'))"
+    r"|(?P<decorator>@\w[\w.]*)"
+    r"|(?P<keyword>\b(?:" + _PY_KEYWORDS + r")\b)"
+    r"|(?P<number>\b\d[\d_]*\.?\d*(?:[eE][+-]?\d+)?\b)"
+)
+_TOKEN_COLORS = {
+    "comment": MUTED,
+    "string": GOOD,
+    "decorator": "#8b9bff",
+    "keyword": "#7d8dff",
+    "number": WARN,
+}
+
+
+def highlight_python(code: str) -> str:
+    """Python source → escaped HTML with colored token spans."""
+    out, pos = [], 0
+    for m in _PY_TOKEN_RE.finditer(code):
+        out.append(esc(code[pos:m.start()]))
+        color = _TOKEN_COLORS[m.lastgroup]
+        out.append(f'<span style="color:{color}">{esc(m.group(0))}</span>')
+        pos = m.end()
+    out.append(esc(code[pos:]))
+    return "".join(out)
+
+
+def markdown_block(md: str, cap: int = 4000) -> str:
+    """Small, safe markdown→HTML for user-supplied text (hypothesis
+    descriptions and the like). Escapes EVERYTHING first, then renders a
+    deliberately minimal subset: #/##/### headings, **bold**, *italic*,
+    `code`, - bullet lists, [text](http-links), blank-line paragraphs."""
+    text = esc(md[:cap].strip())
+    text = _re.sub(r"`([^`\n]+)`", r'<code style="background:#1b1b21;padding:1px 5px;border-radius:4px">\1</code>', text)
+    text = _re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", text)
+    text = _re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", text)
+    text = _re.sub(
+        r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)",
+        r'<a style="color:#8b9bff" href="\2">\1</a>',
+        text,
+    )
+    lines_out: list[str] = []
+    in_list = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            if not in_list:
+                lines_out.append('<ul style="margin:4px 0 4px 18px;padding:0">')
+                in_list = True
+            lines_out.append(f'<li style="margin:2px 0">{stripped[2:]}</li>')
+            continue
+        if in_list:
+            lines_out.append("</ul>")
+            in_list = False
+        m = _re.match(r"(#{1,3})\s+(.*)", stripped)
+        if m:
+            size = {1: 15, 2: 13.5, 3: 12.5}[len(m.group(1))]
+            lines_out.append(
+                f'<div style="font-size:{size}px;font-weight:600;margin:8px 0 2px">{m.group(2)}</div>'
+            )
+        elif stripped:
+            lines_out.append(f'<div style="margin:3px 0">{stripped}</div>')
+    if in_list:
+        lines_out.append("</ul>")
+    return (
+        '<div style="background:#131316;border:1px solid #1b1b21;border-left:3px solid '
+        '#4d65ff;border-radius:8px;padding:10px 14px;font-size:12.5px;line-height:1.55;'
+        f'color:#c9c9cf">{"".join(lines_out)}</div>'
+    )
+
+
+def code_block(code: str, cap: int = 6000) -> str:
+    """A syntax-highlighted, scrollable code panel for reports."""
+    clipped = code[:cap]
+    note = (
+        f'<div style="color:{MUTED};font-size:10px;margin-top:2px">'
+        f"(truncated at {cap} of {len(code)} chars)</div>"
+        if len(code) > cap
+        else ""
+    )
+    return (
+        '<pre style="background:#131316;border:1px solid #1b1b21;padding:12px;'
+        'border-radius:8px;font-size:11.5px;line-height:1.5;color:#c9c9cf;'
+        f'overflow-x:auto;font-family:ui-monospace,monospace">{highlight_python(clipped)}</pre>'
+        + note
+    )
+
+
 def line_chart(
     series: list[tuple[str, str, list]],
     y_max: float | None = None,
     y_fmt: str = "{:.2f}",
-    height: int = 190,
+    height: int = 230,
 ) -> str:
     """Multi-series inline-SVG line chart (Union palette, self-contained).
 
     series = [(label, color, values)]; None values are skipped. y_max
-    autoscales to the data when omitted.
+    autoscales to the data when omitted; a negative data floor extends the
+    axis below zero. Full-width and hover-interactive WITHOUT JavaScript:
+    each step has an invisible hover column carrying a native tooltip with
+    every series' value, plus a CSS crosshair.
     """
     n = max((len(v) for _, _, v in series), default=0)
     vals = [v for _, _, vs in series for v in vs if v is not None]
@@ -63,33 +165,63 @@ def line_chart(
         return '<p style="color:#5f5f6a;font-size:12px">no data yet</p>'
     top = y_max if y_max is not None else (max(vals) or 1.0)
     top = top or 1.0
-    w, pad = 640, 36
+    lo = min(0.0, min(vals))  # negative penalties get real axis room
+    span = (top - lo) or 1.0
+    w, pad = 1200, 40
     x = lambda i: pad + (w - 2 * pad) * (i / max(n - 1, 1))  # noqa: E731
-    y = lambda v: height - pad - (height - 2 * pad) * min(v / top, 1.0)  # noqa: E731
+    y = lambda v: height - pad - (height - 2 * pad) * (  # noqa: E731
+        (min(v, top) - lo) / span
+    )
+    # Legend as wrapping HTML (SVG text legends clip when series are many).
+    legend = "".join(
+        f'<span style="color:{color};font-size:11.5px;white-space:nowrap">— {esc(label)}</span>'
+        for label, color, _ in series
+    )
     parts = [
-        f'<svg viewBox="0 0 {w} {height}" style="max-width:{w}px;background:#0e0e12;'
-        f'border:1px solid #222228;border-radius:10px">'
+        f'<div style="display:flex;gap:14px;flex-wrap:wrap;margin:4px 0 2px 4px">{legend}</div>',
+        f'<svg viewBox="0 0 {w} {height}" '
+        f'style="width:100%;height:auto;display:block;background:#0e0e12;'
+        f'border:1px solid #222228;border-radius:10px">',
+        "<style>.hc rect{fill:transparent}.hc line{opacity:0}"
+        ".hc:hover line{opacity:1}.hc:hover rect{fill:rgba(139,155,255,0.06)}</style>",
     ]
     for frac in (0.0, 0.5, 1.0):
-        gy = height - pad - (height - 2 * pad) * frac
+        gv = lo + span * frac
+        gy = y(gv)
         parts.append(
             f'<line x1="{pad}" y1="{gy:.0f}" x2="{w - pad}" y2="{gy:.0f}" stroke="#1d1d23"/>'
             f'<text x="4" y="{gy + 4:.0f}" font-size="10" fill="#5f5f6a">'
-            f"{esc(y_fmt.format(top * frac))}</text>"
+            f"{esc(y_fmt.format(gv))}</text>"
         )
-    lx = pad
+    if lo < 0:  # zero line stands out when the axis dips negative
+        parts.append(
+            f'<line x1="{pad}" y1="{y(0):.0f}" x2="{w - pad}" y2="{y(0):.0f}" '
+            'stroke="#2e2e38" stroke-dasharray="3,3"/>'
+        )
     for label, color, values in series:
         pts = " ".join(
             f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(values) if v is not None
         )
         if pts:
             parts.append(
-                f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2"/>'
+                f'<polyline points="{pts}" fill="none" stroke="{color}" '
+                'stroke-width="2" vector-effect="non-scaling-stroke"/>'
             )
+    # Hover columns: one per step, native <title> tooltip with all values.
+    col_w = (w - 2 * pad) / max(n - 1, 1)
+    for i in range(n):
+        rows = [f"step {i + 1}"]
+        for label, _, values in series:
+            v = values[i] if i < len(values) else None
+            rows.append(f"{label}: {'-' if v is None else y_fmt.format(v)}")
+        tip = esc("\n".join(rows))
+        cx = x(i)
         parts.append(
-            f'<text x="{lx}" y="15" font-size="11" fill="{color}">— {esc(label)}</text>'
+            f'<g class="hc"><rect x="{cx - col_w / 2:.1f}" y="0" '
+            f'width="{col_w:.1f}" height="{height}"/>'
+            f'<line x1="{cx:.1f}" y1="{pad - 10}" x2="{cx:.1f}" y2="{height - pad}" '
+            f'stroke="#8b9bff" stroke-width="1"/><title>{tip}</title></g>'
         )
-        lx += 8 * len(label) + 40
     parts.append("</svg>")
     return "".join(parts)
 

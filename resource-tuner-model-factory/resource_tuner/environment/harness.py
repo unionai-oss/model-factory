@@ -53,14 +53,12 @@ async def run_generated(harness_code: str, task_id: str = "") -> dict:
     """
     import resource
 
-    from ..shared.reporting import Reporter, esc, ok_pill
+    from ..shared.reporting import MUTED, Reporter, code_block, esc, ok_pill
 
     rep = Reporter("Episode harness", task_id or "<generated>")
     rep.p("Workload executing — an OOM kills this pod before a final report.")
-    rep.raw(
-        f'<pre style="background:#131316;padding:10px;border-radius:8px;font-size:11px;'
-        f'color:#c9c9cf;overflow-x:auto">{esc(harness_code[:1200])}</pre>'
-    )
+    rep.h("Generated workload")
+    rep.raw(code_block(harness_code))
     await rep.flush()
 
     namespace: dict = {}
@@ -78,21 +76,53 @@ async def run_generated(harness_code: str, task_id: str = "") -> dict:
     # Sustained parallelism ≈ CPU-seconds / wall-seconds. This is the
     # oracle's cpu label for synthetic tasks (rusage has no CPU peak).
     cpu_s = (ru1.ru_utime - ru0.ru_utime) + (ru1.ru_stime - ru0.ru_stime)
+    # VRAM ground truth for GPU-archetype calibration (0 on CPU pods /
+    # CPU workloads). max_memory_allocated is the honest per-process
+    # number — nvidia-smi "used" would count the CUDA context too.
+    gpu_peak_mib = 0.0
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            gpu_peak_mib = torch.cuda.max_memory_allocated() / (1024 * 1024)
+    except Exception:  # noqa: BLE001 — no torch / no CUDA = CPU task
+        pass
     measured = {
         "ok": ok,
         "error": error,
         "peak_rss_mib": float(peak_rss_mib),
         "cpu_avg_cores": float(cpu_s / duration) if duration > 0 else 0.0,
+        "gpu_peak_mib": float(gpu_peak_mib),
         "duration_s": float(duration),
         "result": result or {},
     }
-    rep.reset_body().raw(ok_pill(ok)).kv(
+    # Final page: verdict + EVERY output stat (measured + the workload's
+    # own result dict) + the highlighted code that produced them.
+    rep.reset_body().raw(ok_pill(ok))
+    rep.h("Measured")
+    rep.kv(
         {
             "peak RSS": f"{measured['peak_rss_mib']:.0f} MiB",
             "avg CPU": f"{measured['cpu_avg_cores']:.2f} cores",
-            "duration": f"{measured['duration_s']:.0f}s",
-            **({"error": error[:200]} if error else {}),
+            **(
+                {"peak VRAM": f"{measured['gpu_peak_mib']:.0f} MiB"}
+                if measured["gpu_peak_mib"]
+                else {}
+            ),
+            "duration": f"{measured['duration_s']:.1f}s",
+            "ok": str(ok),
+            **({"error": error[:300]} if error else {}),
         }
     )
+    if result:
+        rep.h("Workload result")
+        rep.table(
+            ["key", "value"],
+            [[esc(k), esc(str(v)[:200])] for k, v in result.items()],
+        )
+    else:
+        rep.p("workload returned no result dict", color=MUTED)
+    rep.h("Generated workload")
+    rep.raw(code_block(harness_code))
     await rep.flush()
     return measured

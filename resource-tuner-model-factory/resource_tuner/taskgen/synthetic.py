@@ -23,6 +23,10 @@ import textwrap
 ALLOWED_IMPORTS = {
     "numpy", "pandas", "sklearn", "torch", "time", "math", "random",
     "itertools", "collections", "functools", "json", "string", "statistics",
+    # envelope widening (round 12): I/O-phase realism via sandboxed temp
+    # files, sparse/columnar data, and the text-mangling real ETL does.
+    "tempfile", "io", "csv", "gzip", "scipy", "pyarrow", "re", "array",
+    "heapq", "bisect", "datetime",
 }
 FORBIDDEN_NAMES = {
     "open", "exec", "eval", "compile", "__import__", "input", "breakpoint",
@@ -58,6 +62,47 @@ FAMILY_HINTS = [
     ("batch_inference", "vectorized scoring/embedding math (numpy)"),
     ("etl", "record parsing and aggregation (stdlib)"),
 ]
+
+# GPU families: the generated code must move work to CUDA behind a
+# `torch.cuda.is_available()` guard (calibration pods have a T4).
+GPU_FAMILY_HINTS = [
+    ("gpu_batch_inference", "batched tensor inference on CUDA (torch, fp16)"),
+    ("gpu_training", "training-step loop on CUDA (torch: forward/backward/optim)"),
+]
+
+# ── scenario grid (round 12): diversity by construction, not temperature ─
+SCENARIO_DOMAINS = [
+    "ad-click attribution", "genomics variant records", "web server logs",
+    "financial tick data", "geospatial trajectories", "recommender events",
+    "IoT sensor streams", "e-commerce orders", "call-center transcripts",
+    "clinical lab results", "network flow records", "game telemetry",
+    "supply-chain shipments", "energy meter readings", "fraud signals",
+]
+SCENARIO_SHAPES = [
+    "wide numeric table (hundreds of float columns)",
+    "long narrow event table (few columns, many rows)",
+    "string-heavy records (ids, categories, free text)",
+    "sparse features (mostly zeros / sparse matrices)",
+    "timestamped series needing resample/window ops",
+    "nested/denormalized records flattened before use",
+]
+SCENARIO_PATTERNS = [
+    "single steady transformation loop",
+    "multi-phase: load/generate a raw form, transform it, then aggregate "
+    "(phases may have DIFFERENT memory footprints; the peak phase must "
+    "hold for the required duration)",
+    "bursty: repeatedly build a large intermediate, reduce it, release it",
+    "stage data through a temporary file (tempfile) between phases",
+]
+
+
+def build_scenario(rng) -> str:
+    """One sampled scenario clause for the archetype prompt."""
+    return (
+        f"Domain: {rng.choice(SCENARIO_DOMAINS)}. "
+        f"Data shape: {rng.choice(SCENARIO_SHAPES)}. "
+        f"Structure: {rng.choice(SCENARIO_PATTERNS)}."
+    )
 
 
 class RejectedTask(ValueError):

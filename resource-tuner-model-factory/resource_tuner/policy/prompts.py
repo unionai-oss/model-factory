@@ -64,6 +64,7 @@ def render_messages(
     input_profile: str,
     prior: dict | None = None,
     history: list[dict] | None = None,
+    ml_estimate: dict | None = None,
     no_think: bool = True,
 ) -> list[dict]:
     """Chat messages for one estimation context.
@@ -77,6 +78,14 @@ def render_messages(
     extra = ""
     if prior:
         extra += f"Author-declared prior: {prior}\n"
+    if ml_estimate:
+        # The GBT-hint composition: a statistical anchor the policy learns
+        # to trust-or-override (its historical fit rate is stated so the
+        # model knows the anchor is safe but padded).
+        extra += (
+            f"Statistical estimate (quantile-regression, historically ~99% "
+            f"sufficient but often padded): {ml_estimate}\n"
+        )
     if history:
         lines = "\n".join(
             f"- requested {h.get('resources')} peak {h.get('peak')} success={h.get('ok')}"

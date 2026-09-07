@@ -31,11 +31,18 @@ import urllib.request
 TEACHERS_PUBLIC: dict[str, str] = {
     "qwen38-27b": "https://qwen38-27b-llm-service-development.apps.demo.hosted.unionai.cloud",
     "glm-5-2": "https://glm-5-2-llm-service-development.apps.demo.hosted.unionai.cloud",
+    # Frontier-class teachers (deployed 2026-09-06): far stronger code
+    # writers than the 27B, and — the point for synthetic diversity —
+    # three DIFFERENT model families writing archetypes.
+    "minimax-m3": "https://minimax-m3-llm-service-development.apps.demo.hosted.unionai.cloud",
+    "qwen35-397b": "https://qwen35-397b-llm-service-development.apps.demo.hosted.unionai.cloud",
 }
 # In-cluster service DNS — the keyless fallback.
 TEACHERS_SVC: dict[str, str] = {
     "qwen38-27b": "http://qwen38-27b.llm-service-development.svc.cluster.local",
     "glm-5-2": "http://glm-5-2.llm-service-development.svc.cluster.local",
+    "minimax-m3": "http://minimax-m3.llm-service-development.svc.cluster.local",
+    "qwen35-397b": "http://qwen35-397b.llm-service-development.svc.cluster.local",
 }
 DEFAULT_TEACHER = "qwen38-27b"
 

@@ -17,6 +17,7 @@ from resource_tuner.training.grpo import (  # noqa: F401
     publish_intermediate_checkpoint,
     train_tuner,
 )
+from resource_tuner.training.ml_station import fit_ml_baseline  # noqa: F401
 from resource_tuner.training.stations import (  # noqa: F401
     archetype_data_release,
     build_task_corpus,

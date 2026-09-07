@@ -33,11 +33,11 @@ from ..contracts import (
 )
 from ..shared import assets
 from ..environment.simulator import simulate_episode
-from ..policy.parsing import try_extract_proposal
+from ..policy.parsing import format_credit, try_extract_proposal
 from ..policy.prompts import parse_context_fields, render_messages
 from ..rewards import shaping
-from ..rewards.rewards import invalid_proposal_reward, score_episode
-from ..shared.reporting import GOOD, Reporter, esc, line_chart, pill
+from ..rewards.rewards import FORMAT_REWARD, invalid_proposal_reward, score_episode
+from ..shared.reporting import GOOD, Reporter, esc, line_chart, markdown_block, pill
 from .baseline import baseline_proposal, fit_family_baseline
 from .envs import ckpt_publisher_env, trainer_env
 
@@ -59,6 +59,9 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
     shaped = shaping.is_shaped_stage(stage)
     shape = shaping.get_shape(stage) if shaped else None
     calls = {"n": 0}
+    # Per-step means of every reward component — the trajectory the report
+    # charts so a human can see WHICH term is moving, not just the sum.
+    component_history: list[dict] = []
 
     def resource_reward(
         completions, true_peak_memory_mib, true_cpu_cores, duration_s, **kwargs
@@ -72,6 +75,12 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
         rewards: list[float] = []
         oks: list[bool] = []
         costs: list[float | None] = []
+        comp_sums: dict[str, float] = {}
+
+        def add_comps(comps: dict) -> None:
+            for k, v in comps.items():
+                comp_sums[k] = comp_sums.get(k, 0.0) + v
+
         for completion, peak, cpu, dur, gpu_mem, base_cost in zip(
             completions, true_peak_memory_mib, true_cpu_cores, duration_s,
             gpu_col, base_cost_col,
@@ -79,7 +88,13 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
             text = completion[0]["content"] if isinstance(completion, list) else completion
             proposal = try_extract_proposal(text)
             if proposal is None:
-                rewards.append(invalid_proposal_reward().total)
+                # Graded parseability: prose scores 0, near-JSON scores
+                # partial format credit — a gradient toward the schema
+                # instead of a cliff (round-7/8's invalid completions all
+                # scored identically to garbage).
+                credit = format_credit(text) * FORMAT_REWARD
+                rewards.append(credit)
+                add_comps({"format": credit, "invalid_rate": 1.0})
                 oks.append(False)
                 costs.append(None)
                 continue
@@ -87,7 +102,17 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
                 episode = simulate_episode(
                     proposal, float(peak), float(cpu), int(dur), rng=jitter_rng
                 )
-                rewards.append(score_episode(stage, episode).total)
+                bd_ab = score_episode(stage, episode)
+                rewards.append(bd_ab.total)
+                add_comps(
+                    {
+                        "format": bd_ab.format,
+                        "success": bd_ab.success,
+                        "waste": bd_ab.waste_penalty,
+                        "oom": bd_ab.oom_penalty,
+                        "throttle": bd_ab.throttle_penalty,
+                    }
+                )
                 oks.append(episode.ok)
                 costs.append(None)
                 continue
@@ -103,26 +128,44 @@ def make_reward_fn(stage: str, jitter_rng=None, num_generations: int = 0, max_st
                 baseline_cost_per_hr=base_cost,
             )
             rewards.append(bd.total)
+            add_comps(bd.components)
             oks.append(all(e.ok for e in episodes))
             costs.append(shaping.episode_dollars_per_hr(episodes[0]))
         if shaped:
+            pre = sum(rewards)
             rewards = shaping.apply_group_tiebreak(
                 shape, rewards, oks, costs, num_generations
             )
+            comp_sums["tiebreak"] = sum(rewards) - pre
+        component_history.append(
+            {"step": calls["n"], **{k: v / n for k, v in comp_sums.items()}}
+        )
         return rewards
 
+    resource_reward.component_history = component_history
     return resource_reward
 
 
-def _record_to_row(r: dict, baselines: dict | None = None) -> dict:
+def _record_to_row(r: dict, baselines: dict | None = None, ml_hint=None) -> dict:
     base_cost = None
-    if baselines:
+    if ml_hint is not None:
+        # GBT-hint composition: the savings reference IS the GBT's cost —
+        # the policy earns baseline_relative bonus only by beating the
+        # strongest classical estimator.
+        base_cost = pricing.dollars_per_hr(
+            ml_hint.cpu, ml_hint.memory_mib, ml_hint.gpu_type, ml_hint.gpu
+        )
+    elif baselines:
         bp = baseline_proposal(baselines, r["family"])
         base_cost = pricing.dollars_per_hr(bp.cpu, bp.memory_mib, bp.gpu_type, bp.gpu)
     prior, history = parse_context_fields(r.get("prior_json"), r.get("history_json"))
     return {
         "prompt": render_messages(
-            r["source_code"], r["input_profile"], prior=prior, history=history
+            r["source_code"],
+            r["input_profile"],
+            prior=prior,
+            history=history,
+            ml_estimate=ml_hint.to_kwargs() if ml_hint is not None else None,
         ),
         "true_peak_memory_mib": r["true_peak_memory_mib"],
         "true_cpu_cores": r["true_cpu_cores"],
@@ -133,10 +176,15 @@ def _record_to_row(r: dict, baselines: dict | None = None) -> dict:
     }
 
 
-def _records_to_dataset(records: list[dict], baselines: dict | None = None):
+def _records_to_dataset(
+    records: list[dict], baselines: dict | None = None, ml_hints: list | None = None
+):
     from datasets import Dataset
 
-    return Dataset.from_list([_record_to_row(r, baselines) for r in records])
+    hints = ml_hints or [None] * len(records)
+    return Dataset.from_list(
+        [_record_to_row(r, baselines, ml_hint=h) for r, h in zip(records, hints)]
+    )
 
 
 # Deliberately NOT @flyte.trace'd: traced functions serialize inputs AND
@@ -203,6 +251,9 @@ def _report_html(profile: TunerProfile, rows: list[dict], meta: dict | None = No
         "train contexts": meta.get("n_contexts", "?"),
         "corpus": str(meta.get("corpus", ""))[-60:] or "?",
     }
+    if meta.get("hypothesis"):
+        rep.h("Hypothesis under test")
+        rep.raw(markdown_block(meta["hypothesis"]))
     if meta.get("wandb_url"):
         rep.raw(
             f'<p style="margin:6px 0"><a style="color:#8b9bff" href="{esc(meta["wandb_url"])}">'
@@ -223,6 +274,19 @@ def _report_html(profile: TunerProfile, rows: list[dict], meta: dict | None = No
     )
     rep.h("Reward")
     rep.raw(line_chart([("mean reward", GOOD, rewards)], y_fmt="{:.2f}"))
+    comp_hist = meta.get("component_history") or []
+    if comp_hist:
+        palette = ["#35c48d", "#4d65ff", "#e69812", "#F43B3E", "#8b9bff",
+                   "#c9c9cf", "#d67ab1", "#5ad0d0", "#9a9aa4"]
+        keys = sorted({k for row in comp_hist for k in row if k != "step"})
+        series = []
+        for i, key in enumerate(keys):
+            vals = [row.get(key, 0.0) for row in comp_hist]
+            if any(abs(v) > 1e-9 for v in vals):  # skip terms that never fire
+                series.append((key, palette[i % len(palette)], vals))
+        if series:
+            rep.h("Reward components (mean per step — which term is moving)")
+            rep.raw(line_chart(series, y_fmt="{:.2f}"))
     rep.h("Group health (all-pass/all-fail groups yield no gradient)")
     rep.raw(
         line_chart(
@@ -339,7 +403,7 @@ _train_trigger = flyte.Trigger(
     automation=flyte.OnArtifact(name=ARTIFACT_TASK_CORPUS),
     inputs={"corpus": flyte.TriggeredArtifact, "profile_name": "smoke"},
     description="New tuning-task-corpus version -> GRPO training",
-    auto_activate=False,
+    auto_activate=True,
 )
 
 
@@ -358,6 +422,7 @@ async def train_tuner(
     resume_from: flyte.io.Dir | None = None,
     resume_from_artifact: str = "",
     fail_at_step: int = 0,
+    hypothesis_description: str | None = None,
 ) -> flyte.io.Dir:
     """Train the policy on the corpus's train split; emit tuner-checkpoint.
 
@@ -374,6 +439,12 @@ async def train_tuner(
 
     `fail_at_step` is a chaos hook for testing the intra-task path: the
     FIRST attempt raises after that step; retries then prove the resume.
+
+    `hypothesis_description` is a markdown note stating WHAT QUESTION this
+    run is asking (supplied by the human or agent launching it). It renders
+    at the top of the live report, rides the checkpoint manifest into the
+    eval report and dashboard, and lands in the W&B run notes — so a
+    checkpoint can always answer "why was this trained?".
     """
     import asyncio
 
@@ -384,6 +455,8 @@ async def train_tuner(
 
     profile = get_profile(profile_name)
     meta: dict = {"corpus": getattr(corpus, "path", "")}
+    if hypothesis_description:
+        meta["hypothesis"] = hypothesis_description
     # Page up immediately: the model download/load takes minutes and the
     # run page should say so rather than sit blank.
     await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
@@ -399,7 +472,15 @@ async def train_tuner(
     # Family baselines priced per record: the baseline_relative shapes score
     # "cheaper than the rule baseline" directly in the reward.
     baselines = fit_family_baseline(records) if records else {}
-    dataset = _records_to_dataset(records, baselines=baselines)
+    ml_hints = None
+    if profile.gbt_hint and records:
+        from .ml_baseline import out_of_fold_hints
+
+        ml_hints = out_of_fold_hints(records)
+        n_hints = sum(1 for h in ml_hints if h is not None)
+        meta["gbt_hints"] = f"{n_hints}/{len(records)} (out-of-fold)"
+        print(f"[gbt-hint] {n_hints}/{len(records)} train contexts carry GBT hints")
+    dataset = _records_to_dataset(records, baselines=baselines, ml_hints=ml_hints)
     meta["n_contexts"] = len(records)
 
     model, tok, bf16 = _load_model(profile)
@@ -410,18 +491,29 @@ async def train_tuner(
     )
     meta["dtype"] = "bf16" if bf16 else "fp16"
     await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+    if profile.lora_mlp:
+        # Capacity arm: adapters on the MLP projections too (~3x adapter
+        # params with r; the honest capacity test before full FT).
+        target_modules += ["gate_proj", "up_proj", "down_proj"]
     lora = LoraConfig(
         r=profile.lora_r,
         lora_alpha=profile.lora_r * 2,
         lora_dropout=0.0,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_modules=target_modules,
     )
 
     # Warm start: initialize the adapter from a previous (intermediate or
-    # final) checkpoint instead of fresh LoRA init.
-    peft_config = lora
+    # final) checkpoint instead of fresh LoRA init. Full-FT arms train the
+    # whole model — no adapters, no warm-start-from-adapter.
+    peft_config = lora if profile.use_lora else None
+    if not profile.use_lora and (resume_from is not None or resume_from_artifact):
+        raise ValueError(
+            "resume_from/resume_from_artifact carry LoRA adapters — not "
+            "loadable into a full-finetune arm (use_lora=False)"
+        )
     resume_dir, resume_source = await _resolve_resume(resume_from, resume_from_artifact)
     if resume_dir is not None:
         from peft import PeftModel
@@ -460,6 +552,8 @@ async def train_tuner(
             pass
         os.environ.setdefault("WANDB_NAME", f"{profile.name}-{run_name or 'local'}")
         os.environ.setdefault("WANDB_TAGS", f"{profile.reward_stage},{profile.base_model}")
+        if hypothesis_description:
+            os.environ.setdefault("WANDB_NOTES", hypothesis_description[:1000])
     import dataclasses
     import random
 
@@ -472,6 +566,10 @@ async def train_tuner(
         # Full trainer state on disk every N steps; the checkpoint callback
         # ships the newest one to the flyte Checkpoint prefix.
         extra_cfg.update(save_steps=profile.save_steps, save_total_limit=2)
+    if not profile.use_lora:
+        # Full FT on small cards: 8-bit Adam keeps optimizer state at
+        # ~2 bytes/param (a 0.6B full-FT fits a T4 at ~5-6GB total).
+        extra_cfg.update(optim="adamw_bnb_8bit")
 
     config = GRPOConfig(
         output_dir=out_dir,
@@ -532,8 +630,9 @@ async def train_tuner(
             if cp is not None and latest:
                 try:
                     # Blocks the trainer thread for the upload — adapters
-                    # are tens of MB, seconds at most.
-                    asyncio.run_coroutine_threadsafe(cp.save(latest), loop).result(timeout=900)
+                    # are tens of MB (seconds); FULL-FT trainer states can
+                    # be ~2x model size (a 32B is ~128GB), hence the hour.
+                    asyncio.run_coroutine_threadsafe(cp.save(latest), loop).result(timeout=3600)
                     print(f"[ckpt] intra-task checkpoint uploaded at step {step}")
                 except Exception as e:  # noqa: BLE001 — a failed save must not kill training
                     print(f"[ckpt] intra-task save failed at step {step}: {e}")
@@ -587,16 +686,20 @@ async def train_tuner(
                 pending_publishes.append(asyncio.run_coroutine_threadsafe(_publish(), loop))
                 print(f"[ckpt] intermediate artifact publish scheduled at step {step}")
 
+    reward_fn = make_reward_fn(
+        profile.reward_stage,
+        jitter_rng=random.Random(0),
+        num_generations=profile.num_generations,
+        max_steps=profile.max_steps,
+    )
+    # Live list reference: the report callback re-renders with whatever
+    # component means have accumulated so far.
+    meta["component_history"] = reward_fn.component_history
     trainer = GRPOTrainer(
         model=model,
         args=config,
         train_dataset=dataset,
-        reward_funcs=make_reward_fn(
-            profile.reward_stage,
-            jitter_rng=random.Random(0),
-            num_generations=profile.num_generations,
-            max_steps=profile.max_steps,
-        ),
+        reward_funcs=reward_fn,
         peft_config=peft_config,
         processing_class=tok,
         callbacks=[_ReportCallback(), _CheckpointCallback()],
@@ -642,6 +745,12 @@ async def train_tuner(
             else None
         ),
         "max_steps": profile.max_steps,
+        # Why this run exists — travels to the eval report and dashboard.
+        "hypothesis_description": hypothesis_description or "",
+        # Round-11 arm descriptors — eval and serving adapt to these.
+        "use_lora": profile.use_lora,
+        "lora_mlp": profile.lora_mlp,
+        "gbt_hint": profile.gbt_hint,
         "resume": meta.get("resume", ""),
         "intra_task_resume": meta.get("intra_task_resume", ""),
         "save_steps": profile.save_steps,
@@ -650,6 +759,9 @@ async def train_tuner(
             "mean_reward_first": mean_rewards[0] if mean_rewards else None,
             "mean_reward_last": mean_rewards[-1] if mean_rewards else None,
             "log_history": history,
+            # Per-step means of every reward component — the shape
+            # diagnosis travels with the checkpoint.
+            "component_history": reward_fn.component_history,
         },
     }
     ckpt = await _upload_checkpoint(out_dir, manifest)

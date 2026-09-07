@@ -58,21 +58,27 @@ async def _load_engine(checkpoint_path: str):
     from peft import PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    import os
+
     local = await flyte.io.Dir.from_existing_remote(checkpoint_path).download()
     with open(f"{local}/manifest.json") as f:
         base_model = json.load(f)["base_model"]
     bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    # Adapter checkpoints carry adapter_config.json; full-finetune
+    # checkpoints (use_lora=False arms) ARE the model.
+    is_adapter = os.path.exists(f"{local}/adapter_config.json")
 
     def load():
         tok = AutoTokenizer.from_pretrained(local, padding_side="left")
         model = AutoModelForCausalLM.from_pretrained(
-            base_model,
+            base_model if is_adapter else str(local),
             dtype=torch.bfloat16 if bf16 else torch.float16,
             device_map="auto",
             attn_implementation="eager",
             trust_remote_code=True,
         )
-        model = PeftModel.from_pretrained(model, local)
+        if is_adapter:
+            model = PeftModel.from_pretrained(model, local)
         model.eval()
         return model, tok
 
@@ -100,6 +106,32 @@ async def _get_batcher(checkpoint_path: str):
     from flyte.extras import DynamicBatcher
 
     async with _load_lock:
+        if checkpoint_path not in _engines and _engines:
+            # One checkpoint per replica: hosting N base models OOM-thrashed
+            # the T4 when four evals with different checkpoints shared the
+            # env (round-11 evals: 2x 4B + 2x 1.7B > 16GB — every batch hit
+            # the OOM-retry path and 1,280 calls crawled into a timeout).
+            for path, batcher in list(_batchers.items()):
+                try:
+                    stop = getattr(batcher, "stop", None)
+                    if stop is not None:
+                        res = stop()
+                        if asyncio.iscoroutine(res):
+                            await res
+                except Exception as e:  # noqa: BLE001 — eviction is best-effort
+                    print(f"[generator] batcher stop failed for {path[-24:]}: {e}")
+            _batchers.clear()
+            _engines.clear()
+            try:
+                import gc
+
+                import torch
+
+                gc.collect()
+                torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+            print(f"[generator] evicted engines; loading {checkpoint_path[-40:]}")
         if checkpoint_path not in _engines:
             _engines[checkpoint_path] = await _load_engine(checkpoint_path)
         if checkpoint_path not in _batchers:
@@ -150,6 +182,7 @@ async def generate_proposal(
     input_profile: str,
     prior_json: str = "",
     history_json: str = "",
+    ml_hint_json: str = "",
 ) -> str:
     """One greedy proposal completion for one estimation context.
 
@@ -162,7 +195,16 @@ async def generate_proposal(
     batcher = await _get_batcher(checkpoint_path)
     _model, tok = _engines[checkpoint_path]
     prior, history = parse_context_fields(prior_json, history_json)
-    messages = render_messages(source_code, input_profile, prior=prior, history=history)
+    ml_estimate = None
+    if ml_hint_json:
+        try:
+            parsed = json.loads(ml_hint_json)
+            ml_estimate = parsed if isinstance(parsed, dict) and parsed else None
+        except json.JSONDecodeError:
+            pass
+    messages = render_messages(
+        source_code, input_profile, prior=prior, history=history, ml_estimate=ml_estimate
+    )
     try:
         prompt = tok.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
