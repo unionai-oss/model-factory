@@ -169,3 +169,21 @@ def test_by_generator_separates_tiers():
     assert out["big"]["near_dup_rate"] == 0.0      # varied author
     assert out["small"]["near_dup_rate"] == 1.0    # repetitive author
     assert out["big"]["rows"] == 1 and out["small"]["archetypes"] == 2
+
+
+def test_concentration_gate_scales_with_archetype_count():
+    """A flat 2% is unreachable below 50 archetypes — the gate must flag
+    SKEW, not the floor implied by N (the umpfpp92 failure)."""
+    even_33 = {
+        "n_archetypes": 33, "n_records": 3300, "near_dup_rate": 0.0,
+        "token_entropy_bits": 9.0, "coverage": {"coverage": 0.6},
+        "max_archetype_share": 0.030,  # perfectly even across 33
+        "label_error_p50": 0.2, "label_error_p90": 0.24, "label_error_n": 33,
+        "mixture": {},
+    }
+    assert qual.gate_failures(even_33) == []
+    skewed = {**even_33, "max_archetype_share": 0.25}  # one hogs a quarter
+    assert any("fair share" in r for r in qual.gate_failures(skewed))
+    # with many archetypes the 2% target still applies
+    many = {**even_33, "n_archetypes": 200, "max_archetype_share": 0.05}
+    assert any("fair share" in r for r in qual.gate_failures(many))

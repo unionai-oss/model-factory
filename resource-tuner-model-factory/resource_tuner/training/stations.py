@@ -335,6 +335,24 @@ async def synthetic_data_release(
     )
 
 
+@flyte.trace
+async def _teacher_write_archetype(base_url: str, prompt: str, max_tokens: int) -> str:
+    """One teacher completion, TRACED so it is replayable.
+
+    Traces record inputs and outputs as literals, so `flyte fork` reuses
+    them instead of re-sampling: without this, forking a release re-rolls
+    every archetype (the teacher is stochastic at temperature 0.7), the
+    calibration inputs all change, and not one of the thousands of
+    already-measured pods can be reused. Plain strings cross the boundary,
+    which is what traces require.
+    """
+    import asyncio
+
+    return await asyncio.to_thread(
+        llm_client.chat, base_url, [{"role": "user", "content": prompt}], max_tokens
+    )
+
+
 @driver_env.task(timeout=flyte.Timeout(max_runtime=24 * 3600), produces_artifacts=True, report=True)
 async def archetype_data_release(
     total_tasks: int = 100_000,
@@ -554,9 +572,7 @@ async def archetype_data_release(
         text = ""
         try:
             async with teacher_sems[t_i]:
-                text = await asyncio.to_thread(
-                    llm_client.chat, base_urls[t_i], [{"role": "user", "content": prompt}], 8192
-                )
+                text = await _teacher_write_archetype(base_urls[t_i], prompt, 8192)
             archetype = arch.parse_archetype_response(text)
         except (syn.RejectedTask, llm_client.TeacherError) as e:
             astatus[idx].update(stage="rejected", detail=f"pre-oracle: {e}")
@@ -651,7 +667,6 @@ async def archetype_data_release(
         )
         err = arch.holdout_error(peak_fit, [(p[0], p[4]) for p in holdout_pts])
         if err is not None:
-            label_errors.append(err)
             if err > holdout_max_err:
                 counters["holdout_rejects"] += 1
                 astatus[idx].update(
@@ -659,6 +674,11 @@ async def archetype_data_release(
                 )
                 await render("generating")
                 return None
+            # Record only KEPT archetypes' errors: rejected ones contribute
+            # no rows, so counting them made the corpus-level gate measure
+            # candidates instead of shipped data (run umpfpp92 failed at a
+            # reported 30% median while every kept archetype was <= 25%).
+            label_errors.append(err)
         measured_pts += holdout_pts  # honest extra fit points once accepted
 
         astatus[idx].update(
