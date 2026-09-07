@@ -447,13 +447,8 @@ async def archetype_data_release(
     def on_status(s: str) -> None:
         asyncio.run_coroutine_threadsafe(render(f"waking teachers — {s}", force=True), loop)
 
-    async def wake(name: str, primary: bool) -> str | None:
+    async def wake(name: str, deadline: float) -> str | None:
         cands = llm_client.resolve_teacher_candidates(name)
-        # The first teacher is required and gets the full node-scale-up
-        # budget; extras are optional and must not hold the release
-        # hostage (round 12: a nonexistent glm-5-2 404'd for the full
-        # 1800s and left the run 5 minutes to generate 24 archetypes).
-        deadline = 1800 if primary else 420
         try:
             return await asyncio.to_thread(
                 llm_client.wait_until_ready, cands, deadline, 15, on_status
@@ -462,13 +457,26 @@ async def archetype_data_release(
             print(f"[teachers] {name} failed to wake: {e} — continuing without it")
             return None
 
-    base_urls = [
-        u
-        for u in await asyncio.gather(
-            *(wake(n, i == 0) for i, n in enumerate(teacher_names))
-        )
-        if u
-    ]
+    # Wake all teachers concurrently and start as soon as the FIRST one is
+    # ready, then give the stragglers a short grace period. Order must not
+    # matter: round 12 listed a still-DEPLOYING 397B first and the run sat
+    # on it while an ACTIVE 27B waited idle. (A dead/absent teacher 404s
+    # for its whole budget, which is why nobody gets to block the release.)
+    wakes = [asyncio.create_task(wake(n, 1800)) for n in teacher_names]
+    done, pending = await asyncio.wait(
+        wakes, timeout=1800, return_when=asyncio.FIRST_COMPLETED
+    )
+    ready = [t.result() for t in done if t.result()]
+    if pending:
+        if ready:
+            print(f"[teachers] {len(ready)} ready; grace period for {len(pending)} more")
+            grace_done, still_pending = await asyncio.wait(pending, timeout=300)
+        else:
+            grace_done, still_pending = await asyncio.wait(pending, timeout=1500)
+        ready += [t.result() for t in grace_done if t.result()]
+        for t in still_pending:
+            t.cancel()
+    base_urls = ready
     if not base_urls:
         raise RuntimeError(f"no teacher woke up (tried {teacher_names})")
     base_url = " + ".join(base_urls)
