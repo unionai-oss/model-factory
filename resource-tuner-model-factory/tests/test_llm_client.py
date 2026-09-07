@@ -60,3 +60,15 @@ def test_env_override_wins_even_over_api_key(monkeypatch):
 def test_unknown_teacher_fails_loudly():
     with pytest.raises(TeacherError, match="unknown teacher"):
         resolve_teacher("gpt-99")
+
+
+def test_frontier_teachers_registered(monkeypatch):
+    """minimax-m3 / qwen35-397b joined the roster (round 12)."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setenv("LLM_SERVICE_API_KEY", "k")
+    for name in ("minimax-m3", "qwen35-397b"):
+        urls = resolve_teacher_candidates(name)
+        assert urls[0] == f"http://{name}.llm-service-development.svc.cluster.local"
+        assert urls[1] == (
+            f"https://{name}-llm-service-development.apps.demo.hosted.unionai.cloud"
+        )

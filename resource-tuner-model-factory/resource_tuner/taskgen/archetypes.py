@@ -39,10 +39,18 @@ workflow system's resource estimation. Write ONE self-contained module that:
    data in memory{io_clause}; no network),
 3. sustains its PEAK memory phase for at least {duration_s} seconds via a
    `time.monotonic()` deadline loop (multi-phase workloads are welcome —
-   only the peak phase must hold),
+   only the peak phase must hold), and FINISHES well under 10 minutes at
+   the top of every declared range,
 4. returns a small dict of result stats,
 5. imports only from: {allowed}. Keep the module under 90 lines.
+   NEVER import os, sys, pathlib, or shutil — for temporary files use
+   `tempfile.TemporaryDirectory()` / `tempfile.NamedTemporaryFile()` and
+   their own cleanup; a module importing os is DISCARDED.
 {gpu_clause}
+Size the declared ranges so peak memory spans roughly 150 MiB at the range
+lows to AT MOST 8 GiB at the range highs — the calibration pods have 12 GiB
+and anything above that is discarded.
+
 Scenario to ground the workload (be faithful to it):
 {scenario}
 

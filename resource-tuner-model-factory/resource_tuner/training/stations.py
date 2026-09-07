@@ -515,15 +515,25 @@ async def archetype_data_release(
         # measured: [(peak, cpu, dur, vram, params)]
         measured_pts: list[tuple[float, float, float, float, dict]] = []
 
+        # Oracle sizing is a SCHEDULING decision, not a generosity one:
+        # 3 CPU / 12Gi fits t3a.xlarge (3670m / 13.7Gi, 3–250 nodes), so
+        # calibration fans out over the tenant's biggest pool. The old
+        # 4 CPU / 14–20Gi only fit c5.4xlarge (0–5 nodes) — 30 pods then
+        # queued past max_queued_time and timed out en masse (round 12).
         oracle_res = (
             flyte.Resources(cpu=4, memory="14Gi", gpu="T4:1", disk="20Gi")
             if is_gpu
-            else flyte.Resources(cpu=4, memory="20Gi", disk="10Gi")
+            else flyte.Resources(cpu=3, memory="12Gi", disk="10Gi")
         )
+        # Calibration is throughput work, not latency work: let pods wait
+        # for a node rather than dying at the episode-tuned 300s.
+        oracle_timeout = flyte.Timeout(max_runtime=900, max_queued_time=3600)
 
         async def run_point(point: dict, tag: str, sink: list) -> None:
             code = arch.instantiate(archetype, point)
-            oracle = run_generated.override(resources=oracle_res)
+            oracle = run_generated.override(
+                resources=oracle_res, timeout=oracle_timeout
+            )
             try:
                 async with oracle_sem:
                     with flyte.group(f"calibrate-arch-{idx}"):
@@ -533,7 +543,10 @@ async def archetype_data_release(
                 return
             finally:
                 counters["calib_done"] += 1
-            if syn.curate_measurement(m, max_mib=16384) is not None:
+            # Ceiling tracks the oracle pod's own budget (12Gi) with
+            # headroom — a "measurement" at the pod limit is a truncated
+            # workload, not a footprint.
+            if syn.curate_measurement(m, max_mib=10240) is not None:
                 return
             vram = float(m.get("gpu_peak_mib", 0.0) or 0.0)
             if is_gpu and (vram < 64 or vram > 14000):
