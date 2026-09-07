@@ -277,7 +277,11 @@ async def synthetic_data_release(
             # Group the oracle subactions so the run view shows one tidy
             # "execution-oracle" box instead of N loose run_generated rows.
             with flyte.group("execution-oracle"):
-                measured = await oracle(harness_code=code, task_id=f"synthetic-{seed}-{idx}")
+                measured = await oracle(
+                    harness_code=code,
+                    task_id=f"synthetic-{seed}-{idx}",
+                    provenance=f"teacher={teacher} · {family}",
+                )
         except Exception as e:  # noqa: BLE001 — teacher code crashed its pod
             print(f"[synthetic {idx}] oracle pod failed: {e}")
             await set_stage(idx, "rejected", f"oracle pod failed: {str(e)[:140]}")
@@ -293,7 +297,9 @@ async def synthetic_data_release(
             f"{desc[:80]} · peak {measured['peak_rss_mib']:.0f}MiB · "
             f"cpu {measured.get('cpu_avg_cores', 0):.1f} · {measured['duration_s']:.0f}s",
         )
-        return syn.synthetic_record(f"synthetic-{seed}-{idx}", family, code, desc, measured)
+        return syn.synthetic_record(
+            f"synthetic-{seed}-{idx}", family, code, desc, measured, generator=teacher
+        )
 
     results = await asyncio.gather(
         *(generate_one(i, fam, p) for i, (fam, p) in enumerate(prompts))
@@ -387,7 +393,7 @@ async def archetype_data_release(
         return fam, hint, False
 
     astatus: list[dict] = [
-        {"stage": "queued", "detail": "", "family": _hint_for(i)[0]}
+        {"stage": "queued", "detail": "", "family": _hint_for(i)[0], "teacher": "?"}
         for i in range(n_archetypes)
     ]
     counters = {"calib_done": 0, "calib_total": 0, "variants": 0, "holdout_rejects": 0}
@@ -430,6 +436,38 @@ async def archetype_data_release(
                     ["reason", "count"],
                     [[esc(k), esc(v)] for k, v in sorted(reasons.items(), key=lambda x: -x[1])[:8]],
                 )
+            # Per-teacher scoreboard: which tier is actually producing
+            # usable archetypes (the reason for running multiple models).
+            by_teacher: dict[str, dict] = {}
+            for s in astatus:
+                row = by_teacher.setdefault(
+                    s.get("teacher", "?"), {"kept": 0, "rejected": 0, "inflight": 0}
+                )
+                if s["stage"] == "kept":
+                    row["kept"] += 1
+                elif s["stage"] == "rejected":
+                    row["rejected"] += 1
+                else:
+                    row["inflight"] += 1
+            if len(by_teacher) > 1 or "?" not in by_teacher:
+                rep.h("Teacher scoreboard")
+                rep.table(
+                    ["teacher", "kept", "rejected", "in flight", "keep rate"],
+                    [
+                        [
+                            esc(t),
+                            esc(v["kept"]),
+                            esc(v["rejected"]),
+                            esc(v["inflight"]),
+                            esc(
+                                "-"
+                                if not (v["kept"] + v["rejected"])
+                                else f"{v['kept'] / (v['kept'] + v['rejected']):.0%}"
+                            ),
+                        ]
+                        for t, v in sorted(by_teacher.items())
+                    ],
+                )
             rep.h("Archetypes (head / tail)")
             shown = (
                 list(enumerate(astatus))[:4] + list(enumerate(astatus))[-4:]
@@ -438,9 +476,10 @@ async def archetype_data_release(
             )
             colors = {"kept": GOOD, "rejected": "#F43B3E"}
             rep.table(
-                ["#", "family", "stage", "detail"],
+                ["#", "teacher", "family", "stage", "detail"],
                 [
-                    [esc(i), esc(s["family"]), pill(s["stage"], colors.get(s["stage"], MUTED)),
+                    [esc(i), esc(s.get("teacher", "?")), esc(s["family"]),
+                     pill(s["stage"], colors.get(s["stage"], MUTED)),
                      esc(s["detail"][:120])]
                     for i, s in shown
                 ],
@@ -453,12 +492,13 @@ async def archetype_data_release(
     def on_status(s: str) -> None:
         asyncio.run_coroutine_threadsafe(render(f"waking teachers — {s}", force=True), loop)
 
-    async def wake(name: str, deadline: float) -> str | None:
+    async def wake(name: str, deadline: float) -> tuple[str, str] | None:
         cands = llm_client.resolve_teacher_candidates(name)
         try:
-            return await asyncio.to_thread(
+            url = await asyncio.to_thread(
                 llm_client.wait_until_ready, cands, deadline, 15, on_status
             )
+            return (name, url)
         except Exception as e:  # noqa: BLE001 — one dead teacher ≠ dead release
             print(f"[teachers] {name} failed to wake: {e} — continuing without it")
             return None
@@ -482,10 +522,12 @@ async def archetype_data_release(
         ready += [t.result() for t in grace_done if t.result()]
         for t in still_pending:
             t.cancel()
-    base_urls = ready
+    ready_names = [n for n, _ in ready]
+    base_urls = [u for _, u in ready]
+    print(f"[teachers] generating with: {', '.join(ready_names) or '(none)'}")
     if not base_urls:
         raise RuntimeError(f"no teacher woke up (tried {teacher_names})")
-    base_url = " + ".join(base_urls)
+    base_url = " + ".join(ready_names)
 
     # Per-teacher small queues (llama.cpp serializes anyway).
     teacher_sems = [asyncio.Semaphore(teacher_concurrency) for _ in base_urls]
@@ -502,9 +544,13 @@ async def archetype_data_release(
             duration_s=arng.choice([45, 60, 90, 150]),
             gpu=is_gpu,
         )
-        astatus[idx].update(stage="asking teacher")
-        await render("generating")
         t_i = idx % len(base_urls)
+        # Provenance: which model wrote this archetype. Travels to the
+        # calibration pods' reports, the corpus rows, and the per-tier
+        # summary — a data point can always name its author.
+        t_name = ready_names[t_i]
+        astatus[idx].update(stage="asking teacher", teacher=t_name)
+        await render("generating")
         text = ""
         try:
             async with teacher_sems[t_i]:
@@ -551,7 +597,11 @@ async def archetype_data_release(
             try:
                 async with oracle_sem:
                     with flyte.group(f"calibrate-arch-{idx}"):
-                        m = await oracle(harness_code=code, task_id=f"arch-{seed}-{idx}-{tag}")
+                        m = await oracle(
+                            harness_code=code,
+                            task_id=f"arch-{seed}-{idx}-{tag}",
+                            provenance=f"teacher={t_name} · archetype {idx} ({family})",
+                        )
             except Exception as e:  # noqa: BLE001 — pod died (likely over budget)
                 print(f"[arch {idx}] {tag} pod failed: {e}")
                 return
@@ -619,7 +669,12 @@ async def archetype_data_release(
         )
         kept_descriptions.append(archetype.description)
         await render("generating")
-        return archetype, measured_pts, {"family": family, "gpu": is_gpu, "holdout_err": err}
+        return archetype, measured_pts, {
+            "family": family,
+            "gpu": is_gpu,
+            "holdout_err": err,
+            "teacher": t_name,
+        }
 
     built = await asyncio.gather(*(build_archetype(i) for i in range(n_archetypes)))
     kept = [b for b in built if b]
@@ -642,6 +697,9 @@ async def archetype_data_release(
             # a static per-archetype profile trained profile-blindness.
             "input_profile": arch.variant_profile(archetype.description, values),
             "params_json": json.dumps({"archetype": ai, "label_source": source, **values}),
+            # Provenance travels with the row: which model authored the
+            # archetype this data point was instantiated from.
+            "generator": meta.get("teacher", "teacher"),
             "prior_json": prior_json,
             "history_json": history_json,
             "true_peak_memory_mib": float(min(max(peak, 64.0), 16384.0)),
@@ -696,6 +754,28 @@ async def archetype_data_release(
     )
     fails = qual.gate_failures(qreport)
     fmt = lambda v: "-" if v is None else (f"{v:.0%}" if isinstance(v, float) else str(v))  # noqa: E731
+    # Per-tier diversity: the reason to run several teachers at once.
+    codes_by_gen: dict[str, list[str]] = {}
+    for a, _, meta in kept:
+        codes_by_gen.setdefault(meta.get("teacher", "teacher"), []).append(a.code)
+    tier = qual.by_generator(codes_by_gen, records)
+    if tier:
+        rep.h("Diversity by teacher (why we run several tiers)")
+        rep.table(
+            ["teacher", "archetypes", "rows", "near-dup", "entropy (bits)", "coverage", "median peak"],
+            [
+                [
+                    esc(g),
+                    esc(v["archetypes"]),
+                    esc(f"{v['rows']:,}"),
+                    esc(f"{v['near_dup_rate']:.0%}"),
+                    esc(v["token_entropy_bits"]),
+                    esc(f"{v['coverage']:.0%}"),
+                    esc("-" if v["median_peak_mib"] is None else f"{v['median_peak_mib']:.0f} MiB"),
+                ]
+                for g, v in sorted(tier.items())
+            ],
+        )
     rep.h("Quality gates")
     rep.table(
         ["metric", "value"],

@@ -110,6 +110,7 @@ def task_to_record(t: GeneratedTask, split: str, rng: Random | None = None) -> d
         "harness_code": t.harness_code,
         "input_profile": t.input_profile,
         "params_json": json.dumps(t.params, sort_keys=True),
+        "generator": "template",
         "prior_json": prior_json,
         "history_json": history_json,
         "true_peak_memory_mib": float(t.true_peak_memory_mib),

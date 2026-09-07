@@ -136,3 +136,36 @@ def test_open_allowed_for_tempfile_staging_but_os_still_banned():
             validate_task_code(f"{bad}\ndef run():\n    return {{}}\n")
     with pytest.raises(Exception):
         validate_task_code("def run():\n    eval('1')\n    return {}\n")
+
+
+def test_generator_provenance_on_every_row():
+    """Every corpus row names who wrote it (round 12)."""
+    from resource_tuner.contracts import CORPUS_COLUMNS
+    from resource_tuner.taskgen.corpus import build_corpus
+    from resource_tuner.taskgen.synthetic import synthetic_record
+
+    assert "generator" in CORPUS_COLUMNS
+    rows = build_corpus(10, 5, seed=2)
+    assert {r["generator"] for r in rows} == {"template"}
+    syn_row = synthetic_record(
+        "t1", "etl", "def run(): return {}", "desc",
+        {"ok": True, "peak_rss_mib": 200.0, "duration_s": 60, "cpu_avg_cores": 1.0},
+        generator="qwen35-397b",
+    )
+    assert syn_row["generator"] == "qwen35-397b"
+    assert set(syn_row) == set(CORPUS_COLUMNS)
+
+
+def test_by_generator_separates_tiers():
+    from resource_tuner.taskgen import quality as q
+
+    rows = [
+        {"generator": "big", "task_id": "arch-0-1-v0", "true_peak_memory_mib": 900,
+         "true_cpu_cores": 2, "family": "etl"},
+        {"generator": "small", "task_id": "arch-0-2-v0", "true_peak_memory_mib": 300,
+         "true_cpu_cores": 1, "family": "etl"},
+    ]
+    out = q.by_generator({"big": [CODE_A, CODE_B], "small": [CODE_A, CODE_A2]}, rows)
+    assert out["big"]["near_dup_rate"] == 0.0      # varied author
+    assert out["small"]["near_dup_rate"] == 1.0    # repetitive author
+    assert out["big"]["rows"] == 1 and out["small"]["archetypes"] == 2

@@ -181,7 +181,12 @@ def curate_measurement(measured: dict, min_mib: float = 96, max_mib: float = 122
 
 
 def synthetic_record(
-    task_id: str, family: str, code: str, description: str, measured: dict
+    task_id: str,
+    family: str,
+    code: str,
+    description: str,
+    measured: dict,
+    generator: str = "teacher",
 ) -> dict:
     """Oracle-labeled corpus row (same schema as template records — the
     policy cannot tell them apart, which is the point)."""
@@ -192,6 +197,7 @@ def synthetic_record(
         "harness_code": code,
         "input_profile": description,
         "params_json": json.dumps({"synthetic": True}),
+        "generator": generator,  # which teacher model wrote this task
         "prior_json": "",  # teacher tasks are cold-start by construction
         "history_json": "",
         "true_peak_memory_mib": float(measured["peak_rss_mib"]),

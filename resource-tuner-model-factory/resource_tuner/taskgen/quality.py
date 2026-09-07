@@ -131,6 +131,31 @@ def concentration(records: list[dict]) -> float:
 # ── the gate ────────────────────────────────────────────────────────────
 
 
+def by_generator(codes_by_generator: dict[str, list[str]], records: list[dict]) -> dict:
+    """Per-teacher diversity/coverage — the tier comparison. Answers "is
+    the frontier model actually writing more varied archetypes than the
+    small one?" with numbers instead of vibes."""
+    rows_by_gen: dict[str, list[dict]] = {}
+    for r in records:
+        rows_by_gen.setdefault(str(r.get("generator", "?")), []).append(r)
+    out = {}
+    for gen, codes in codes_by_generator.items():
+        rows = rows_by_gen.get(gen, [])
+        out[gen] = {
+            "archetypes": len(codes),
+            "rows": len(rows),
+            "near_dup_rate": near_duplicate_rate(codes),
+            "token_entropy_bits": round(token_entropy(codes), 2),
+            "coverage": footprint_coverage(rows)["coverage"] if rows else 0.0,
+            "median_peak_mib": (
+                sorted(float(r["true_peak_memory_mib"]) for r in rows)[len(rows) // 2]
+                if rows
+                else None
+            ),
+        }
+    return out
+
+
 def quality_report(
     archetype_codes: list[str],
     records: list[dict],
