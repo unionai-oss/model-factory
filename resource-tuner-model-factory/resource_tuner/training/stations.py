@@ -40,8 +40,9 @@ from ..shared import llm_client
 from .. import tune
 from ..shared.reporting import GOOD, MUTED, Reporter, esc, ok_pill, pill
 from ..taskgen import archetypes as arch
+from ..taskgen import quality as qual
 from ..taskgen import synthetic as syn
-from ..taskgen.corpus import build_corpus
+from ..taskgen.corpus import build_corpus, context_fields_json
 from .envs import driver_env
 from .evaluate import eval_tuner
 from .grpo import train_tuner
@@ -619,9 +620,6 @@ async def archetype_data_release(
 
     records: list[dict] = []
     import zlib as _zlib
-
-    from ..taskgen import quality as qual
-    from ..taskgen.corpus import context_fields_json
 
     def _row(ai, tag, archetype, meta, values, peak, cpu, dur, vram, source):
         crng = random.Random(_zlib.crc32(f"arch-{seed}-{ai}-{tag}".encode()))
