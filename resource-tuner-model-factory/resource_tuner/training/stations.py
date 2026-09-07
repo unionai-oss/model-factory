@@ -447,15 +447,28 @@ async def archetype_data_release(
     def on_status(s: str) -> None:
         asyncio.run_coroutine_threadsafe(render(f"waking teachers — {s}", force=True), loop)
 
-    async def wake(name: str) -> str | None:
+    async def wake(name: str, primary: bool) -> str | None:
         cands = llm_client.resolve_teacher_candidates(name)
+        # The first teacher is required and gets the full node-scale-up
+        # budget; extras are optional and must not hold the release
+        # hostage (round 12: a nonexistent glm-5-2 404'd for the full
+        # 1800s and left the run 5 minutes to generate 24 archetypes).
+        deadline = 1800 if primary else 420
         try:
-            return await asyncio.to_thread(llm_client.wait_until_ready, cands, 1800, 15, on_status)
+            return await asyncio.to_thread(
+                llm_client.wait_until_ready, cands, deadline, 15, on_status
+            )
         except Exception as e:  # noqa: BLE001 — one dead teacher ≠ dead release
             print(f"[teachers] {name} failed to wake: {e} — continuing without it")
             return None
 
-    base_urls = [u for u in await asyncio.gather(*(wake(n) for n in teacher_names)) if u]
+    base_urls = [
+        u
+        for u in await asyncio.gather(
+            *(wake(n, i == 0) for i, n in enumerate(teacher_names))
+        )
+        if u
+    ]
     if not base_urls:
         raise RuntimeError(f"no teacher woke up (tried {teacher_names})")
     base_url = " + ".join(base_urls)
@@ -478,14 +491,20 @@ async def archetype_data_release(
         astatus[idx].update(stage="asking teacher")
         await render("generating")
         t_i = idx % len(base_urls)
+        text = ""
         try:
             async with teacher_sems[t_i]:
                 text = await asyncio.to_thread(
-                    llm_client.chat, base_urls[t_i], [{"role": "user", "content": prompt}], 6144
+                    llm_client.chat, base_urls[t_i], [{"role": "user", "content": prompt}], 8192
                 )
             archetype = arch.parse_archetype_response(text)
         except (syn.RejectedTask, llm_client.TeacherError) as e:
             astatus[idx].update(stage="rejected", detail=f"pre-oracle: {e}")
+            # Print it too: report-only rejection reasons made a 0/24
+            # smoke undebuggable from logs (round-12 lesson).
+            print(
+                f"[arch {idx}] pre-oracle reject: {e} | resp[{len(text)}]: {text[:400]!r}"
+            )
             await render("generating")
             return None
 
