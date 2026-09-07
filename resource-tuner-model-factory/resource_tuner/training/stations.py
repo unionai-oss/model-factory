@@ -784,7 +784,6 @@ async def archetype_data_release(
             raise RuntimeError(msg)
         print(f"[waves] WARNING: {msg}")
 
-    records: list[dict] = []
     import zlib as _zlib
 
     def _row(ai, tag, archetype, meta, values, peak, cpu, dur, vram, source):
@@ -811,19 +810,52 @@ async def archetype_data_release(
             "split": "train",
         }
 
+    # Streaming writer: a 10^6-row corpus carries ~3KB of code per row in
+    # TWO columns, so materializing every row costs tens of GB and no CPU
+    # node on this tenant has it. Rows are written in batches and only a
+    # bounded sample is retained for the quality metrics (concentration is
+    # computed exactly from the variant cap, not from the sample).
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = tempfile.mktemp(suffix=".parquet")
+    writer = {"w": None}
+    batch: list[dict] = []
+    sample: list[dict] = []
+    written = {"n": 0}
+    SAMPLE_MAX, BATCH = 60_000, 25_000
+
+    def emit(row: dict) -> None:
+        batch.append(row)
+        written["n"] += 1
+        # Reservoir-ish: keep an even sample across the whole corpus.
+        if len(sample) < SAMPLE_MAX:
+            sample.append(row)
+        elif rng.random() < SAMPLE_MAX / written["n"]:
+            sample[rng.randrange(SAMPLE_MAX)] = row
+        if len(batch) >= BATCH:
+            flush()
+
+    def flush() -> None:
+        if not batch:
+            return
+        table = pa.Table.from_pylist(batch)
+        if writer["w"] is None:
+            writer["w"] = pq.ParquetWriter(path, table.schema)
+        writer["w"].write_table(table)
+        batch.clear()
+
     # Calibration/holdout rows first: measured labels, real code.
     for ai, (archetype, points, meta) in enumerate(kept):
         for pi, (peak, cpu, dur, vram, point) in enumerate(points):
-            records.append(
-                _row(ai, f"cal{pi}", archetype, meta, point, peak, cpu, dur, vram, "measured")
-            )
+            emit(_row(ai, f"cal{pi}", archetype, meta, point, peak, cpu, dur, vram, "measured"))
 
     # Variants per archetype: enough to hit the target, never more than
     # the cap (which is what keeps one archetype from dominating the
     # corpus and tripping the concentration gate).
     per = min(
         variants_per_archetype,
-        max(-(-(total_tasks - len(records)) // len(kept)), 1),
+        max(-(-(total_tasks - written["n"]) // len(kept)), 1),
     )
     for ai, (archetype, points, meta) in enumerate(kept):
         mem_param = archetype.memory_param
@@ -836,11 +868,11 @@ async def archetype_data_release(
             else None
         )
         for vi in range(per):
-            if len(records) >= total_tasks:
+            if written["n"] >= total_tasks:
                 break
             values = arch.sample_params(archetype, rng)
             x = values[mem_param]
-            records.append(
+            emit(
                 _row(
                     ai, f"v{vi}", archetype, meta, values,
                     peak_fit.predict(x),
@@ -850,23 +882,31 @@ async def archetype_data_release(
                     "fitted",
                 )
             )
-        counters["variants"] = len(records)
+        counters["variants"] = written["n"]
         await render("instantiating")
 
-    counters["variants"] = len(records)
+    flush()
+    if writer["w"] is not None:
+        writer["w"].close()
+    counters["variants"] = written["n"]
+    n_rows = written["n"]
 
     # ── quality gates: measured, rendered, ENFORCED ─────────────────────
     await render("scoring corpus quality", force=True)
     qreport = qual.quality_report(
-        [a.code for a, _, _ in kept], records, label_errors=label_errors
+        [a.code for a, _, _ in kept], sample, label_errors=label_errors
     )
+    qreport["n_records"] = n_rows
+    # Concentration is EXACT, not sampled: every archetype contributes at
+    # most `per` variants plus its handful of measured rows.
+    qreport["max_archetype_share"] = (per + 8) / max(n_rows, 1)
     fails = qual.gate_failures(qreport)
     fmt = lambda v: "-" if v is None else (f"{v:.0%}" if isinstance(v, float) else str(v))  # noqa: E731
     # Per-tier diversity: the reason to run several teachers at once.
     codes_by_gen: dict[str, list[str]] = {}
     for a, _, meta in kept:
         codes_by_gen.setdefault(meta.get("teacher", "teacher"), []).append(a.code)
-    tier = qual.by_generator(codes_by_gen, records)
+    tier = qual.by_generator(codes_by_gen, sample)
     if tier:
         rep.h("Diversity by teacher (why we run several tiers)")
         rep.table(
@@ -907,11 +947,10 @@ async def archetype_data_release(
     if fails and enforce_quality:
         raise RuntimeError(f"corpus quality gates failed: {'; '.join(fails)}")
 
-    await render(f"writing parquet ({len(records):,} rows)", force=True)
-    path = tempfile.mktemp(suffix=".parquet")
-    pd.DataFrame(records).to_parquet(path, index=False)
+    # Parquet is already on disk (streamed during instantiation).
+    await render(f"published parquet ({n_rows:,} rows)", force=True)
     synthetic_file = await publish_synthetic_corpus(
-        corpus_file=await flyte.io.File.from_local(path), n=len(records), teacher=teacher
+        corpus_file=await flyte.io.File.from_local(path), n=n_rows, teacher=teacher
     )
     if not merge_with_templates:
         await render("done", force=True)
@@ -924,15 +963,21 @@ async def archetype_data_release(
         seed=seed,
         gpu_max_vram_mib=gpu_max_vram_mib or None,
     )
+    # Merge by APPENDING the template rows to the streamed file's row
+    # groups — never hold both corpora in memory at once.
     merged_path = tempfile.mktemp(suffix=".parquet")
-    pd.concat([pd.DataFrame(template_records), pd.DataFrame(records)], ignore_index=True).to_parquet(
-        merged_path, index=False
-    )
+    src = pq.ParquetFile(path)
+    tmpl_table = pa.Table.from_pylist(template_records)
+    mwriter = pq.ParquetWriter(merged_path, src.schema_arrow)
+    mwriter.write_table(tmpl_table.select(src.schema_arrow.names))
+    for i in range(src.num_row_groups):
+        mwriter.write_table(src.read_row_group(i))
+    mwriter.close()
     await render("publishing merged corpus", force=True)
     return publish(
         await flyte.io.File.from_local(merged_path),
         ARTIFACT_TASK_CORPUS,
-        description=f"templates({len(template_records)}) + archetypes({len(records)}) "
+        description=f"templates({len(template_records)}) + archetypes({n_rows}) "
         f"via {teacher}, seed={seed}",
     )
 
