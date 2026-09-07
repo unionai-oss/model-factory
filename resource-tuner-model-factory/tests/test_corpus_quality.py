@@ -119,3 +119,20 @@ def test_widened_allowlist_accepts_io_phase_code():
     )
     with pytest.raises(Exception):
         validate_task_code("import os\ndef run():\n    return {}\n")
+
+
+def test_open_allowed_for_tempfile_staging_but_os_still_banned():
+    """Round 12: file-staged phases need open(); os stays forbidden."""
+    validate_task_code(
+        "import tempfile\n"
+        "def run():\n"
+        "    with tempfile.TemporaryDirectory() as d:\n"
+        "        with open(d + '/part.csv', 'w') as fh:\n"
+        "            fh.write('a,b\\n1,2\\n')\n"
+        "    return {'n': 1}\n"
+    )
+    for bad in ("import os", "import sys", "import shutil"):
+        with pytest.raises(Exception):
+            validate_task_code(f"{bad}\ndef run():\n    return {{}}\n")
+    with pytest.raises(Exception):
+        validate_task_code("def run():\n    eval('1')\n    return {}\n")

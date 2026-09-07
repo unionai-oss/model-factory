@@ -44,8 +44,8 @@ workflow system's resource estimation. Write ONE self-contained module that:
 4. returns a small dict of result stats,
 5. imports only from: {allowed}. Keep the module under 90 lines.
    NEVER import os, sys, pathlib, or shutil — for temporary files use
-   `tempfile.TemporaryDirectory()` / `tempfile.NamedTemporaryFile()` and
-   their own cleanup; a module importing os is DISCARDED.
+   `tempfile.TemporaryDirectory()` (plus plain `open()` inside it) or
+   `tempfile.NamedTemporaryFile()`; a module importing os is DISCARDED.
 {gpu_clause}
 Size the declared ranges so peak memory spans roughly 150 MiB at the range
 lows to AT MOST 8 GiB at the range highs — the calibration pods have 12 GiB

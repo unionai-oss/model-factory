@@ -29,7 +29,12 @@ ALLOWED_IMPORTS = {
     "heapq", "bisect", "datetime",
 }
 FORBIDDEN_NAMES = {
-    "open", "exec", "eval", "compile", "__import__", "input", "breakpoint",
+    # `open` is ALLOWED since round 12: the prompt invites tempfile-staged
+    # phases (real ETL is I/O-phased), and writing a temp file without
+    # open() is contortion — rejections for it cost ~15% of archetypes.
+    # This screen curates our own teacher's code in an ephemeral isolated
+    # pod; it is not a security sandbox (see validate_task_code).
+    "exec", "eval", "compile", "__import__", "input", "breakpoint",
 }
 FORBIDDEN_MODULES = {
     "os", "sys", "subprocess", "socket", "shutil", "pathlib", "requests",

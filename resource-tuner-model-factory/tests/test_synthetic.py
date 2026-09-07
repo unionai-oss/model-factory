@@ -49,7 +49,9 @@ def test_validate_accepts_realistic_code():
         ("import os\ndef run(): return {}", "forbidden import"),
         ("import requests\ndef run(): return {}", "forbidden import"),
         ("import cowsay\ndef run(): return {}", "not in allowlist"),
-        ("def run(): return open('/etc/passwd')", "forbidden builtin"),
+        # open() became legal in round 12 (tempfile-staged phases); the
+        # dangerous builtins are still rejected.
+        ("def run(): return eval('2+2')", "forbidden builtin"),
         ("def run(): return eval('1')", "forbidden builtin"),
         ("import numpy\nx = 1", "no top-level def run"),
         ("def run(: return", "syntax error"),

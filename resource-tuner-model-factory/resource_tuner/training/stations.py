@@ -560,7 +560,11 @@ async def archetype_data_release(
             # Ceiling tracks the oracle pod's own budget (12Gi) with
             # headroom — a "measurement" at the pod limit is a truncated
             # workload, not a footprint.
-            if syn.curate_measurement(m, max_mib=10240) is not None:
+            reason = syn.curate_measurement(m, max_mib=10240)
+            if reason is not None:
+                # Print it: silent curation made "why did yield drop?"
+                # unanswerable from logs.
+                print(f"[arch {idx}] {tag} curated out: {reason}")
                 return
             vram = float(m.get("gpu_peak_mib", 0.0) or 0.0)
             if is_gpu and (vram < 64 or vram > 14000):
