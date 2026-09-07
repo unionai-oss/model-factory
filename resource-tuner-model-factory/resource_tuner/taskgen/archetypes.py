@@ -36,20 +36,64 @@ workflow system's resource estimation. Write ONE self-contained module that:
 1. starts with a literal dict of numeric knobs:  PARAMS = {{...}}
 2. defines `def run() -> dict:` doing realistic {family_hint} work, whose
    memory footprint and runtime are driven by PARAMS (construct synthetic
-   in-memory data — no files, no network),
-3. holds a roughly steady memory footprint for at least {duration_s}
-   seconds via a `time.monotonic()` deadline loop,
+   data in memory{io_clause}; no network),
+3. sustains its PEAK memory phase for at least {duration_s} seconds via a
+   `time.monotonic()` deadline loop (multi-phase workloads are welcome —
+   only the peak phase must hold), and FINISHES well under 10 minutes at
+   the top of every declared range,
 4. returns a small dict of result stats,
-5. imports only from: {allowed}. Keep the module under 70 lines.
+5. imports only from: {allowed}. Keep the module under 90 lines.
+   NEVER import os, sys, pathlib, or shutil — for temporary files use
+   `tempfile.TemporaryDirectory()` / `tempfile.NamedTemporaryFile()` and
+   their own cleanup; a module importing os is DISCARDED.
+{gpu_clause}
+Size the declared ranges so peak memory spans roughly 150 MiB at the range
+lows to AT MOST 8 GiB at the range highs — the calibration pods have 12 GiB
+and anything above that is discarded.
 
-Be creative: unusual-but-plausible data shapes, mixed libraries, realistic
-variable names — this corpus trains a model to read arbitrary pipeline code.
+Scenario to ground the workload (be faithful to it):
+{scenario}
+
+Realism over cleverness: variable names, data shapes, and steps a real
+pipeline in that domain would have. Do NOT resemble these already-written
+archetypes:
+{avoid}
 
 Respond with ONLY this JSON (no code fences, keep it compact):
-{{"description": "<one line>",
+{{"description": "<one line naming the domain and what drives its size>",
  "param_ranges": {{"<param>": [<lo>, <hi>], ...}},
  "memory_param": "<the PARAMS key that most drives peak memory>",
  "code": "<the module source, \\n-escaped>"}}"""
+
+IO_CLAUSE = " or stage it through a tempfile between phases"
+GPU_CLAUSE = """\
+6. This is a GPU workload: move the model/tensors to CUDA behind a
+   `torch.cuda.is_available()` guard (fall back to CPU with smaller sizes
+   so the module always runs), use fp16 on CUDA, and make VRAM demand
+   scale with the memory_param.
+"""
+
+
+def render_archetype_prompt(
+    family_hint: str,
+    scenario: str,
+    avoid: list[str],
+    allowed: str,
+    duration_s: int = 60,
+    gpu: bool = False,
+) -> str:
+    avoid_block = (
+        "\n".join(f"- {a[:110]}" for a in avoid[-8:]) if avoid else "- (none yet)"
+    )
+    return ARCHETYPE_PROMPT.format(
+        family_hint=family_hint,
+        scenario=scenario,
+        avoid=avoid_block,
+        allowed=allowed,
+        duration_s=duration_s,
+        io_clause=IO_CLAUSE,
+        gpu_clause=GPU_CLAUSE if gpu else "",
+    )
 
 
 class Archetype:
@@ -144,9 +188,13 @@ def sample_params(archetype: Archetype, rng: Random) -> dict:
     return out
 
 
-def calibration_points(archetype: Archetype, k: int = 3) -> list[dict]:
-    """K param sets spanning the memory range (log-spaced); other params
-    at their midpoints, so the fit isolates the memory driver."""
+def calibration_points(
+    archetype: Archetype, k: int = 3, rng: Random | None = None, n_random: int = 0
+) -> list[dict]:
+    """K param sets spanning the memory range (log-spaced, other params at
+    midpoints — isolates the memory driver) plus `n_random` FULL random
+    draws (round-12: pinning everything at midpoints hid the footprint
+    contribution of the non-memory params the sampler varies freely)."""
     lo, hi = archetype.param_ranges[archetype.memory_param]
     mids = {
         n: (int(round((a + b) / 2)) if isinstance(a, int) and isinstance(b, int) else (a + b) / 2)
@@ -159,31 +207,77 @@ def calibration_points(archetype: Archetype, k: int = 3) -> list[dict]:
         if isinstance(lo, int) and isinstance(hi, int):
             v = max(int(round(v)), 1)
         points.append({**mids, archetype.memory_param: v})
+    if rng is not None:
+        points += [sample_params(archetype, rng) for _ in range(n_random)]
     return points
 
 
-class FootprintFit:
-    """peak_mib ≈ a + b·memory_param (least squares over calibration).
+def variant_profile(description: str, values: dict) -> str:
+    """Per-variant input profile: the archetype's description PLUS the
+    sampled scale. Round-12 fix — every variant used to share one static
+    profile string, which trained the policy to IGNORE the input profile
+    (the exact input-scale sensitivity serving needs)."""
+    rendered = ", ".join(
+        f"{k}={v:,}" if isinstance(v, int) else f"{k}={v:.3g}"
+        for k, v in sorted(values.items())
+    )
+    return f"{description} — this invocation: {rendered}"
 
-    Linear in the declared driver is deliberately simple: it labels
-    interpolations honestly enough for RL (sim jitter already randomizes
-    the boundary), and its residuals are visible via label_source.
+
+class ParamFit:
+    """y ≈ exp(a + b·log(x)) — power-law fit of any measured quantity
+    against the declared memory driver.
+
+    Round-12 upgrade from linear: allocation curves are polynomial in
+    their driver (rows×cols, n²…), and a log-log linear fit captures any
+    single-exponent power law exactly where the old linear fit had
+    structural bias at the range ends. Floors keep extrapolation sane.
     """
 
+    def __init__(self, points: list[tuple[float, dict]], param: str, floor: float = 0.0):
+        # points: [(measured_value, param_values)]
+        self.points = [(y, p) for y, p in points if y > 0 and p.get(param, 0) > 0]
+        self.param = param
+        self.floor = floor
+
+    def predict(self, value: float) -> float:
+        ys = [y for y, _ in self.points]
+        if not ys:
+            return self.floor
+        if len(ys) == 1 or value <= 0:
+            return max(ys[0], self.floor)
+        xs = [math.log(p[self.param]) for _, p in self.points]
+        ls = [math.log(y) for y in ys]
+        n = len(xs)
+        mx, my = sum(xs) / n, sum(ls) / n
+        denom = sum((x - mx) ** 2 for x in xs)
+        b = 0.0 if denom == 0 else sum((x - mx) * (l - my) for x, l in zip(xs, ls)) / denom
+        a = my - b * mx
+        pred = math.exp(a + b * math.log(value))
+        lo = min(ys)
+        return max(pred, min(lo * 0.5, lo - 64), self.floor)
+
+
+class FootprintFit:
+    """Back-compat wrapper: the old (points).predict(value, param) shape,
+    now backed by the power-law ParamFit with the 32MiB floor."""
+
     def __init__(self, points: list[tuple[float, dict]]):
-        # points: [(measured_peak_mib, param_values)]
         self.points = points
 
     def predict(self, memory_value: float, memory_param: str) -> float:
-        xs = [p[1][memory_param] for p in self.points]
-        ys = [p[0] for p in self.points]
-        n = len(xs)
-        if n == 1:
-            return ys[0]
-        mx, my = sum(xs) / n, sum(ys) / n
-        denom = sum((x - mx) ** 2 for x in xs)
-        b = 0.0 if denom == 0 else sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
-        a = my - b * mx
-        lo, hi = min(ys), max(ys)
-        # Never extrapolate below the smallest measurement's floor.
-        return max(a + b * memory_value, min(lo * 0.5, lo - 64), 32.0)
+        return ParamFit(self.points, memory_param, floor=32.0).predict(memory_value)
+
+
+def holdout_error(
+    fit: "ParamFit", holdout: list[tuple[float, dict]]
+) -> float | None:
+    """Median relative |fitted − measured| / measured over holdout pods —
+    the number that gates whether an archetype's labels are shippable."""
+    errs = [
+        abs(fit.predict(p[fit.param]) - y) / y
+        for y, p in holdout
+        if y > 0 and p.get(fit.param, 0) > 0
+    ]
+    errs.sort()
+    return errs[len(errs) // 2] if errs else None

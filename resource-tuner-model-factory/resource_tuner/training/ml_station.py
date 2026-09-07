@@ -55,14 +55,14 @@ def _sim_row(records_pairs) -> dict:
     }
 
 
-# Dark-mode wiring mirrors train_tuner: a new corpus can refresh the
-# classical estimator too (inactive by default, like every trigger here).
+# Dark-mode wiring mirrors train_tuner: a new corpus refreshes the
+# classical estimator too. auto_activate: deploys leave triggers LIVE.
 _fit_trigger = flyte.Trigger(
     name="fit-ml-baseline-on-new-corpus",
     automation=flyte.OnArtifact(name=ARTIFACT_TASK_CORPUS),
     inputs={"corpus": flyte.TriggeredArtifact},
     description="New tuning-task-corpus version -> refit quantile-GBT baseline",
-    auto_activate=False,
+    auto_activate=True,
 )
 
 

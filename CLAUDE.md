@@ -16,9 +16,12 @@ full procedure; log entries ride the same branch/PR as the experiment.
 
 ## Operational notes
 
-- Deploying a unit resets its OnArtifact triggers to inactive and rebinds
-  them to the new task version — reactivate triggers after every deploy
-  that dark mode should pick up.
+- resource-tuner triggers declare `auto_activate=True`: deploys leave dark
+  mode LIVE (and rebind triggers to the new task version). Corollaries:
+  a deploy also re-activates a trigger someone manually paused — pause by
+  editing `auto_activate`, not just the console toggle; and any factory
+  adding a trigger should set `auto_activate=True` unless it has a reason
+  not to.
 - The code bundler ships only statically-imported modules; import task
   dependencies at module top, not inside task bodies.
 - `publish()` versions an artifact only when the wrapped value is

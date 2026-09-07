@@ -38,41 +38,43 @@ PRIOR_RATE = 0.5  # fraction of rows carrying an author prior
 HISTORY_RATE = 0.4  # fraction carrying past runs
 
 
-def _synthetic_prior(t: GeneratedTask, rng: Random) -> dict:
+def synthetic_prior(
+    peak_mib: float, cpu_cores: float, gpu_mem_mib: float, rng: Random
+) -> dict:
     """One plausible author guess. Styles mirror reality: the padded
     one-size default, the over-bucketed 'measured once, doubled twice',
-    and the stale under-ask."""
+    and the stale under-ask. Label-based so archetype rows can use it too."""
     style = rng.random()
     if style < 0.4:  # the classic hard-coded default
         prior = {"cpu": 4, "memory": "8Gi"}
     elif style < 0.8:  # over-bucketed: 1-3 grid steps above truth
-        mem_idx = MEMORY_GRID_MIB.index(bucket_memory_mib(t.true_peak_memory_mib))
+        mem_idx = MEMORY_GRID_MIB.index(bucket_memory_mib(peak_mib))
         mem = MEMORY_GRID_MIB[min(mem_idx + rng.randint(1, 3), len(MEMORY_GRID_MIB) - 1)]
-        cpu_idx = CPU_GRID.index(bucket_cpu(t.true_cpu_cores))
+        cpu_idx = CPU_GRID.index(bucket_cpu(cpu_cores))
         cpu = CPU_GRID[min(cpu_idx + rng.randint(0, 2), len(CPU_GRID) - 1)]
         prior = {"cpu": cpu, "memory": format_memory(mem)}
     else:  # stale under-ask (the task grew since the author measured)
-        mem_idx = MEMORY_GRID_MIB.index(bucket_memory_mib(t.true_peak_memory_mib))
+        mem_idx = MEMORY_GRID_MIB.index(bucket_memory_mib(peak_mib))
         prior = {"cpu": 1, "memory": format_memory(MEMORY_GRID_MIB[max(mem_idx - 1, 0)])}
-    if t.true_gpu_mem_mib > 0 and rng.random() < 0.6:
+    if gpu_mem_mib > 0 and rng.random() < 0.6:
         prior["gpu"] = "T4:1"  # authors guess the cheapest card, right or not
     return prior
 
 
-def _synthetic_history(t: GeneratedTask, rng: Random) -> list[dict]:
+def synthetic_history(peak_mib: float, cpu_cores: float, rng: Random) -> list[dict]:
     """1–3 simulated past runs against the task's true footprint — the
     ledger-shaped signal (requested / peak / fit)."""
     entries = []
     for _ in range(rng.randint(1, 3)):
-        mem_idx = MEMORY_GRID_MIB.index(bucket_memory_mib(t.true_peak_memory_mib))
+        mem_idx = MEMORY_GRID_MIB.index(bucket_memory_mib(peak_mib))
         req_mem = MEMORY_GRID_MIB[
             min(max(mem_idx + rng.randint(-1, 2), 0), len(MEMORY_GRID_MIB) - 1)
         ]
-        peak = t.true_peak_memory_mib * rng.uniform(0.92, 1.05)
+        peak = peak_mib * rng.uniform(0.92, 1.05)
         ok = req_mem >= peak * 1.05
         entries.append(
             {
-                "resources": {"cpu": bucket_cpu(t.true_cpu_cores), "memory": format_memory(req_mem)},
+                "resources": {"cpu": bucket_cpu(cpu_cores), "memory": format_memory(req_mem)},
                 "peak": f"{peak:.0f}MiB",
                 "ok": ok,
             }
@@ -80,13 +82,27 @@ def _synthetic_history(t: GeneratedTask, rng: Random) -> list[dict]:
     return entries
 
 
+def context_fields_json(
+    peak_mib: float, cpu_cores: float, gpu_mem_mib: float, rng: Random
+) -> tuple[str, str]:
+    """(prior_json, history_json) with the standard cold-start mix —
+    the one entry point both template and archetype rows share."""
+    prior_json = history_json = ""
+    if rng.random() < PRIOR_RATE:
+        prior_json = json.dumps(
+            synthetic_prior(peak_mib, cpu_cores, gpu_mem_mib, rng), sort_keys=True
+        )
+    if rng.random() < HISTORY_RATE:
+        history_json = json.dumps(synthetic_history(peak_mib, cpu_cores, rng))
+    return prior_json, history_json
+
+
 def task_to_record(t: GeneratedTask, split: str, rng: Random | None = None) -> dict:
     prior_json = history_json = ""
     if rng is not None:
-        if rng.random() < PRIOR_RATE:
-            prior_json = json.dumps(_synthetic_prior(t, rng), sort_keys=True)
-        if rng.random() < HISTORY_RATE:
-            history_json = json.dumps(_synthetic_history(t, rng))
+        prior_json, history_json = context_fields_json(
+            t.true_peak_memory_mib, t.true_cpu_cores, t.true_gpu_mem_mib, rng
+        )
     return {
         "task_id": t.task_id,
         "family": t.family,
