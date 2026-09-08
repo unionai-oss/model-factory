@@ -579,11 +579,14 @@ async def archetype_data_release(
         arng = random.Random(seed * 1_000_003 + idx)
         prompt = arch.render_archetype_prompt(
             family_hint=hint,
-            scenario=syn.build_scenario(arng),
+            # The scenario now carries the STACK: which library family this
+            # archetype must be written against (round 13).
+            scenario=syn.build_scenario(arng, family=family),
             avoid=list(kept_descriptions),
             allowed=", ".join(sorted(syn.ALLOWED_IMPORTS)),
             duration_s=arng.choice([45, 60, 90, 150]),
             gpu=is_gpu,
+            offline_rule=syn.OFFLINE_RULE,
         )
         t_i = idx % len(base_urls)
         # Provenance: which model wrote this archetype. Travels to the

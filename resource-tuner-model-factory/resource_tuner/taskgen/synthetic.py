@@ -27,6 +27,20 @@ ALLOWED_IMPORTS = {
     # files, sparse/columnar data, and the text-mangling real ETL does.
     "tempfile", "io", "csv", "gzip", "scipy", "pyarrow", "re", "array",
     "heapq", "bisect", "datetime",
+    # ── round 13: the stack axis ────────────────────────────────────────
+    # A corpus that only knows pandas/torch teaches pandas/torch physics.
+    # These libraries differ in exactly the dimension the policy learns:
+    # Arrow-backed columnar (polars), out-of-core with disk spill
+    # (duckdb, dask), partitioned graphs (dask), their own histogram
+    # structures (xgboost/lightgbm), separate allocators (jax), and
+    # agent/RAG shapes where memory lives in documents, embeddings and
+    # vector indexes rather than frames.
+    "polars", "duckdb", "dask", "ibis",
+    "xgboost", "lightgbm", "statsmodels", "networkx",
+    "jax", "jaxlib", "lightning", "transformers", "tokenizers", "safetensors",
+    "faiss", "langchain_core", "langchain_text_splitters", "langgraph",
+    "llama_index", "pydantic", "typing", "dataclasses", "uuid", "hashlib",
+    "textwrap", "operator", "enum",
 }
 FORBIDDEN_NAMES = {
     # `open` is ALLOWED since round 12: the prompt invites tempfile-staged
@@ -61,11 +75,17 @@ Respond with ONLY this JSON (no code fences):
 {{"description": "<one line>", "code": "<the module source, \\n-escaped>"}}"""
 
 FAMILY_HINTS = [
-    ("data_engineering", "tabular ETL (pandas joins/groupbys/window ops)"),
-    ("data_science", "statistical model fitting (sklearn)"),
-    ("ml_training", "small neural-net training loop (torch, CPU)"),
-    ("batch_inference", "vectorized scoring/embedding math (numpy)"),
-    ("etl", "record parsing and aggregation (stdlib)"),
+    ("data_engineering", "tabular ETL (joins/groupbys/window ops)"),
+    ("data_science", "statistical/tabular model fitting"),
+    ("ml_training", "a small neural-net training loop on CPU"),
+    ("batch_inference", "vectorized scoring/embedding math"),
+    ("etl", "record parsing and aggregation"),
+    # Round 13: the workloads people actually deploy on Flyte today —
+    # RAG/agent pipelines whose footprint is documents, chunks, embedding
+    # matrices, vector indexes and accumulated graph state.
+    ("agent_pipeline", "an LLM-agent / RAG pipeline stage with every model "
+                       "call STUBBED (the footprint is documents, chunking, "
+                       "embedding matrices, a vector index and graph state)"),
 ]
 
 # GPU families: the generated code must move work to CUDA behind a
@@ -100,14 +120,103 @@ SCENARIO_PATTERNS = [
     "stage data through a temporary file (tempfile) between phases",
 ]
 
+# ── the stack axis (round 13) ───────────────────────────────────────────
+# Library choice IS a footprint decision: pandas materializes, polars is
+# Arrow-columnar, duckdb streams and spills to disk, dask partitions,
+# jax has its own allocator, and agent/RAG stacks hold memory in
+# documents/embeddings/indexes. The teacher is TOLD which stack to use so
+# coverage is deterministic instead of luck.
+STACKS_BY_FAMILY: dict[str, list[tuple[str, str]]] = {
+    "data_engineering": [
+        ("pandas", "pandas DataFrames (materialized joins/groupbys/windows)"),
+        ("polars", "polars (Arrow-backed, lazy or eager) — use pl.DataFrame/LazyFrame"),
+        ("duckdb", "duckdb in-process SQL over Arrow/pandas relations "
+                   "(duckdb.connect(); it streams and may spill to disk)"),
+        ("dask", "dask.dataframe partitioned over many pandas partitions "
+                 "(scheduler='threads', compute() at the end)"),
+        ("pyarrow", "pyarrow Tables/compute kernels directly (no pandas)"),
+    ],
+    "data_science": [
+        ("sklearn", "scikit-learn estimators + preprocessing pipelines"),
+        ("xgboost", "xgboost.train on a DMatrix (its own histogram structures)"),
+        ("lightgbm", "lightgbm.train on a Dataset (histogram binning)"),
+        ("statsmodels", "statsmodels OLS/GLM/time-series fits over numpy arrays"),
+        ("scipy", "scipy sparse matrices + linalg/stats routines"),
+    ],
+    "ml_training": [
+        ("torch", "plain torch training loop (nn.Module + optimizer)"),
+        ("lightning", "lightning.pytorch LightningModule + Trainer "
+                      "(fast_dev_run=False, accelerator='cpu', logger=False)"),
+        ("jax", "jax + jax.numpy (jit-compiled update step, its own allocator)"),
+        ("transformers", "transformers built OFFLINE from a config: "
+                         "AutoConfig.for_model(...) / a small XxxConfig then "
+                         "AutoModel.from_config(cfg) — NEVER from_pretrained"),
+    ],
+    "batch_inference": [
+        ("numpy", "numpy vectorized scoring (matmul/einsum over batches)"),
+        ("torch", "torch.no_grad() batched forward passes"),
+        ("transformers", "a from_config transformers model scoring batches offline"),
+        ("faiss", "faiss in-memory index (IndexFlatIP/IVF) built then queried"),
+    ],
+    "etl": [
+        ("stdlib", "pure stdlib: csv/json/collections/re over generated records"),
+        ("polars", "polars streaming over generated CSV/parquet in a tempdir"),
+        ("duckdb", "duckdb reading generated CSV/parquet files from a tempdir"),
+        ("networkx", "networkx graph build + traversal over generated edges"),
+    ],
+    # Agent/RAG work: memory lives in documents, chunks, embedding
+    # matrices, vector indexes and accumulated graph state — all of which
+    # are exercisable with the LLM calls stubbed out.
+    "agent_pipeline": [
+        ("langgraph", "langgraph StateGraph whose nodes mutate an accumulating "
+                      "state dict (messages//scratchpad grow each iteration); "
+                      "any 'model call' is a local stub function"),
+        ("langchain_core", "langchain_core Documents + "
+                           "langchain_text_splitters RecursiveCharacterTextSplitter "
+                           "chunking a generated corpus, with a stub embedder"),
+        ("llama_index", "llama_index.core Document/TextNode objects and a "
+                        "node parser over a generated corpus (no service context, "
+                        "no network)"),
+        ("faiss", "a RAG retrieval layer: numpy embedding matrix + faiss index "
+                  "built over generated chunks, then batched similarity queries"),
+    ],
+    "gpu_batch_inference": [
+        ("torch", "torch fp16 tensors/modules on CUDA"),
+        ("transformers", "a from_config transformers model moved to CUDA (fp16)"),
+    ],
+    "gpu_training": [
+        ("torch", "torch training step on CUDA (forward/backward/optimizer)"),
+        ("lightning", "lightning.pytorch Trainer with accelerator='gpu', devices=1"),
+    ],
+}
 
-def build_scenario(rng) -> str:
+# Never let the teacher reach for the network: these pods have none.
+OFFLINE_RULE = (
+    "The runner has NO NETWORK and NO pre-downloaded model weights: never "
+    "call from_pretrained, hf_hub_download, tiktoken.get_encoding, or any "
+    "API/client. Build models from config objects and synthesize all data "
+    "in-process."
+)
+
+
+def pick_stack(family: str, rng) -> tuple[str, str]:
+    """(stack name, usage guidance) for a family — the axis that makes the
+    corpus span libraries instead of re-teaching pandas."""
+    options = STACKS_BY_FAMILY.get(family) or [("numpy", "numpy arrays")]
+    return rng.choice(options)
+
+
+def build_scenario(rng, family: str | None = None) -> str:
     """One sampled scenario clause for the archetype prompt."""
-    return (
-        f"Domain: {rng.choice(SCENARIO_DOMAINS)}. "
-        f"Data shape: {rng.choice(SCENARIO_SHAPES)}. "
-        f"Structure: {rng.choice(SCENARIO_PATTERNS)}."
-    )
+    parts = [
+        f"Domain: {rng.choice(SCENARIO_DOMAINS)}.",
+        f"Data shape: {rng.choice(SCENARIO_SHAPES)}.",
+        f"Structure: {rng.choice(SCENARIO_PATTERNS)}.",
+    ]
+    if family:
+        name, guidance = pick_stack(family, rng)
+        parts.append(f"Stack: use {guidance} as the primary library.")
+    return " ".join(parts)
 
 
 class RejectedTask(ValueError):

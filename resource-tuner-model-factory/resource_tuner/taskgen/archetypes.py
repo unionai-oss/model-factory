@@ -51,6 +51,8 @@ Size the declared ranges so peak memory spans roughly 150 MiB at the range
 lows to AT MOST 8 GiB at the range highs — the calibration pods have 12 GiB
 and anything above that is discarded.
 
+{offline_rule}
+
 Scenario to ground the workload (be faithful to it):
 {scenario}
 
@@ -81,6 +83,7 @@ def render_archetype_prompt(
     allowed: str,
     duration_s: int = 60,
     gpu: bool = False,
+    offline_rule: str = "",
 ) -> str:
     avoid_block = (
         "\n".join(f"- {a[:110]}" for a in avoid[-8:]) if avoid else "- (none yet)"
@@ -93,6 +96,7 @@ def render_archetype_prompt(
         duration_s=duration_s,
         io_clause=IO_CLAUSE,
         gpu_clause=GPU_CLAUSE if gpu else "",
+        offline_rule=offline_rule,
     )
 
 

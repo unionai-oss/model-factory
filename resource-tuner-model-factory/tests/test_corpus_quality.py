@@ -214,3 +214,56 @@ def test_wave_sizing_and_variant_cap_arithmetic():
         assert n_kept * per >= total or per == cap
     # a thin corpus is bounded by the cap (and would fail require_target)
     assert 30 * min(cap, max(-(-total // 30), 1)) == 30 * cap < total
+
+
+def test_stack_axis_covers_libraries_per_family():
+    """Round 13: the teacher is TOLD which library stack to use, so the
+    corpus spans ecosystems instead of re-teaching pandas."""
+    import random as _r
+
+    from resource_tuner.taskgen import synthetic as syn
+
+    # every family the rotation can emit has stacks declared
+    families = [f for f, _ in syn.FAMILY_HINTS] + [f for f, _ in syn.GPU_FAMILY_HINTS]
+    for fam in families:
+        assert fam in syn.STACKS_BY_FAMILY, fam
+        assert len(syn.STACKS_BY_FAMILY[fam]) >= 2
+
+    # sampling actually varies the stack within a family
+    rng = _r.Random(0)
+    picks = {syn.pick_stack("data_engineering", rng)[0] for _ in range(60)}
+    assert {"pandas", "polars", "duckdb"} <= picks
+
+    # the scenario clause carries the stack, and every named library is
+    # importable per the allowlist
+    scenario = syn.build_scenario(_r.Random(1), family="agent_pipeline")
+    assert "Stack:" in scenario
+    for fam, stacks in syn.STACKS_BY_FAMILY.items():
+        for name, _guidance in stacks:
+            assert name in syn.ALLOWED_IMPORTS or name == "stdlib", (fam, name)
+
+
+def test_offline_rule_is_in_the_prompt():
+    """Oracle pods have no network: the prompt must forbid downloads, or
+    every transformers/tokenizer archetype dies on from_pretrained."""
+    from resource_tuner.taskgen import synthetic as syn
+    from resource_tuner.taskgen.archetypes import render_archetype_prompt
+
+    p = render_archetype_prompt(
+        "ml training", "Stack: transformers", [], allowed="transformers",
+        offline_rule=syn.OFFLINE_RULE,
+    )
+    assert "NO NETWORK" in p and "from_pretrained" in p
+
+
+def test_agent_stack_libraries_are_allowed():
+    from resource_tuner.taskgen.synthetic import ALLOWED_IMPORTS, validate_task_code
+
+    for lib in ("langgraph", "langchain_core", "llama_index", "faiss", "polars", "duckdb"):
+        assert lib in ALLOWED_IMPORTS
+    validate_task_code(
+        "import polars as pl\nimport duckdb\n"
+        "def run():\n"
+        "    df = pl.DataFrame({'a': [1, 2]})\n"
+        "    return {'n': df.height}\n"
+    )

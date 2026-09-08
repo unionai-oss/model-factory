@@ -43,6 +43,26 @@ harness_image = (
     .with_pip_packages("numpy>=1.26", "pandas>=2.2", "scikit-learn>=1.5", "scipy>=1.13", "pyarrow>=17")
     # CPU wheel: the harness never sees a GPU, the CUDA wheel is ~5GB dead weight.
     .with_pip_packages("torch>=2.4", index_url="https://download.pytorch.org/whl/cpu")
+    # ── round 13: the stack axis ────────────────────────────────────────
+    # The oracle can only MEASURE what it can RUN, so every library the
+    # teacher is allowed to import must live here. Grouped by layer, all
+    # usable offline (no model downloads, no API clients).
+    .with_pip_packages(  # dataframe / OLAP / out-of-core
+        "polars>=1.0", "duckdb>=1.1", "dask[dataframe]>=2024.8", "ibis-framework[duckdb]>=9.0"
+    )
+    .with_pip_packages(  # classical ML + stats + graphs
+        "xgboost>=2.1", "lightgbm>=4.5", "statsmodels>=0.14", "networkx>=3.3"
+    )
+    .with_pip_packages(  # DL frameworks beyond bare torch (CPU builds)
+        "jax[cpu]>=0.4.30", "lightning>=2.4", "transformers>=4.57", "safetensors>=0.4"
+    )
+    .with_pip_packages(  # agent / RAG shapes — offline-usable cores only
+        "faiss-cpu>=1.8",
+        "langchain-core>=0.3",
+        "langchain-text-splitters>=0.3",
+        "langgraph>=0.2",
+        "llama-index-core>=0.11",
+    )
 )
 
 gpu_image = (
