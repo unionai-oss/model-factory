@@ -169,16 +169,25 @@ def wait_until_ready(
     )
 
 
+# Gateway/activator hiccups are transient and MUST NOT burn a work item:
+# a 504 "activator request timeout" cost 59 archetypes in the first
+# round-13 release before this retry existed.
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
 def chat(
     base_url: str,
     messages: list[dict],
     max_tokens: int = 4096,
     temperature: float = 0.7,
     timeout: float = 600,
+    retries: int = 3,
+    backoff_s: float = 5.0,
 ) -> str:
     """One chat completion; returns the assistant text (content only —
     llama.cpp puts hybrid-thinking traces in reasoning_content, which we
-    deliberately drop)."""
+    deliberately drop). Transient gateway statuses are retried with
+    exponential backoff; anything else fails fast."""
     body = json.dumps(
         {
             "messages": messages,
@@ -197,13 +206,25 @@ def chat(
     req = urllib.request.Request(
         f"{base_url}/v1/chat/completions", data=body, headers=_headers(), method="POST"
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            out = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        raise TeacherError(f"teacher HTTP {e.code}: {e.read()[:300]!r}")
-    except Exception as e:  # noqa: BLE001
-        raise TeacherError(f"teacher request failed: {e}")
+    last: Exception | None = None
+    for attempt in range(max(retries, 0) + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                out = json.loads(resp.read())
+            break
+        except urllib.error.HTTPError as e:
+            last = TeacherError(f"teacher HTTP {e.code}: {e.read()[:300]!r}")
+            if e.code not in _RETRY_STATUS or attempt == retries:
+                raise last
+        except Exception as e:  # noqa: BLE001 — timeouts/resets are transient too
+            last = TeacherError(f"teacher request failed: {e}")
+            if attempt == retries:
+                raise last
+        sleep_s = backoff_s * (2**attempt)
+        print(f"[teacher] {last} — retry {attempt + 1}/{retries} in {sleep_s:.0f}s")
+        time.sleep(sleep_s)
+    else:  # pragma: no cover — loop always breaks or raises
+        raise last or TeacherError("teacher request failed")
     try:
         return out["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError):

@@ -72,3 +72,54 @@ def test_frontier_teachers_registered(monkeypatch):
         assert urls[1] == (
             f"https://{name}-llm-service-development.apps.demo.hosted.unionai.cloud"
         )
+
+
+def test_chat_retries_transient_gateway_errors(monkeypatch):
+    """A 504 activator timeout must not burn a work item (round 13: 59
+    archetypes lost to un-retried 504s)."""
+    import urllib.error
+
+    from resource_tuner.shared import llm_client as lc
+
+    calls = {"n": 0}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"choices": [{"message": {"content": "ok"}}]}'
+
+    def flaky(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise urllib.error.HTTPError(req.full_url, 504, "gw", {}, None)
+        return _Resp()
+
+    monkeypatch.setattr(lc.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(lc.time, "sleep", lambda s: None)
+    assert lc.chat("http://x", [{"role": "user", "content": "hi"}], backoff_s=0) == "ok"
+    assert calls["n"] == 3
+
+
+def test_chat_does_not_retry_client_errors(monkeypatch):
+    import urllib.error
+
+    import pytest as _pytest
+
+    from resource_tuner.shared import llm_client as lc
+
+    calls = {"n": 0}
+
+    def bad_request(req, timeout=None):
+        calls["n"] += 1
+        raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, None)
+
+    monkeypatch.setattr(lc.urllib.request, "urlopen", bad_request)
+    monkeypatch.setattr(lc.time, "sleep", lambda s: None)
+    with _pytest.raises(lc.TeacherError):
+        lc.chat("http://x", [{"role": "user", "content": "hi"}], backoff_s=0)
+    assert calls["n"] == 1  # fail fast on a real client error
