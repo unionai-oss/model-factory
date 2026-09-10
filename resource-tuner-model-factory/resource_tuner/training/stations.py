@@ -475,6 +475,10 @@ async def archetype_data_release(
     # concentration admits 2% of the corpus per archetype = 20,000 rows at
     # 1M, so 1200 sits at 0.12%.
     variants_per_archetype: int = 1200,
+    # The ceiling when the count above is flexed up to cover a shortfall
+    # (see the instantiation step). The concentration gate is the real
+    # guard; this is a backstop against a pathological release.
+    max_variants_per_archetype: int = 5000,
     max_waves: int = 12,
     max_wave_size: int = 600,
     # Wave 1 used to be `n_archetypes` outright, so a big release spent its
@@ -1021,6 +1025,35 @@ async def archetype_data_release(
             f"0 archetypes survived {wave} waves; see report for reasons"
         )
     reachable = len(kept) * variants_per_archetype
+    if reachable < total_tasks:
+        # Before giving up: `variants_per_archetype` is an INPUT GUESS about
+        # how many archetypes we expected to survive, not a quality
+        # requirement. The thing that actually protects the corpus from
+        # being N tasks photocopied is the CONCENTRATION GATE, and it has
+        # enormous headroom here — it admits 2% of the corpus per archetype,
+        # so 700 archetypes scaled to 1M rows sit at 0.14%.
+        #
+        # So let variants flex to cover the shortfall, but only as far as
+        # that gate still passes. This is the difference between "834
+        # archetypes at 1200 each" and "780 archetypes at 1282 each" — the
+        # same corpus by every measure we actually gate on — versus throwing
+        # away a 20-hour release over an input guess. What it will NOT do is
+        # rescue a genuinely thin release: 40 surviving archetypes would
+        # need 2.5% each and the gate refuses, which is exactly the round-13
+        # case where inflating 78 archetypes to 1M would have been a lie.
+        flex = -(-total_tasks // len(kept))  # ceil: variants to hit target
+        share = flex / total_tasks           # this archetype's row share
+        gate_limit = max(0.02, 2.0 / len(kept))
+        if flex <= max_variants_per_archetype and share <= gate_limit:
+            print(
+                f"[waves] {len(kept)} archetypes survived, short of the "
+                f"{needed} that {variants_per_archetype} variants each would "
+                f"need. Raising variants to {flex} to cover {total_tasks:,} "
+                f"rows — {share:.2%} per archetype, inside the "
+                f"{gate_limit:.1%} concentration gate."
+            )
+            variants_per_archetype = flex
+            reachable = len(kept) * variants_per_archetype
     if reachable < total_tasks:
         # Say it plainly rather than silently shipping a smaller corpus
         # padded by over-instantiating a few archetypes.

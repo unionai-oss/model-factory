@@ -209,6 +209,44 @@ def test_probe_classification_matches_what_curation_actually_emits():
     assert fine is None and not probe_is_fatal(fine)
 
 
+# ── flexing variants to cover an archetype shortfall ────────────────────
+def _flex(kept: int, total_tasks: int, cap: int = 5000):
+    """The rule from the instantiation step, isolated: how many variants
+    per archetype, and does the concentration gate allow it?"""
+    flex = -(-total_tasks // kept)
+    share = flex / total_tasks
+    gate_limit = max(0.02, 2.0 / kept)
+    return flex, (flex <= cap and share <= gate_limit)
+
+
+def test_a_near_miss_flexes_instead_of_discarding_the_release():
+    """780 of 834 archetypes is the same corpus by every measure we gate
+    on. Failing there would throw away a 20-hour release over an input
+    guess about how many archetypes would survive."""
+    flex, allowed = _flex(kept=780, total_tasks=1_000_000)
+    assert allowed
+    assert flex == 1283
+    assert 780 * flex >= 1_000_000
+
+
+def test_flexing_stops_where_the_concentration_gate_does():
+    """The guard that matters is concentration, not the input number. 40
+    archetypes stretched to 1M would be 2.5% each — the round-13 case where
+    inflating a thin release would have been a lie."""
+    flex, allowed = _flex(kept=40, total_tasks=1_000_000)
+    assert not allowed
+    assert flex / 1_000_000 > 0.02
+
+    # 78 archetypes — literally what round 13 shipped — is also refused.
+    _, allowed78 = _flex(kept=78, total_tasks=1_000_000)
+    assert not allowed78
+
+
+def test_flex_respects_the_absolute_cap():
+    flex, allowed = _flex(kept=300, total_tasks=1_000_000, cap=2000)
+    assert flex > 2000 and not allowed
+
+
 # ── stack API contracts ─────────────────────────────────────────────────
 def test_every_offered_stack_has_an_api_contract_or_is_stdlib():
     """A library admitted to the corpus without concrete API guidance is how
