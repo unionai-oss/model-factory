@@ -153,5 +153,25 @@ def test_only_contract_pairs_are_linked():
 
 
 def test_page_has_the_per_station_version_selector_and_focus_traversal():
-    for marker in ("v-select", "All versions", "focusSet", "focusOf", "version_edges"):
+    for marker in ("StationRail", "rail-select", "All versions", "focusSet",
+                   "focusOf", "version_edges"):
         assert marker in _PAGE_TEMPLATE
+
+
+def test_version_pickers_stay_out_of_the_react_flow_viewport():
+    """React Flow stamps inline pointer-events:none on a node that is
+    neither selectable nor draggable, so a control inside one is unclickable
+    — clicks land on the pane. And at fit-zoom (~0.3x) it would render about
+    6px tall anyway. Both were real: the in-canvas <select> shipped and
+    could not be used. The pickers live in the rail, outside the zoomed
+    viewport; selection INSIDE the graph is clicking a version card, whose
+    nodes do receive pointer events."""
+    rail_start = _PAGE_TEMPLATE.index("const StationRail")
+    group_label = _PAGE_TEMPLATE.index("const GroupLabel")
+    group_label_end = _PAGE_TEMPLATE.index("const EmptyNote")
+    # The group label — a node inside the viewport — carries no form control.
+    assert "<select" not in _PAGE_TEMPLATE[group_label:group_label_end]
+    # The rail does.
+    assert "<select" in _PAGE_TEMPLATE[rail_start:rail_start + 2000]
+    # And the card is clickable as the in-graph picker.
+    assert "pickable" in _PAGE_TEMPLATE

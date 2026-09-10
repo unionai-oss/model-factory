@@ -702,7 +702,11 @@ _PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .canvas {
     flex: 1; border: 1px solid var(--line); border-radius: 12px;
     background: #0e0e12; overflow: hidden; position: relative; min-width: 0;
+    /* Column so the version rail sits above the graph and the graph still
+       takes the rest of the height. */
+    display: flex; flex-direction: column;
   }
+  .canvas .react-flow { flex: 1; min-height: 0; }
   .react-flow__controls { box-shadow: none; border: 1px solid var(--card-border); border-radius: 8px; overflow: hidden; }
   .react-flow__controls-button { background: var(--card); border-bottom: 1px solid var(--card-border); fill: var(--muted); }
   .react-flow__controls-button:hover { background: #24242c; }
@@ -738,6 +742,14 @@ _PAGE_TEMPLATE = r"""<!DOCTYPE html>
     border-radius: 9px; padding: 8px 10px; cursor: pointer; transition: border-color .15s;
   }
   .v-card:hover { border-color: var(--accent); }
+  /* Clicking a card IS the in-graph version picker, so it has to look
+     clickable at a glance and show which one is driving the view. */
+  .v-card.pickable:hover { border-color: var(--primary); background: #191922; }
+  .v-card.focused {
+    border-color: var(--primary); background: var(--primary-soft);
+    box-shadow: 0 0 0 1px var(--primary);
+  }
+  .v-card.focused .vid { color: #c6cdff; }
   .v-card .vid { font-size: 10.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .v-card .vrow { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
   .v-card .vrun { font-size: 9.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -752,15 +764,37 @@ _PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .badge.neutral { background: #22222a; color: var(--muted); }
   .group-label { font-size: 10.5px; letter-spacing: 0.02em; color: var(--muted); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .group-label .swatch { width: 7px; height: 7px; border-radius: 2px; flex: none; }
-  .group-head { display: flex; flex-direction: column; gap: 5px; }
-  .v-select {
-    width: 232px; background: #131316; color: var(--text); font-size: 10.5px;
-    font-family: var(--mono); border: 1px solid #2a2a33; border-radius: 6px;
-    padding: 3px 6px; cursor: pointer; outline: none;
+  .group-head { display: flex; flex-direction: column; gap: 3px; }
+  .group-sub { font-size: 9.5px; color: #55555f; letter-spacing: 0.02em; }
+  .group-sub.off { font-style: italic; }
+
+  /* The version pickers live OUTSIDE the React Flow viewport — see
+     StationRail. Inside it they are unclickable (RF sets
+     pointer-events:none on non-selectable nodes) and ~6px tall at
+     fit-zoom. */
+  .rail {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 9px 12px; border-bottom: 1px solid var(--line);
+    background: #101013; border-radius: 12px 12px 0 0;
   }
-  .v-select:hover { border-color: #3a3a45; }
-  .v-select.on { border-color: var(--primary); color: #b9c3ff; background: var(--primary-soft); }
-  .v-select.off { color: #55555f; font-style: italic; }
+  .rail-lead { font-size: 10.5px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+  .rail-item { display: flex; align-items: center; gap: 6px; }
+  .rail-item .swatch { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+  .rail-name { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .rail-item.on .rail-name { color: #b9c3ff; }
+  .rail-item.off .rail-name { color: #4c4c56; }
+  .rail-select {
+    max-width: 210px; background: #17171b; color: var(--text); font-size: 11px;
+    font-family: var(--mono); border: 1px solid #2a2a33; border-radius: 6px;
+    padding: 4px 7px; cursor: pointer; outline: none;
+  }
+  .rail-select:hover:not(:disabled) { border-color: #3a3a45; }
+  .rail-select:disabled { opacity: 0.45; cursor: default; }
+  .rail-item.on .rail-select { border-color: var(--primary); color: #b9c3ff; background: var(--primary-soft); }
+  .rail-item.off .rail-select { color: #55555f; font-style: italic; }
+  .rail-clear { margin-left: auto; }
+  .rail-hint { margin-left: auto; font-size: 10.5px; color: #4c4c56; }
+
   .v-empty {
     width: 232px; font-size: 10.5px; color: #55555f; font-style: italic;
     border: 1px dashed #26262e; border-radius: 8px; padding: 8px 10px;
@@ -1029,20 +1063,23 @@ try {
     </div>`;
 
   const VersionNode = ({ data }) => html`
-    <div class="v-card ${data.dimmed ? "dimmed" : ""} ${data.ringed ? "ringed" : ""}"
+    <div class="v-card ${data.dimmed ? "dimmed" : ""} ${data.ringed ? "ringed" : ""} ${data.focused ? "focused" : ""} ${data.onFocus ? "pickable" : ""}"
          style=${{ "--accent": data.color }}
-         title=${(data.run_url ? "Open run " + data.source + "\n" : "") + data.url}
-         onClick=${() => (data.run_url ? openUrl(data.run_url) : data.onCopy(data.url))}>
+         title=${data.onFocus
+           ? (data.focused
+               ? "Focused — click to show all versions again\n" + data.url
+               : "Click to focus this version's lineage\n" + data.url)
+           : data.url}
+         onClick=${() => (data.onFocus
+           ? data.onFocus(data.focused ? null : data.id)
+           : (data.run_url ? openUrl(data.run_url) : data.onCopy(data.url)))}>
       <${Handle} type="target" position=${Position.Left} style=${{ opacity: 0 }} />
-      <div class="vid">${shortId(data.version)}</div>
+      <div class="vid">${data.focused ? "⦿ " : ""}${shortId(data.version)}</div>
       <div class="vrow">
         <span class="vrun">${data.source || "unknown run"}</span>
-        ${data.onFocus
-          ? html`<button class="iconbtn ${data.focused ? "on" : ""}"
-                    title=${data.focused
-                      ? "Clear focus — show all versions again"
-                      : "Focus this version — show only its upstream and downstream versions"}
-                    onClick=${(e) => { e.stopPropagation(); data.onFocus(data.focused ? null : data.id); }}>⦿</button>`
+        ${data.onFocus && data.run_url
+          ? html`<button class="iconbtn" title=${"Open run " + data.source}
+                    onClick=${(e) => { e.stopPropagation(); openUrl(data.run_url); }}>↗</button>`
           : null}
         <button class="iconbtn" title="Open artifact card (contents + stats)"
                 onClick=${(e) => { e.stopPropagation(); data.onCard(data.station, data); }}>▤</button>
@@ -1056,22 +1093,15 @@ try {
   const GroupLabel = ({ data }) => html`
     <div class="group-head">
       <div class="group-label"><span class="swatch" style=${{ background: data.color }}></span>${data.label}</div>
-      ${data.options
-        ? html`<select class="v-select nodrag ${data.value ? "on" : ""} ${data.orphan ? "off" : ""}"
-                  title="Focus this station's version — the graph redraws to its upstream and downstream versions"
-                  value=${data.orphan ? "__none__" : (data.value || "")}
-                  onMouseDown=${(e) => e.stopPropagation()}
-                  onChange=${(e) => data.onPick(e.target.value.startsWith("__") ? null : (e.target.value || null))}>
-            ${/* A focused lineage that misses this station entirely: say so
-                  in the control rather than leaving it reading "All
-                  versions" next to an empty group. */ ""}
-            ${data.orphan
-              ? html`<option value="__none__" disabled>— not on this lineage —</option>`
-              : null}
-            <option value="">All versions</option>
-            ${data.options.map((v) => html`
-              <option key=${v.id} value=${v.id}>${shortId(v.version)}</option>`)}
-          </select>`
+      ${/* No form control lives in here. React Flow stamps inline
+             pointer-events:none on a node that is neither selectable nor
+             draggable, so clicks fall straight through to the pane — and
+             even with that fixed, at fit-zoom (~0.3x) the control renders
+             about 6px tall. Version selection belongs at real size,
+             outside the zoomed canvas: see StationRail. */ ""}
+      ${data.count != null
+        ? html`<div class="group-sub ${data.orphan ? "off" : ""}">
+            ${data.orphan ? "not on this lineage" : data.count + " shown"}</div>`
         : null}
     </div>`;
 
@@ -1112,9 +1142,9 @@ try {
 
   const ST_W = 248, ST_H = 148;
   const V_W = 232, V_H = 76, V_GAP = 10;
-  // PAD_TOP clears the version group's header, which is now a label AND a
-  // version selector stacked under it.
-  const PAD_X = 22, PAD_TOP = 66, PAD_BOTTOM = 18;
+  // PAD_TOP clears the version group's header: station label plus the
+  // small count/lineage line under it.
+  const PAD_X = 22, PAD_TOP = 48, PAD_BOTTOM = 18;
 
   const runsByStation = (data) => {
     const m = {};
@@ -1210,11 +1240,8 @@ try {
           label: s.label, color,
           // The per-station version selector. `all` is always offered so a
           // focused view can be widened again from any station.
-          options: (data.stations.find((x) => x.artifact === s.artifact) || s).versions,
-          value: ctx.focusOf(s.artifact),
-          orphan: !!ctx.focusSet && !ctx.focusOf(s.artifact),
-          focused: ctx.focusId,
-          onPick: ctx.onFocus,
+          count: s.versions.length,
+          orphan: !!ctx.focusSet && !s.versions.length,
         },
         draggable: false, selectable: false,
       });
@@ -1436,6 +1463,41 @@ try {
               + " · " + focusSet.size + " version" + (focusSet.size === 1 ? "" : "s") + " ✕"}</button>`
         : null}
       <button class="toggle" onClick=${onReset}>Reset</button>
+    </div>`;
+
+  // One version picker per station, at real size and OUTSIDE the React Flow
+  // viewport. In-canvas controls cannot work here: React Flow marks a
+  // non-selectable node pointer-events:none so clicks reach the pane
+  // instead, and at fit-zoom the canvas is ~0.3x, which turns any control
+  // into a 6px target. Selection in the graph is done by clicking a version
+  // card (those nodes do get pointer events); this rail is the same
+  // operation with a list you can read.
+  const StationRail = ({ data, focusId, focusOf, onFocus, focusSet }) => html`
+    <div class="rail">
+      <span class="rail-lead">Focus a version</span>
+      ${data.stations.map((s) => {
+        const value = focusOf(s.artifact);
+        const orphan = !!focusSet && !value;
+        return html`
+          <label key=${s.artifact} class="rail-item ${value ? "on" : ""} ${orphan ? "off" : ""}"
+                 title=${s.artifact}>
+            <span class="swatch" style=${{ background: TEAM_COLOR[s.team] || "#8a8a94" }}></span>
+            <span class="rail-name">${s.label}</span>
+            <select class="rail-select" value=${orphan ? "__none__" : (value || "")}
+                    disabled=${!s.versions.length}
+                    onChange=${(e) => onFocus(e.target.value.startsWith("__") ? null : (e.target.value || null))}>
+              ${orphan ? html`<option value="__none__" disabled>— not on this lineage —</option>` : null}
+              <option value="">${s.versions.length ? "All versions (" + s.versions.length + ")" : "no versions"}</option>
+              ${s.versions.map((v) => html`
+                <option key=${v.id} value=${v.id}>
+                  ${shortId(v.version)}${v.eval ? (v.eval.auto_gate_passed ? "  ✓ gate" : "  ✗ gate") : ""}</option>`)}
+            </select>
+          </label>`;
+      })}
+      ${focusId
+        ? html`<button class="toggle on rail-clear" title="Show all versions again (Esc)"
+                  onClick=${() => onFocus(null)}>Clear focus ✕</button>`
+        : html`<span class="rail-hint">…or click a version card in the graph</span>`}
     </div>`;
 
   const Sidebar = ({ data, view, setView, selected, onSelect, byStation, statusLine, matchStation }) => {
@@ -1786,7 +1848,17 @@ try {
               onSelect=${onSelect} byStation=${byStation} statusLine=${statusLine}
               matchStation=${matchStation} />
           <div class="canvas">
-            <${ReactFlow} key=${view} nodes=${nodes} edges=${edges} nodeTypes=${nodeTypes}
+            ${view === "versions"
+              ? html`<${StationRail} data=${data} focusId=${focusId} focusOf=${focusOf}
+                        onFocus=${onFocus} focusSet=${focusSet} />`
+              : null}
+            ${/* Keyed on the focus too: fitView only runs on mount, so
+                   without this a focus change redraws 3 nodes somewhere off
+                   in a viewport still panned/zoomed for the previous 35 and
+                   the canvas looks empty. Remounting re-fits, which is the
+                   right answer for a change this large. */ ""}
+            <${ReactFlow} key=${view + ":" + (focusId || "")}
+                nodes=${nodes} edges=${edges} nodeTypes=${nodeTypes}
                 fitView fitViewOptions=${{ padding: 0.14, maxZoom: 1 }}
                 minZoom=${0.2} proOptions=${{ hideAttribution: true }}
                 nodesConnectable=${false} colorMode="dark">
