@@ -675,8 +675,19 @@ async def archetype_data_release(
     ready = [t.result() for t in done if t.result()]
     if pending:
         if ready:
+            # The grace period is how long the SMALLEST teacher waits for the
+            # big ones, and 300s was tuned when the pool was two similar
+            # models. It is far too short now: run uqjsqswf started with only
+            # qwen38-27b because the three frontier teachers each needed GPU
+            # nodes, and all four were ACTIVE ~30 min later — by which time
+            # the release was locked to a single teacher for its whole
+            # 20-hour life, throwing away the multi-family diversity that is
+            # the entire point of running them. Waiting longer is also much
+            # safer than it was: a teacher that wakes and then goes bad now
+            # gets dropped mid-run by the circuit breaker, instead of
+            # absorbing its share of archetypes forever.
             print(f"[teachers] {len(ready)} ready; grace period for {len(pending)} more")
-            grace_done, still_pending = await asyncio.wait(pending, timeout=300)
+            grace_done, still_pending = await asyncio.wait(pending, timeout=1800)
         else:
             grace_done, still_pending = await asyncio.wait(pending, timeout=1500)
         ready += [t.result() for t in grace_done if t.result()]
