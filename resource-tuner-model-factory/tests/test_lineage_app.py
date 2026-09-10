@@ -6,8 +6,13 @@ from resource_tuner.lineage_app import (
     APP_NAME,
     _metrics_of,
     _run_url,
+    build_version_edges,
     lineage_app_env,
 )
+
+
+def _v(station: str, name: str, run: str, url: str) -> dict:
+    return {"id": f"{station}::{name}", "version": name, "source": run, "url": url}
 
 
 def test_metrics_of_extracts_the_dashboard_fields():
@@ -45,3 +50,108 @@ def test_page_template_is_dark_and_has_the_graph_stack():
         assert lib in _PAGE_TEMPLATE
     assert "__BOOT_JSON__" in _PAGE_TEMPLATE and "__FALLBACK__" in _PAGE_TEMPLATE
     assert "EvalBadges" in _PAGE_TEMPLATE  # the added eval-metric UI layer
+
+
+# ── version-level lineage ───────────────────────────────────────────────
+# The station graph says "corpus feeds checkpoint" as a contract. These
+# edges say "THIS corpus fed THAT checkpoint", which is what lets the
+# Versions view show one version's actual ancestors and descendants.
+CONTRACT = [("corpus", "ckpt"), ("ckpt", "report")]
+
+
+def test_same_run_co_production_links_versions():
+    """One run produced a corpus AND a checkpoint, and the contract says
+    corpus feeds checkpoint — that run is the link. This is the
+    `tuner_pipeline` case, where every station shares a run."""
+    edges = build_version_edges(
+        {
+            "corpus": [_v("corpus", "r1/a", "r1", "s3://c1")],
+            "ckpt": [_v("ckpt", "r1/b", "r1", "s3://k1")],
+            "report": [],
+        },
+        CONTRACT,
+    )
+    assert edges == [{"source": "corpus::r1/a", "target": "ckpt::r1/b", "kind": "run"}]
+
+
+def test_declared_provenance_links_across_runs():
+    """A trigger-fired training run shares no run name with the run that
+    published its corpus, so co-production finds nothing. What the tasks
+    RECORDED does: the report names the checkpoint, the checkpoint's
+    manifest names the corpus."""
+    edges = build_version_edges(
+        {
+            "corpus": [_v("corpus", "r1/a", "r1", "s3://c1")],
+            "ckpt": [_v("ckpt", "r2/a", "r2", "s3://k1")],
+            "report": [_v("report", "r3/a", "r3", "s3://e1")],
+        },
+        CONTRACT,
+        declared={"report::r3/a": ["s3://k1"], "ckpt::r2/a": ["s3://c1"]},
+    )
+    pairs = {(e["source"], e["target"]) for e in edges}
+    assert pairs == {
+        ("corpus::r1/a", "ckpt::r2/a"),
+        ("ckpt::r2/a", "report::r3/a"),
+    }
+    assert all(e["kind"] == "declared" for e in edges)
+
+
+def test_declared_beats_the_run_inference_for_the_same_pair():
+    """When both signals agree, the edge is labelled by the stronger one —
+    the UI distinguishes 'the report names this checkpoint' from 'one run
+    happened to make both'."""
+    edges = build_version_edges(
+        {
+            "corpus": [_v("corpus", "r1/a", "r1", "s3://c1")],
+            "ckpt": [_v("ckpt", "r1/b", "r1", "s3://k1")],
+        },
+        CONTRACT,
+        declared={"ckpt::r1/b": ["s3://c1"]},
+    )
+    assert len(edges) == 1 and edges[0]["kind"] == "declared"
+
+
+def test_nothing_is_inferred_from_recency():
+    """The tempting heuristic — 'the corpus published most recently before
+    this checkpoint' — is plausible and wrong the moment anyone trains on
+    an older corpus. Unrecorded lineage must stay absent, not guessed."""
+    edges = build_version_edges(
+        {
+            "corpus": [
+                _v("corpus", "r1/a", "r1", "s3://c1"),
+                _v("corpus", "r0/a", "r0", "s3://c0"),
+            ],
+            "ckpt": [_v("ckpt", "r2/a", "r2", "s3://k1")],
+        },
+        CONTRACT,
+    )
+    assert edges == []
+
+
+def test_declared_paths_that_name_no_known_version_are_dropped():
+    """A checkpoint trained on a corpus that has aged out of the version
+    list must not produce a dangling edge to a node the graph lacks."""
+    edges = build_version_edges(
+        {"corpus": [], "ckpt": [_v("ckpt", "r2/a", "r2", "s3://k1")]},
+        CONTRACT,
+        declared={"ckpt::r2/a": ["s3://long-gone", ""]},
+    )
+    assert edges == []
+
+
+def test_only_contract_pairs_are_linked():
+    """Two artifacts produced by one run are not lineage unless the
+    contract says one feeds the other."""
+    edges = build_version_edges(
+        {
+            "corpus": [_v("corpus", "r1/a", "r1", "s3://c1")],
+            "report": [_v("report", "r1/c", "r1", "s3://e1")],
+        },
+        CONTRACT,  # corpus→ckpt→report; corpus→report is NOT a contract
+    )
+    assert edges == []
+
+
+def test_page_has_the_per_station_version_selector_and_focus_traversal():
+    for marker in ("v-select", "All versions", "focusSet", "focusOf", "version_edges"):
+        assert marker in _PAGE_TEMPLATE

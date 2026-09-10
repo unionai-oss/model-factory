@@ -116,6 +116,65 @@ def _run_fields(run) -> dict:
     return out
 
 
+def build_version_edges(
+    versions_by_station: dict[str, list[dict]],
+    contract_edges: list[tuple[str, str]],
+    declared: dict[str, list[str]] | None = None,
+) -> list[dict]:
+    """Version-level lineage: which VERSION fed which VERSION.
+
+    The station graph says "corpus feeds checkpoint" as a contract. This
+    says "THIS corpus fed THAT checkpoint", which is what the Versions view
+    needs to show one version's actual ancestors and descendants.
+
+    Both sources are EXACT. Nothing here is inferred from timestamps —
+    "the corpus published most recently before this checkpoint" looks
+    plausible and is wrong the moment anyone trains on an older corpus, and
+    a lineage tool that guesses is worse than one that admits a gap:
+
+    - `declared`: provenance a task actually recorded, as
+      {downstream version id: [upstream artifact path, ...]}. The eval
+      report names the checkpoint it scored; the checkpoint manifest names
+      the corpus it trained on.
+    - same-run co-production: one run produced a version of A and a version
+      of B, and the contract says A feeds B. This is what covers
+      `tuner_pipeline`, where corpus/train/eval share a single run.
+
+    Edges are deduped, and a declared edge wins over the same run-inferred
+    one so the UI can label how a link was established.
+    """
+    by_url: dict[str, str] = {}
+    for versions in versions_by_station.values():
+        for v in versions:
+            if v.get("url"):
+                by_url[v["url"]] = v["id"]
+
+    edges: dict[tuple[str, str], dict] = {}
+
+    for target_id, upstream_paths in (declared or {}).items():
+        for path in upstream_paths:
+            source_id = by_url.get(path or "")
+            if source_id and source_id != target_id:
+                edges[(source_id, target_id)] = {
+                    "source": source_id, "target": target_id, "kind": "declared",
+                }
+
+    for upstream, downstream in contract_edges:
+        ups = versions_by_station.get(upstream) or []
+        downs = versions_by_station.get(downstream) or []
+        by_run = {v["source"]: v["id"] for v in ups if v.get("source")}
+        for v in downs:
+            source_id = by_run.get(v.get("source") or "")
+            if not source_id or source_id == v["id"]:
+                continue
+            edges.setdefault(
+                (source_id, v["id"]),
+                {"source": source_id, "target": v["id"], "kind": "run"},
+            )
+
+    return list(edges.values())
+
+
 # Eval-report payloads are immutable per URI; cache for the replica's life.
 _report_cache: dict[str, dict] = {}
 _card_cache: dict[str, dict] = {}
@@ -418,6 +477,12 @@ async def _collect() -> dict:
             data.setdefault("errors", []).append(f"{name}: {e}")
         versions_by_station[name] = [
             {
+                # Stable across refreshes (unlike a list index), so the
+                # Versions view can keep a version focused while new ones
+                # land above it.
+                "id": f"{name}::{v.run_name}/{v.action_name}"
+                if v.action_name
+                else f"{name}::{v.path.rsplit('/', 2)[-2]}",
                 "version": f"{v.run_name}/{v.action_name}"
                 if v.action_name
                 else v.path.rsplit("/", 2)[-2],
@@ -433,15 +498,27 @@ async def _collect() -> dict:
     # Attach eval metrics: to each report version, and to the checkpoint
     # version it scored (linked by checkpoint_path in the report payload).
     ckpt_by_path = {v["url"]: v for v in versions_by_station.get(ARTIFACT_TUNER_CHECKPOINT, [])}
+    # Provenance the producing tasks recorded, collected while the reports
+    # are already open: the report names the checkpoint it scored, and the
+    # checkpoint's manifest (echoed into the report by eval_tuner) names
+    # the corpus it trained on. That is the whole train→eval chain, exactly,
+    # for runs that did NOT co-produce everything in one pipeline run.
+    declared: dict[str, list[str]] = {}
     for v in versions_by_station.get(ARTIFACT_EVAL_REPORT, []):
         report = await _load_report(v["url"])
         if "error" in report:
             continue
         metrics = _metrics_of(report)
         v["eval"] = metrics
-        target = ckpt_by_path.get(report.get("checkpoint_path", ""))
+        ckpt_path = report.get("checkpoint_path", "")
+        target = ckpt_by_path.get(ckpt_path)
         if target is not None and target["eval"] is None:
             target["eval"] = metrics
+        if ckpt_path:
+            declared.setdefault(v["id"], []).append(ckpt_path)
+        train_corpus = report.get("train_corpus_path", "")
+        if train_corpus and target is not None:
+            declared.setdefault(target["id"], []).append(train_corpus)
         data["reports"].append(
             {"run": v["source"], "created_at": v["created_at"], **metrics}
         )
@@ -463,6 +540,9 @@ async def _collect() -> dict:
                 "versions": versions_by_station[station["artifact"]],
             }
         )
+    data["version_edges"] = build_version_edges(
+        versions_by_station, CONTRACT_EDGES, declared
+    )
 
     produced_by: dict[str, set[str]] = {}
     for name, versions in versions_by_station.items():
@@ -672,6 +752,19 @@ _PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .badge.neutral { background: #22222a; color: var(--muted); }
   .group-label { font-size: 10.5px; letter-spacing: 0.02em; color: var(--muted); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .group-label .swatch { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+  .group-head { display: flex; flex-direction: column; gap: 5px; }
+  .v-select {
+    width: 232px; background: #131316; color: var(--text); font-size: 10.5px;
+    font-family: var(--mono); border: 1px solid #2a2a33; border-radius: 6px;
+    padding: 3px 6px; cursor: pointer; outline: none;
+  }
+  .v-select:hover { border-color: #3a3a45; }
+  .v-select.on { border-color: var(--primary); color: #b9c3ff; background: var(--primary-soft); }
+  .v-select.off { color: #55555f; font-style: italic; }
+  .v-empty {
+    width: 232px; font-size: 10.5px; color: #55555f; font-style: italic;
+    border: 1px dashed #26262e; border-radius: 8px; padding: 8px 10px;
+  }
 
   .pill { flex: none; font-size: 9.5px; padding: 1px 7px; border-radius: 999px; text-transform: capitalize; white-space: nowrap; }
   .pill.right { margin-left: auto; }
@@ -718,6 +811,7 @@ _PAGE_TEMPLATE = r"""<!DOCTYPE html>
   .ringed { box-shadow: 0 0 0 1.5px var(--accent); border-color: var(--accent) !important; }
   .iconbtn { flex: none; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 1px 3px; border-radius: 5px; font-size: 11px; line-height: 1; font-family: inherit; }
   .iconbtn:hover { background: #2a2a33; color: var(--text); }
+  .iconbtn.on { color: #b9c3ff; background: var(--primary-soft); }
 
   .bottom { display: flex; gap: 0.9rem; align-items: stretch; }
   .panel { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
@@ -852,6 +946,16 @@ try {
   const versionHay = (v) => [v.version, v.source, v.url].join(" ").toLowerCase();
   const runHay = (r) => [r.name, r.task, r.task_short, r.phase, ...(r.stations || [])].join(" ").toLowerCase();
 
+  // Version ids are "<artifact>::<version>", so the station is the prefix.
+  const stationOfId = (data, id) => (id || "").split("::")[0];
+  const versionById = (data, id) => {
+    for (const s of data.stations) {
+      const v = s.versions.find((x) => x.id === id);
+      if (v) return { station: s, version: v };
+    }
+    return null;
+  };
+
   function connectedSet(edges, root) {
     const up = {}, down = {};
     edges.forEach((e) => {
@@ -933,6 +1037,13 @@ try {
       <div class="vid">${shortId(data.version)}</div>
       <div class="vrow">
         <span class="vrun">${data.source || "unknown run"}</span>
+        ${data.onFocus
+          ? html`<button class="iconbtn ${data.focused ? "on" : ""}"
+                    title=${data.focused
+                      ? "Clear focus — show all versions again"
+                      : "Focus this version — show only its upstream and downstream versions"}
+                    onClick=${(e) => { e.stopPropagation(); data.onFocus(data.focused ? null : data.id); }}>⦿</button>`
+          : null}
         <button class="iconbtn" title="Open artifact card (contents + stats)"
                 onClick=${(e) => { e.stopPropagation(); data.onCard(data.station, data); }}>▤</button>
         <button class="iconbtn" title="Copy object-store path"
@@ -943,7 +1054,29 @@ try {
     </div>`;
 
   const GroupLabel = ({ data }) => html`
-    <div class="group-label"><span class="swatch" style=${{ background: data.color }}></span>${data.label}</div>`;
+    <div class="group-head">
+      <div class="group-label"><span class="swatch" style=${{ background: data.color }}></span>${data.label}</div>
+      ${data.options
+        ? html`<select class="v-select nodrag ${data.value ? "on" : ""} ${data.orphan ? "off" : ""}"
+                  title="Focus this station's version — the graph redraws to its upstream and downstream versions"
+                  value=${data.orphan ? "__none__" : (data.value || "")}
+                  onMouseDown=${(e) => e.stopPropagation()}
+                  onChange=${(e) => data.onPick(e.target.value.startsWith("__") ? null : (e.target.value || null))}>
+            ${/* A focused lineage that misses this station entirely: say so
+                  in the control rather than leaving it reading "All
+                  versions" next to an empty group. */ ""}
+            ${data.orphan
+              ? html`<option value="__none__" disabled>— not on this lineage —</option>`
+              : null}
+            <option value="">All versions</option>
+            ${data.options.map((v) => html`
+              <option key=${v.id} value=${v.id}>${shortId(v.version)}</option>`)}
+          </select>`
+        : null}
+    </div>`;
+
+  const EmptyNote = ({ data }) => html`
+    <div class="v-empty">${data.text}</div>`;
 
   // ------------------------------------------------------- artifact card
   const CardModal = ({ card, onClose }) => html`
@@ -973,11 +1106,15 @@ try {
       </div>
     </div>`;
 
-  const nodeTypes = { station: StationNode, version: VersionNode, groupLabel: GroupLabel };
+  const nodeTypes = {
+    station: StationNode, version: VersionNode, groupLabel: GroupLabel, emptyNote: EmptyNote,
+  };
 
   const ST_W = 248, ST_H = 148;
   const V_W = 232, V_H = 76, V_GAP = 10;
-  const PAD_X = 22, PAD_TOP = 40, PAD_BOTTOM = 18;
+  // PAD_TOP clears the version group's header, which is now a label AND a
+  // version selector stacked under it.
+  const PAD_X = 22, PAD_TOP = 66, PAD_BOTTOM = 18;
 
   const runsByStation = (data) => {
     const m = {};
@@ -1022,14 +1159,24 @@ try {
   }
 
   function layoutVersions(data, ctx) {
-    const shown = data.stations.filter((s) => s.versions.length).map((s) => ({
-      ...s, versions: s.versions.slice(0, 8),
-    }));
+    // With a version focused, each station shows ONLY the versions on that
+    // version's lineage path — its ancestors and descendants. Without one,
+    // the view is the old wall of recent versions per station.
+    const keep = ctx.focusSet;
+    const shown = data.stations.map((s) => ({
+      ...s,
+      versions: keep
+        ? s.versions.filter((v) => keep.has(v.id))
+        : s.versions.slice(0, 8),
+    })).filter((s) => s.versions.length || keep);
     if (!shown.length) return { nodes: [], edges: [] };
     const hOf = (v) => (v.eval ? V_H + 22 : V_H);
+    const EMPTY_H = 34;  // the "not on this lineage" note
     const sizeOf = (s) => ({
       width: V_W + 2 * PAD_X,
-      height: PAD_TOP + s.versions.reduce((a, v) => a + hOf(v) + V_GAP, -V_GAP) + PAD_BOTTOM,
+      height: PAD_TOP + (s.versions.length
+        ? s.versions.reduce((a, v) => a + hOf(v) + V_GAP, -V_GAP)
+        : EMPTY_H) + PAD_BOTTOM,
     });
     const g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: "LR", nodesep: 44, ranksep: 82 });
@@ -1058,13 +1205,30 @@ try {
       });
       nodes.push({
         id: gid + ":label", type: "groupLabel", parentId: gid,
-        position: { x: 14, y: 13 }, data: { label: s.label, color },
+        position: { x: 14, y: 11 },
+        data: {
+          label: s.label, color,
+          // The per-station version selector. `all` is always offered so a
+          // focused view can be widened again from any station.
+          options: (data.stations.find((x) => x.artifact === s.artifact) || s).versions,
+          value: ctx.focusOf(s.artifact),
+          orphan: !!ctx.focusSet && !ctx.focusOf(s.artifact),
+          focused: ctx.focusId,
+          onPick: ctx.onFocus,
+        },
         draggable: false, selectable: false,
       });
       idOf[s.artifact] = [];
       let y = PAD_TOP;
-      s.versions.forEach((v, i) => {
-        const vid = s.artifact + "::" + i;
+      if (!s.versions.length) {
+        nodes.push({
+          id: gid + ":empty", type: "emptyNote", parentId: gid,
+          position: { x: PAD_X, y }, draggable: false, selectable: false,
+          data: { text: "not on this lineage" },
+        });
+      }
+      s.versions.forEach((v) => {
+        const vid = v.id;
         idOf[s.artifact].push(vid);
         if (v.source) byRun[s.artifact + "|" + v.source] = vid;
         dimmed[vid] = ctx.dimVersion(s, v);
@@ -1074,36 +1238,44 @@ try {
           data: {
             ...v, color, station: s.artifact, onCopy: ctx.onCopy, onCard: ctx.onCard,
             dimmed: dimmed[vid], ringed: ctx.ringVersion(s, v),
+            focused: ctx.focusId === vid, onFocus: ctx.onFocus,
           },
         });
         y += hOf(v) + V_GAP;
       });
     });
 
+    // Version→version edges come from the server, which builds them from
+    // recorded provenance and same-run co-production. The label says WHICH,
+    // because "the eval report names this checkpoint" and "one run made
+    // both of these" are different strengths of evidence.
     const edges = [];
     const fade = (a, b) => (dimmed[a] || dimmed[b] ? 0.15 : 1);
-    data.edges.filter((e) => visible.has(e.source) && visible.has(e.target)).forEach((e, i) => {
-      const target = shown.find((s) => s.artifact === e.target);
-      let observed = 0;
-      target.versions.forEach((v, vi) => {
-        const up = v.source && byRun[e.source + "|" + v.source];
-        if (!up) return;
-        observed += 1;
-        const down = e.target + "::" + vi;
-        edges.push({
-          id: "ve" + i + "-" + vi, source: up, target: down, type: "smoothstep",
-          label: v.source, style: { opacity: fade(up, down) },
-          markerEnd: { type: MarkerType.ArrowClosed, color: "#43434e", width: 14, height: 14 },
-        });
+    const present = new Set();
+    shown.forEach((s) => s.versions.forEach((v) => present.add(v.id)));
+    const linked = new Set();
+    (data.version_edges || []).forEach((e, i) => {
+      if (!present.has(e.source) || !present.has(e.target)) return;
+      linked.add(stationOfId(data, e.source) + "→" + stationOfId(data, e.target));
+      edges.push({
+        id: "ve" + i, source: e.source, target: e.target, type: "smoothstep",
+        label: e.kind === "declared" ? "recorded" : "same run",
+        style: { opacity: fade(e.source, e.target) },
+        markerEnd: { type: MarkerType.ArrowClosed, color: "#43434e", width: 14, height: 14 },
       });
-      if (!observed) {
-        const up = idOf[e.source][0], down = idOf[e.target][0];
-        edges.push({
-          id: "ce" + i, source: up, target: down, type: "smoothstep", label: "contract",
-          style: { strokeDasharray: "5 4", stroke: "#38383f", opacity: fade(up, down) },
-          markerEnd: { type: MarkerType.ArrowClosed, color: "#38383f", width: 14, height: 14 },
-        });
-      }
+    });
+    // Where no version-level link is known, still draw the CONTRACT so the
+    // topology reads — dashed, and labelled as the contract it is, not as
+    // a lineage claim we cannot support.
+    data.edges.filter((e) => visible.has(e.source) && visible.has(e.target)).forEach((e, i) => {
+      if (linked.has(e.source + "→" + e.target)) return;
+      const up = (idOf[e.source] || [])[0], down = (idOf[e.target] || [])[0];
+      if (!up || !down) return;
+      edges.push({
+        id: "ce" + i, source: up, target: down, type: "smoothstep", label: "contract",
+        style: { strokeDasharray: "5 4", stroke: "#38383f", opacity: fade(up, down) },
+        markerEnd: { type: MarkerType.ArrowClosed, color: "#38383f", width: 14, height: 14 },
+      });
     });
     return { nodes, edges };
   }
@@ -1232,7 +1404,8 @@ try {
   };
 
   const Toolbar = ({ query, setQuery, hits, teams, toggleTeam, data, trace, setTrace,
-                     highlightRun, setHighlightRun, onReset, searchRef }) => html`
+                     highlightRun, setHighlightRun, onReset, searchRef,
+                     focusId, focusSet, onFocus }) => html`
     <div class="toolbar">
       <label class="search">
         <${SearchIcon} />
@@ -1254,6 +1427,13 @@ try {
               onClick=${() => setTrace(!trace)}>Trace lineage</button>
       ${highlightRun
         ? html`<button class="toggle on" onClick=${() => setHighlightRun(null)}>run ${highlightRun} ✕</button>`
+        : null}
+      ${focusId && focusSet
+        ? html`<button class="toggle on"
+                  title="Showing only this version's upstream and downstream versions — click to show all again (Esc)"
+                  onClick=${() => onFocus(null)}>
+            ${"lineage of " + shortId(((versionById(data, focusId) || {}).version || {}).version || focusId)
+              + " · " + focusSet.size + " version" + (focusSet.size === 1 ? "" : "s") + " ✕"}</button>`
         : null}
       <button class="toggle" onClick=${onReset}>Reset</button>
     </div>`;
@@ -1295,7 +1475,8 @@ try {
       </aside>`;
   };
 
-  const VersionsPanel = ({ station, rows, onCopy, onCard, highlightRun, setHighlightRun }) => html`
+  const VersionsPanel = ({ station, rows, onCopy, onCard, highlightRun, setHighlightRun,
+                           focusId, onFocus }) => html`
     <section class="panel">
       <h2>Versions <span class="sel">${station ? station.label : ""}</span>
         ${station ? html`<span class="side-count">${rows.length}</span>` : null}</h2>
@@ -1317,7 +1498,12 @@ try {
                       : "—"}</td>
                     <td class="mono link" title=${"Copy " + v.url} onClick=${() => onCopy(v.url)}>
                       ${v.url ? v.url.slice(0, 36) + (v.url.length > 36 ? "…" : "") : "—"}</td>
-                    <td><button class="iconbtn" title="Artifact card"
+                    <td><button class="iconbtn ${focusId === v.id ? "on" : ""}"
+                          title=${focusId === v.id
+                            ? "Clear focus — show all versions again"
+                            : "Focus this version's lineage — upstream and downstream only"}
+                          onClick=${() => onFocus(focusId === v.id ? null : v.id)}>⦿</button>
+                      <button class="iconbtn" title="Artifact card"
                           onClick=${() => onCard(station.artifact, v)}>▤</button>
                       ${v.run_url
                         ? html`<button class="iconbtn" onClick=${() => openUrl(v.run_url)}>↗</button>` : null}</td>
@@ -1325,7 +1511,9 @@ try {
               </tbody>
             </table>`
           : html`<div class="empty-row">
-              ${station ? "No versions match the current filters." : "Select a station to see its versions."}
+              ${!station ? "Select a station to see its versions."
+                : focusId ? "This station has no version on the focused lineage."
+                : "No versions match the current filters."}
             </div>`}
       </div>
     </section>`;
@@ -1386,6 +1574,9 @@ try {
       return raw ? new Set(raw.split(",").filter(Boolean)) : allTeams(BOOT.data);
     });
     const [trace, setTrace] = React.useState(initialParams.get("trace") === "1");
+    // The focused VERSION (Versions view). Null = show every station's
+    // recent versions, the old behaviour.
+    const [focusId, setFocusId] = React.useState(() => initialParams.get("fv") || null);
     const [highlightRun, setHighlightRun] = React.useState(() => initialParams.get("run") || null);
     const [phaseFilter, setPhaseFilter] = React.useState("all");
     const [updatedAt, setUpdatedAt] = React.useState(null);
@@ -1423,13 +1614,14 @@ try {
         else if (e.key === "Escape") {
           if (card) setCard(null);
           else if (query) setQuery("");
+          else if (focusId) setFocusId(null);
           else if (highlightRun) setHighlightRun(null);
           document.activeElement?.blur?.();
         }
       };
       window.addEventListener("keydown", onKey);
       return () => window.removeEventListener("keydown", onKey);
-    }, [query, highlightRun, card]);
+    }, [query, highlightRun, card, focusId]);
 
     React.useEffect(() => {
       if (!refreshMs) return;
@@ -1453,12 +1645,13 @@ try {
       set("sel", selected || "");
       set("q", query);
       set("run", highlightRun || "");
+      set("fv", focusId || "");
       set("trace", trace ? "1" : "");
       const all = allTeams(data);
       set("teams", teams.size === all.size ? "" : [...teams].sort().join(","));
       const qs = p.toString();
       history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
-    }, [view, selected, query, highlightRun, trace, teams, data]);
+    }, [view, selected, query, highlightRun, trace, teams, data, focusId]);
 
     const byStation = React.useMemo(() => runsByStation(data), [data]);
     const onSelect = React.useCallback((artifact) => setSelected(artifact), []);
@@ -1469,7 +1662,7 @@ try {
     }), []);
     const onReset = React.useCallback(() => {
       setQuery(""); setHighlightRun(null); setTrace(false); setTeams(allTeams(data));
-      setPhaseFilter("all");
+      setPhaseFilter("all"); setFocusId(null);
     }, [data]);
 
     const q = query.trim().toLowerCase();
@@ -1502,9 +1695,34 @@ try {
     const ringVersion = React.useCallback((s, v) =>
       !!(highlightRun && v.source === highlightRun), [highlightRun]);
 
+    // Ancestors + descendants of the focused version, transitively. If the
+    // focused version has vanished (refresh dropped it off the list), the
+    // focus silently releases rather than showing an empty graph.
+    const focusSet = React.useMemo(() => {
+      if (!focusId || !versionById(data, focusId)) return null;
+      return connectedSet(data.version_edges || [], focusId);
+    }, [focusId, data]);
+    const onFocus = React.useCallback((id) => {
+      setFocusId(id);
+      if (id) { setView("versions"); setSelected(stationOfId(data, id)); }
+    }, [data]);
+    // Which version of THIS station the current focus includes — the value
+    // each station's selector shows. A lineage can legitimately touch more
+    // than one version of a station (two evals of one checkpoint), so the
+    // selector shows the focused one where it belongs and the first
+    // related one elsewhere.
+    const focusOf = React.useCallback((artifact) => {
+      if (!focusSet) return null;
+      if (stationOfId(data, focusId) === artifact) return focusId;
+      const station = data.stations.find((s) => s.artifact === artifact);
+      const hit = (station ? station.versions : []).find((v) => focusSet.has(v.id));
+      return hit ? hit.id : null;
+    }, [focusSet, focusId, data]);
+
     const ctx = {
       selected, onSelect, onCopy, onCard: openCard,
       dimStation, ringStation, dimVersion, ringVersion,
+      focusSet, focusId, onFocus, focusOf,
       dimEdge: (a, b) => {
         const find = (id) => data.stations.find((s) => s.artifact === id);
         const sa = find(a), sb = find(b);
@@ -1513,7 +1731,7 @@ try {
     };
     const { nodes, edges } = React.useMemo(
       () => (view === "stations" ? layoutStations(data, byStation, ctx) : layoutVersions(data, ctx)),
-      [data, view, selected, byStation, q, teams, traceSet, highlightRun]);
+      [data, view, selected, byStation, q, teams, traceSet, highlightRun, focusSet, focusId]);
 
     const hits = React.useMemo(() => {
       if (!q) return 0;
@@ -1529,7 +1747,10 @@ try {
     const versionRows = station
       ? station.versions.filter((v) =>
           (!q || versionHay(v).includes(q) || stationHay(station).includes(q)) &&
-          (!highlightRun || v.source === highlightRun))
+          (!highlightRun || v.source === highlightRun) &&
+          // The table follows the graph: with a lineage focused, it lists
+          // this station's versions ON that lineage, not all of them.
+          (!focusSet || focusSet.has(v.id)))
       : [];
     const runRows = (data.runs || []).filter((r) => {
       if (q && !runHay(r).includes(q)) return false;
@@ -1558,7 +1779,8 @@ try {
         <${Toolbar} query=${query} setQuery=${setQuery} hits=${hits} teams=${teams}
             toggleTeam=${toggleTeam} data=${data} trace=${trace} setTrace=${setTrace}
             highlightRun=${highlightRun} setHighlightRun=${setHighlightRun}
-            onReset=${onReset} searchRef=${searchRef} />
+            onReset=${onReset} searchRef=${searchRef}
+            focusId=${focusId} focusSet=${focusSet} onFocus=${onFocus} />
         <div class="top">
           <${Sidebar} data=${data} view=${view} setView=${setView} selected=${selected}
               onSelect=${onSelect} byStation=${byStation} statusLine=${statusLine}
@@ -1577,7 +1799,8 @@ try {
         <${EvalPanel} reports=${data.reports || []} />
         <div class="bottom">
           <${VersionsPanel} station=${station} rows=${versionRows} onCopy=${onCopy}
-              onCard=${openCard} highlightRun=${highlightRun} setHighlightRun=${setHighlightRun} />
+              onCard=${openCard} highlightRun=${highlightRun} setHighlightRun=${setHighlightRun}
+              focusId=${focusId} onFocus=${onFocus} />
           <${RunsPanel} rows=${runRows} stationLabels=${stationLabels} phaseFilter=${phaseFilter}
               setPhaseFilter=${setPhaseFilter} highlightRun=${highlightRun}
               setHighlightRun=${setHighlightRun} onSelect=${onSelect} />

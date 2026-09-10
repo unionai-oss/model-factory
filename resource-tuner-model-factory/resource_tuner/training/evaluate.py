@@ -448,6 +448,11 @@ async def eval_tuner(
         # Links this report to the checkpoint version it scored — the
         # lineage app uses it to badge checkpoint cards with eval metrics.
         "checkpoint_path": getattr(checkpoint, "path", "") or "",
+        # ...and one link further up: the corpus version that trained that
+        # checkpoint, carried here from its manifest. The report is already
+        # loaded by the lineage app, so echoing it completes the
+        # corpus→checkpoint→report chain without another download.
+        "train_corpus_path": manifest.get("corpus_path", ""),
         "n_contexts": len(heldout),
         "schema_validity": schema_validity,
         "success_rate": policy_stats["success_rate"],
