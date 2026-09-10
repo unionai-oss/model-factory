@@ -51,6 +51,14 @@ Size the declared ranges so peak memory spans roughly 150 MiB at the range
 lows to AT MOST 8 GiB at the range highs — the calibration pods have 12 GiB
 and anything above that is discarded.
 
+The module MUST RUN TO COMPLETION at EVERY point in the declared ranges,
+and the first thing we do is execute it at the range LOWS: code that raises
+there is thrown away without ever being measured. So the low end must still
+be a valid configuration (enough rows for the split/index/window it feeds,
+no empty arrays, no zero-size dimensions), and every library call must be
+one that exists in the installed version — prefer the plain, current API
+over a clever or deprecated one.
+
 {offline_rule}
 
 Scenario to ground the workload (be faithful to it):
