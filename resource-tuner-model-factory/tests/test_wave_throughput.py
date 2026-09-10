@@ -15,11 +15,15 @@ mechanisms failed together, and each one gets tests here:
 
 from __future__ import annotations
 
+import inspect
 import random
 
-import inspect
-
-from resource_tuner.shared.llm_client import TeacherPool, wait_until_ready
+from resource_tuner.shared.llm_client import (
+    TeacherError,
+    TeacherPool,
+    chat,
+    wait_until_ready,
+)
 from resource_tuner.taskgen import synthetic as syn
 from resource_tuner.taskgen.synthetic import curate_measurement
 from resource_tuner.training.stations import MIN_WAVE_SIZE, plan_wave, probe_is_fatal
@@ -141,6 +145,21 @@ def test_revive_is_half_open_not_a_clean_slate():
 def test_all_endpoints_down_is_reported_not_guessed():
     pool = TeacherPool([], trip_after=3)
     assert pool.pick(0) is None
+
+
+def test_a_loading_model_is_not_a_dead_endpoint():
+    """/health returns 200 once the listener is up but BEFORE the weights
+    are in, so a teacher can pass the wake check and still 503 every
+    completion for minutes (qwen35-397b, run ukh2f7p6jhzbp8bm247x). That
+    gets a patient retry budget of its own, and must not count against the
+    breaker — dropping an endpoint for becoming useful is backwards."""
+    sig = inspect.signature(chat).parameters
+    assert sig["loading_retries"].default > sig["retries"].default * 4
+
+    err = TeacherError("teacher HTTP 503: Loading model", status=503, loading=True)
+    assert err.loading
+    plain = TeacherError("teacher HTTP 504: gateway", status=504)
+    assert not plain.loading
 
 
 def test_health_probe_outlasts_a_frontier_model_load():

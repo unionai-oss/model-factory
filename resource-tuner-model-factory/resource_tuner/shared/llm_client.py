@@ -56,9 +56,18 @@ class TeacherError(RuntimeError):
     teacher from the pool" and "this prompt was bad".
     """
 
-    def __init__(self, message: str, status: int | None = None):
+    def __init__(self, message: str, status: int | None = None, loading: bool = False):
         super().__init__(message)
         self.status = status
+        # `loading` marks the one failure that means "healthy, just not
+        # ready yet": llama.cpp answers 503 {"message": "Loading model"}
+        # after its HTTP listener is up but before the weights are in.
+        # /health returns 200 in that window, so a teacher can pass the
+        # wake check and still 503 every completion for minutes (observed
+        # on qwen35-397b in run ukh2f7p6jhzbp8bm247x). Waiting is the right
+        # response, and it must NOT count against the circuit breaker —
+        # dropping an endpoint that is busy becoming useful is backwards.
+        self.loading = loading
 
 
 class TeacherPool:
@@ -269,6 +278,7 @@ def chat(
     timeout: float = 600,
     retries: int = 2,
     backoff_s: float = 2.0,
+    loading_retries: int = 20,
 ) -> str:
     """One chat completion; returns the assistant text (content only —
     llama.cpp puts hybrid-thinking traces in reasoning_content, which we
@@ -293,15 +303,30 @@ def chat(
         f"{base_url}/v1/chat/completions", data=body, headers=_headers(), method="POST"
     )
     last: Exception | None = None
-    for attempt in range(max(retries, 0) + 1):
+    # The loop is wide enough for the patient loading budget; every other
+    # failure still exits at `retries` via the checks below.
+    for attempt in range(max(retries, loading_retries, 0) + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 out = json.loads(resp.read())
             break
         except urllib.error.HTTPError as e:
-            last = TeacherError(f"teacher HTTP {e.code}: {e.read()[:300]!r}", status=e.code)
-            if e.code not in _RETRY_STATUS or attempt == retries:
+            body = e.read()[:300]
+            loading = e.code == 503 and b"oading model" in body
+            last = TeacherError(
+                f"teacher HTTP {e.code}: {body!r}", status=e.code, loading=loading
+            )
+            # A loading model is worth genuinely waiting for — it is minutes
+            # from being the best teacher in the pool — so it gets its own,
+            # much more patient budget rather than the 2-strikes-and-out one
+            # tuned for endpoints that are simply down.
+            budget = max(retries, loading_retries) if loading else retries
+            if e.code not in _RETRY_STATUS or attempt >= budget:
                 raise last
+            if loading:
+                print(f"[teacher] model still loading — retry {attempt + 1}/{budget} in 30s")
+                time.sleep(30)
+                continue
         except Exception as e:  # noqa: BLE001 — timeouts/resets are transient too
             last = TeacherError(f"teacher request failed: {e}")
             if attempt == retries:

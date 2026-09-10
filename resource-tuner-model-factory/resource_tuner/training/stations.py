@@ -717,6 +717,12 @@ async def archetype_data_release(
     teacher_health.update(pool.health)  # the report reads this live
 
     def note_teacher_fail(i: int, err: Exception) -> None:
+        # A model that is still loading is healthy, just not ready — it is
+        # minutes away from being the strongest teacher in the pool.
+        # Counting that toward the breaker would drop the endpoint for
+        # becoming useful, which is exactly backwards.
+        if getattr(err, "loading", False):
+            return
         if pool.note_fail(i):
             print(
                 f"[teachers] {ready_names[i]} tripped the circuit breaker after "
