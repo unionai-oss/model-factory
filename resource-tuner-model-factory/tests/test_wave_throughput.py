@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import random
 
-from resource_tuner.shared.llm_client import TeacherPool
+import inspect
+
+from resource_tuner.shared.llm_client import TeacherPool, wait_until_ready
 from resource_tuner.taskgen import synthetic as syn
 from resource_tuner.taskgen.synthetic import curate_measurement
 from resource_tuner.training.stations import MIN_WAVE_SIZE, plan_wave, probe_is_fatal
@@ -139,6 +141,17 @@ def test_revive_is_half_open_not_a_clean_slate():
 def test_all_endpoints_down_is_reported_not_guessed():
     pool = TeacherPool([], trip_after=3)
     assert pool.pick(0) is None
+
+
+def test_health_probe_outlasts_a_frontier_model_load():
+    """llama.cpp BLOCKS its HTTP listener while loading weights, so a big
+    model does not answer 503-while-loading — it answers nothing at all.
+    At 20s the probe gave up before the server could ever reply and run
+    us86v7zcfphfz76gjrdw lost qwen35-397b and minimax-m3 for 30 minutes
+    while both were healthy-but-loading. A slow answer is not a dead
+    endpoint."""
+    default = inspect.signature(wait_until_ready).parameters["probe_timeout_s"].default
+    assert default >= 60
 
 
 # ── the viability probe ─────────────────────────────────────────────────

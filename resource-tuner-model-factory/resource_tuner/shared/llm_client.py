@@ -202,6 +202,7 @@ def wait_until_ready(
     deadline_s: float = 1800,
     poll_s: float = 15,
     on_status=None,
+    probe_timeout_s: float = 90,
 ) -> str:
     """Poll candidates' /health until one answers 200; return that base URL.
 
@@ -212,6 +213,14 @@ def wait_until_ready(
     status is exactly how a "stuck at waking teacher" report happens.
     Scale-from-zero can exceed 15 min when it also provisions a GPU node,
     so the deadline is generous.
+
+    `probe_timeout_s` is generous for a reason. llama.cpp BLOCKS its HTTP
+    listener while loading weights, so a frontier-size model does not
+    answer 503-while-loading — it does not answer at all. At the old 20s
+    the probe gave up before the server could ever reply, and run
+    us86v7zcfphfz76gjrdw watched qwen35-397b and minimax-m3 time out on
+    BOTH their svc DNS and public URLs for 30 solid minutes while both apps
+    were reported ACTIVE. A slow answer is not a dead endpoint.
     """
     urls = [candidates] if isinstance(candidates, str) else list(candidates)
     started = time.monotonic()
@@ -219,7 +228,7 @@ def wait_until_ready(
     while time.monotonic() - started < deadline_s:
         for url in urls:
             try:
-                _get(f"{url}/health", timeout=20)
+                _get(f"{url}/health", timeout=probe_timeout_s)
                 return url
             except urllib.error.HTTPError as e:
                 last[url] = f"HTTP {e.code}"
