@@ -50,7 +50,7 @@ from .grpo import train_tuner
 
 @driver_env.task(produces_artifacts=True, report=True)
 async def build_task_corpus(
-    profile_name: str = "smoke", seed: int = 0, gpu_max_vram_mib: float = 0
+    profile_name: str = "smoke", seed: int = 0, gpu_max_vram_mib: float = 0.0
 ) -> flyte.io.File:
     """Sample the task corpus and publish it as tuning-task-corpus.
     `gpu_max_vram_mib` > 0 caps GPU families (14000 → single-T4-only)."""
@@ -436,7 +436,7 @@ async def archetype_data_release(
     # (14000 → every GPU task fits, and should be proposed, ONE T4).
     template_train: int = 0,
     template_heldout: int = 0,
-    gpu_max_vram_mib: float = 0,
+    gpu_max_vram_mib: float = 0.0,
     # Round-12 label-fidelity + quality gates:
     holdout_k: int = 2,          # extra oracle pods per archetype, fit-error check
     holdout_max_err: float = 0.25,  # reject archetypes whose labels miss by more
@@ -482,7 +482,7 @@ async def archetype_data_release(
     # second iteration to resize. Keep the first wave small enough to
     # MEASURE the keep rate and the per-archetype cost.
     first_wave_size: int = 150,
-    generation_deadline_s: float = 20 * 3600,
+    generation_deadline_s: float = 20 * 3600.0,
     require_target: bool = True,  # fail loudly rather than ship short
 ) -> flyte.io.File:
     """Scale synthetic generation: archetypes × instantiation → 10⁵-10⁶ tasks.
