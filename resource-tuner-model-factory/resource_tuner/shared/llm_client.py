@@ -48,7 +48,77 @@ DEFAULT_TEACHER = "qwen38-27b"
 
 
 class TeacherError(RuntimeError):
-    pass
+    """Transport-level teacher failure.
+
+    `status` carries the HTTP code when there was one (None for timeouts /
+    resets), so callers can tell a persistently-down endpoint (504) from a
+    request the endpoint rejected (400) — the difference between "drop this
+    teacher from the pool" and "this prompt was bad".
+    """
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+class TeacherPool:
+    """Round-robin over healthy teacher endpoints, with a circuit breaker.
+
+    Round 13's 1M release (run upnz22h5) fed work to a fixed
+    `idx % n_teachers` endpoint no matter how long that endpoint had been
+    returning 504s: 277 archetypes died on a gateway that never recovered,
+    each after burning its retry backoff. Retrying a DOWN service is not
+    resilience — the fix is to stop sending to it.
+
+    Health is per endpoint and counts only TRANSPORT failures. An endpoint
+    that answers with unusable content is healthy but unproductive; that is
+    a prompt problem, and dropping the endpoint would not fix it.
+    """
+
+    def __init__(self, names: list[str], trip_after: int = 6):
+        self.names = list(names)
+        self.trip_after = trip_after
+        self.health = {
+            n: {"fail": 0, "ok": 0, "errs": 0, "dead": False} for n in self.names
+        }
+
+    def live(self) -> list[int]:
+        return [i for i, n in enumerate(self.names) if not self.health[n]["dead"]]
+
+    def pick(self, idx: int) -> int | None:
+        """Index into `names` for work item `idx`, or None if all are down."""
+        live = self.live()
+        return live[idx % len(live)] if live else None
+
+    def note_ok(self, i: int) -> None:
+        h = self.health[self.names[i]]
+        h["fail"] = 0
+        h["ok"] += 1
+
+    def note_fail(self, i: int) -> bool:
+        """Record a transport failure; True if this one tripped the breaker."""
+        h = self.health[self.names[i]]
+        h["fail"] += 1
+        h["errs"] += 1
+        # Never trip the LAST live endpoint: a degraded pool still beats a
+        # pool with nowhere to send work.
+        if h["fail"] >= self.trip_after and not h["dead"] and len(self.live()) > 1:
+            h["dead"] = True
+            return True
+        return False
+
+    def revive(self) -> list[str]:
+        """Half-open probe: give tripped endpoints another chance (they do
+        come back — these apps scale to zero), but pre-load the failure
+        counter so a still-dead one re-trips after 2 strikes instead of
+        absorbing another full `trip_after` of work. Returns revived names."""
+        revived = []
+        for name, h in self.health.items():
+            if h["dead"]:
+                h["dead"] = False
+                h["fail"] = max(self.trip_after - 2, 0)
+                revived.append(name)
+        return revived
 
 
 def _api_key() -> str:
@@ -174,15 +244,22 @@ def wait_until_ready(
 # round-13 release before this retry existed.
 _RETRY_STATUS = {429, 500, 502, 503, 504}
 
-
+# ...but retrying is only worth it for a HICCUP. Round 13 proved the other
+# case: in run upnz22h5, ~290 archetypes each burned 5+10+20s of backoff and
+# then failed anyway (retries 1/2/3 failed at essentially the same rate) —
+# ~2.8 hours of pure sleeping against the concurrency limit for zero
+# recovered work, because the endpoints were persistently unavailable, not
+# hiccuping. So the per-call retry budget is now small and the CALLER is
+# expected to stop sending to an endpoint that keeps failing (see the
+# circuit breaker in training/stations.py).
 def chat(
     base_url: str,
     messages: list[dict],
     max_tokens: int = 4096,
     temperature: float = 0.7,
     timeout: float = 600,
-    retries: int = 3,
-    backoff_s: float = 5.0,
+    retries: int = 2,
+    backoff_s: float = 2.0,
 ) -> str:
     """One chat completion; returns the assistant text (content only —
     llama.cpp puts hybrid-thinking traces in reasoning_content, which we
@@ -213,7 +290,7 @@ def chat(
                 out = json.loads(resp.read())
             break
         except urllib.error.HTTPError as e:
-            last = TeacherError(f"teacher HTTP {e.code}: {e.read()[:300]!r}")
+            last = TeacherError(f"teacher HTTP {e.code}: {e.read()[:300]!r}", status=e.code)
             if e.code not in _RETRY_STATUS or attempt == retries:
                 raise last
         except Exception as e:  # noqa: BLE001 — timeouts/resets are transient too

@@ -335,6 +335,70 @@ async def synthetic_data_release(
     )
 
 
+# Below this a wave is not worth the fixed overhead (teacher wake-ups,
+# node scale-up, the report flush) — better to stop and ship what we have.
+MIN_WAVE_SIZE = 8
+
+
+def probe_is_fatal(reason: str | None) -> bool:
+    """Should a failed viability probe kill the whole archetype?
+
+    Only when the failure is a property of the CODE — it raised, or it took
+    the pod down with it. A point that lands out of bounds (a range low
+    under the 96 MiB floor, a phase shorter than the 30 s metrics floor) is
+    a property of THAT PARAMETER POINT, and the long-standing behaviour —
+    drop the point, fit on the rest — remains correct. Confusing the two
+    would have the probe reject archetypes it was never meant to judge.
+    """
+    return bool(reason) and reason.startswith(("execution failed", "pod failed"))
+
+
+def plan_wave(
+    wave: int,
+    first_wave: int,
+    remaining: int,
+    attempted: int,
+    kept: int,
+    max_wave_size: int,
+    time_left_s: float,
+    secs_per_attempt: float,
+) -> tuple[int, str]:
+    """How many archetypes to attempt next, and why. Returns (size, note).
+
+    Two constraints, applied in order:
+
+    1. YIELD — how many attempts the observed keep rate says it takes to
+       cover `remaining`. Wave 1 has no observation yet, so it is
+       deliberately small: its job is to MEASURE the keep rate and the
+       per-archetype cost, not to finish the release. (Round 13 ran the
+       caller's full `n_archetypes` in wave 1, spent the entire budget in
+       that one un-adapted wave, and never reached wave 2.)
+    2. THE CLOCK — a wave that cannot finish before the generation
+       deadline is worse than a smaller wave that can, because the
+       deadline check inside the wave abandons the tail as pure waste.
+
+    Pure function so the sizing rules are testable without a cluster.
+    """
+    if wave == 0:
+        size, note = first_wave, ""
+    else:
+        yield_rate = max(kept / max(attempted, 1), 0.05)
+        size = min(int(remaining / yield_rate) + 8, max_wave_size)
+        note = (
+            f"wave {wave + 1}: {size} archetypes at an observed "
+            f"{yield_rate:.0%} keep rate to cover {remaining} more"
+        )
+    if secs_per_attempt > 0:
+        affordable = int(max(time_left_s, 0) / secs_per_attempt)
+        if affordable < size:
+            note = (
+                f"trimming wave {wave + 1} from {size} to {affordable} archetypes "
+                f"— {time_left_s / 3600:.1f}h left at {secs_per_attempt:.0f}s/archetype"
+            )
+            size = affordable
+    return max(size, 0), note
+
+
 @flyte.trace
 async def _teacher_write_archetype(base_url: str, prompt: str, max_tokens: int) -> str:
     """One teacher completion, TRACED so it is replayable.
@@ -353,7 +417,11 @@ async def _teacher_write_archetype(base_url: str, prompt: str, max_tokens: int) 
     )
 
 
-@driver_env.task(timeout=flyte.Timeout(max_runtime=24 * 3600), produces_artifacts=True, report=True)
+# 36h: the 20h generation budget, plus instantiating and streaming ~10^6
+# rows to parquet and running the quality gates over them. Round 13's 24h
+# left no margin between the two — a release that generates right up to its
+# deadline must still have time to SHIP.
+@driver_env.task(timeout=flyte.Timeout(max_runtime=36 * 3600), produces_artifacts=True, report=True)
 async def archetype_data_release(
     total_tasks: int = 100_000,
     n_archetypes: int = 150,  # FIRST wave's size; later waves size by yield
@@ -373,19 +441,48 @@ async def archetype_data_release(
     holdout_k: int = 2,          # extra oracle pods per archetype, fit-error check
     holdout_max_err: float = 0.25,  # reject archetypes whose labels miss by more
     enforce_quality: bool = True,   # fail the release on quality-gate misses
-    # Calibration is the throughput bottleneck of a large release: pods
-    # are 3 CPU / 12Gi (t3a.xlarge, 3-250 nodes), so this can go well
-    # above the episode-era 24 when the release is big.
-    oracle_concurrency: int = 24,
+    # Calibration is THE throughput bottleneck of a large release, and
+    # round 13 measured the unit cost: run upnz22h5 ran ~1,550 oracle pods
+    # in 19.5h at concurrency 24, i.e. ~17 MINUTES of wall clock per pod.
+    # Only ~1-2 min of that is the workload — the rest is node scale-up and
+    # pulling the round-13 harness image, which grew a dozen libraries when
+    # the stack axis landed. That cost is not going away, so the only lever
+    # on wall clock is width. Pods are 3 CPU / 12Gi = one per t3a.xlarge,
+    # and that pool scales 3-250 nodes, so 24 was using a tenth of the
+    # available fan-out. 160 leaves the pool real headroom to spare.
+    oracle_concurrency: int = 160,
     teacher_concurrency: int = 3,   # per teacher; llama.cpp serializes anyway
+    # A cheap "does this code even run?" pod BEFORE the full calibration
+    # fan-out. The dominant round-13 rejection was `curated out: execution
+    # failed` (462 pods) — code for the newly-admitted libraries that
+    # raised at runtime — and every one of those archetypes burned all 7
+    # pods to learn what the first pod already knew. The probe is the
+    # lowest calibration point, so it costs NOTHING when it passes: it is
+    # a measurement we needed anyway, just run first.
+    viability_probe: bool = True,
+    # Consecutive transport failures before a teacher is dropped from the
+    # rotation. 277 archetypes died on HTTP 504 in round 13 while the
+    # release kept dutifully feeding the dead endpoint its share of work.
+    teacher_trip_after: int = 6,
     # ── scale: waves until the row target is reachable ──
-    # Rows = archetypes x variants. The cap on variants is what forces
-    # DIVERSITY at scale: 1M rows needs ~2.5k archetypes at 400 each, not
-    # 30 archetypes photocopied 33,000 times.
-    variants_per_archetype: int = 400,
+    # Rows = archetypes x variants, so this number trades DIVERSITY against
+    # WALL CLOCK: every extra archetype costs ~7 oracle pods at ~17 min
+    # each, while extra variants of an existing archetype are free. 1M rows
+    # at 1200 each needs ~834 archetypes — an order of magnitude more
+    # diverse than the 78 that round 13 actually shipped, and still far
+    # inside both quality gates that bound this axis: near-duplication is
+    # measured over ARCHETYPE code (variants do not affect it at all), and
+    # concentration admits 2% of the corpus per archetype = 20,000 rows at
+    # 1M, so 1200 sits at 0.12%.
+    variants_per_archetype: int = 1200,
     max_waves: int = 12,
     max_wave_size: int = 600,
-    generation_deadline_s: float = 16 * 3600,
+    # Wave 1 used to be `n_archetypes` outright, so a big release spent its
+    # entire budget in a single un-adapted wave and the loop never got a
+    # second iteration to resize. Keep the first wave small enough to
+    # MEASURE the keep rate and the per-archetype cost.
+    first_wave_size: int = 150,
+    generation_deadline_s: float = 20 * 3600,
     require_target: bool = True,  # fail loudly rather than ship short
 ) -> flyte.io.File:
     """Scale synthetic generation: archetypes × instantiation → 10⁵-10⁶ tasks.
@@ -425,11 +522,18 @@ async def archetype_data_release(
         fam, hint = syn.FAMILY_HINTS[idx % len(syn.FAMILY_HINTS)]
         return fam, hint, False
 
+    # Only the FIRST wave's slots exist up front; later waves append their
+    # own. Pre-creating all `n_archetypes` made the report show thousands of
+    # permanently-"queued" archetypes that the wave loop never reached.
+    first_wave = min(n_archetypes, first_wave_size or n_archetypes)
     astatus: list[dict] = [
         {"stage": "queued", "detail": "", "family": _hint_for(i)[0], "teacher": "?"}
-        for i in range(n_archetypes)
+        for i in range(first_wave)
     ]
     counters = {"calib_done": 0, "calib_total": 0, "variants": 0, "holdout_rejects": 0}
+    # Circuit-breaker state, keyed by teacher name. Declared before
+    # `render` so the report can show endpoint health from the first flush.
+    teacher_health: dict[str, dict] = {}
     kept_descriptions: list[str] = []  # the avoid-list fed back to teachers
     label_errors: list[float] = []
     rep = Reporter("Archetype data release", f"teacher={teacher} target={total_tasks:,}")
@@ -477,6 +581,16 @@ async def archetype_data_release(
                     ["reason", "count"],
                     [[esc(k), esc(v)] for k, v in sorted(reasons.items(), key=lambda x: -x[1])[:8]],
                 )
+            def _teacher_pill(name: str) -> str:
+                h = teacher_health.get(name)
+                if h is None:
+                    return esc("-")
+                if h["dead"]:
+                    return pill(f"tripped ({h['errs']} errors)", "#F43B3E")
+                if h["fail"]:
+                    return pill(f"{h['fail']} consecutive failures", "#E8A33D")
+                return pill(f"live ({h['errs']} errors)", GOOD)
+
             # Per-teacher scoreboard: which tier is actually producing
             # usable archetypes (the reason for running multiple models).
             by_teacher: dict[str, dict] = {}
@@ -493,7 +607,7 @@ async def archetype_data_release(
             if len(by_teacher) > 1 or "?" not in by_teacher:
                 rep.h("Teacher scoreboard")
                 rep.table(
-                    ["teacher", "kept", "rejected", "in flight", "keep rate"],
+                    ["teacher", "kept", "rejected", "in flight", "keep rate", "endpoint"],
                     [
                         [
                             esc(t),
@@ -505,6 +619,11 @@ async def archetype_data_release(
                                 if not (v["kept"] + v["rejected"])
                                 else f"{v['kept'] / (v['kept'] + v['rejected']):.0%}"
                             ),
+                            # Endpoint health is separate from output
+                            # quality: a teacher can keep 0% because its
+                            # code is bad, or because it is not answering.
+                            # The circuit breaker only reacts to the latter.
+                            _teacher_pill(t),
                         ]
                         for t, v in sorted(by_teacher.items())
                     ],
@@ -574,7 +693,38 @@ async def archetype_data_release(
     teacher_sems = [asyncio.Semaphore(teacher_concurrency) for _ in base_urls]
     oracle_sem = asyncio.Semaphore(oracle_concurrency)
 
+    # ── per-teacher circuit breaker ─────────────────────────────────────
+    # Retrying a DOWN service is not resilience, it is a slow way to fail:
+    # round 13 sent every archetype to a fixed `idx % n` teacher regardless
+    # of whether that endpoint had answered anything in hours. Health is
+    # tracked per endpoint, and an endpoint that fails `teacher_trip_after`
+    # times IN A ROW leaves the rotation instead of absorbing 1/n of the
+    # remaining work. Content rejections (unparseable JSON, forbidden
+    # import) do NOT count — the endpoint answered, we just disliked the
+    # answer; only transport failures trip it.
+    pool = llm_client.TeacherPool(ready_names, trip_after=teacher_trip_after)
+    teacher_health.update(pool.health)  # the report reads this live
+
+    def note_teacher_fail(i: int, err: Exception) -> None:
+        if pool.note_fail(i):
+            print(
+                f"[teachers] {ready_names[i]} tripped the circuit breaker after "
+                f"{teacher_trip_after} consecutive failures ({err}) — "
+                "dropped from the pool"
+            )
+
+    def revive_teachers() -> None:
+        for name in pool.revive():
+            print(f"[teachers] {name} back on probation for the next wave")
+
     async def build_archetype(idx: int):
+        # The generation deadline is checked HERE, not only between waves.
+        # Round 13's wave 1 ran 19.5h against a 15h budget because the only
+        # check was after `asyncio.gather` returned: a wave that overruns
+        # cannot be stopped by a between-waves test.
+        if time.monotonic() > deadline_at:
+            astatus[idx].update(stage="rejected", detail="deadline: generation budget spent")
+            return None
         family, hint, is_gpu = _hint_for(idx)
         arng = random.Random(seed * 1_000_003 + idx)
         prompt = arch.render_archetype_prompt(
@@ -584,11 +734,19 @@ async def archetype_data_release(
             scenario=syn.build_scenario(arng, family=family),
             avoid=list(kept_descriptions),
             allowed=", ".join(sorted(syn.ALLOWED_IMPORTS)),
-            duration_s=arng.choice([45, 60, 90, 150]),
+            # The peak-hold deadline is paid by EVERY calibration pod, so
+            # the 150s option was costing a quarter of the archetypes twice
+            # the pod time for duration diversity the sampled params already
+            # supply. 30s is the floor below which pod metrics have no
+            # samples, so 45-90 still clears it comfortably.
+            duration_s=arng.choice([45, 60, 90]),
             gpu=is_gpu,
             offline_rule=syn.OFFLINE_RULE,
         )
-        t_i = idx % len(base_urls)
+        t_i = pool.pick(idx)
+        if t_i is None:
+            astatus[idx].update(stage="rejected", detail="teachers: all endpoints offline")
+            return None
         # Provenance: which model wrote this archetype. Travels to the
         # calibration pods' reports, the corpus rows, and the per-tier
         # summary — a data point can always name its author.
@@ -599,8 +757,16 @@ async def archetype_data_release(
         try:
             async with teacher_sems[t_i]:
                 text = await _teacher_write_archetype(base_urls[t_i], prompt, 8192)
+        except llm_client.TeacherError as e:
+            note_teacher_fail(t_i, e)
+            astatus[idx].update(stage="rejected", detail=f"pre-oracle: {e}")
+            print(f"[arch {idx}] pre-oracle reject: {e}")
+            await render("generating")
+            return None
+        pool.note_ok(t_i)  # it answered; whether we like the answer is next
+        try:
             archetype = arch.parse_archetype_response(text)
-        except (syn.RejectedTask, llm_client.TeacherError) as e:
+        except syn.RejectedTask as e:
             astatus[idx].update(stage="rejected", detail=f"pre-oracle: {e}")
             # Print it too: report-only rejection reasons made a 0/24
             # smoke undebuggable from logs (round-12 lesson).
@@ -631,7 +797,9 @@ async def archetype_data_release(
         # for a node rather than dying at the episode-tuned 300s.
         oracle_timeout = flyte.Timeout(max_runtime=900, max_queued_time=3600)
 
-        async def run_point(point: dict, tag: str, sink: list) -> None:
+        async def run_point(point: dict, tag: str, sink: list) -> str | None:
+            """Run one oracle pod. Returns None if the point landed in
+            `sink`, else a short reason — the probe needs to know WHY."""
             code = arch.instantiate(archetype, point)
             oracle = run_generated.override(
                 resources=oracle_res, timeout=oracle_timeout
@@ -646,7 +814,7 @@ async def archetype_data_release(
                         )
             except Exception as e:  # noqa: BLE001 — pod died (likely over budget)
                 print(f"[arch {idx}] {tag} pod failed: {e}")
-                return
+                return f"pod failed: {str(e)[:120]}"
             finally:
                 counters["calib_done"] += 1
             # Ceiling tracks the oracle pod's own budget (12Gi) with
@@ -657,20 +825,54 @@ async def archetype_data_release(
                 # Print it: silent curation made "why did yield drop?"
                 # unanswerable from logs.
                 print(f"[arch {idx}] {tag} curated out: {reason}")
-                return
+                return reason
             vram = float(m.get("gpu_peak_mib", 0.0) or 0.0)
             if is_gpu and (vram < 64 or vram > 14000):
                 # A "GPU" archetype that never touched CUDA (or blew past a
                 # T4) teaches the wrong lesson — drop the point.
                 print(f"[arch {idx}] {tag}: gpu archetype vram {vram:.0f}MiB out of bounds")
-                return
+                return f"gpu vram {vram:.0f}MiB out of bounds"
             sink.append(
                 (m["peak_rss_mib"], m.get("cpu_avg_cores", 1.0), m["duration_s"], vram, point)
             )
+            return None
 
         cal_points = arch.calibration_points(archetype, calibration_k, rng=arng, n_random=2)
+
+        # ── viability probe ─────────────────────────────────────────────
+        # One pod first, at the CHEAPEST calibration point (the points are
+        # log-spaced from the memory param's low end, so cal_points[0] is
+        # the smallest and fastest). If the code cannot execute at its own
+        # minimum scale, the remaining 6 pods can only rediscover that.
+        # Round 13 spent 462 pods learning this the expensive way.
+        #
+        # The probe answers exactly one question — "does this code RUN?" —
+        # so only a failure that is a property of the CODE ends the
+        # archetype. A point that merely lands out of bounds (a low end
+        # under the 96 MiB floor, say) is a property of that PARAMETER
+        # POINT: the old behaviour of dropping the point and fitting on the
+        # rest is still right, and rejecting there would throw away good
+        # archetypes the probe was never meant to judge.
+        if viability_probe and cal_points:
+            probe_reason = await run_point(cal_points[0], "c0", measured_pts)
+            if probe_is_fatal(probe_reason):
+                # Give back the pod budget this archetype will now never
+                # spend, so the report's calibration progress stays honest.
+                counters["calib_total"] -= n_pods - 1
+                astatus[idx].update(stage="rejected", detail=f"probe: {probe_reason}")
+                print(
+                    f"[arch {idx}] viability probe failed ({probe_reason}) "
+                    f"— {n_pods - 1} pods saved"
+                )
+                await render("generating")
+                return None
+            # The probe's own measurement is kept, so a PASSING probe costs
+            # nothing: only the remaining points still owe pods.
+            rest = list(enumerate(cal_points))[1:]
+        else:
+            rest = list(enumerate(cal_points))
         await asyncio.gather(
-            *(run_point(p, f"c{i}", measured_pts) for i, p in enumerate(cal_points))
+            *(run_point(p, f"c{i}", measured_pts) for i, p in rest)
         )
         if len(measured_pts) < 3:
             astatus[idx].update(
@@ -732,40 +934,67 @@ async def archetype_data_release(
     kept: list = []
     wave = 0
     started_at = time.monotonic()
+    deadline_at = started_at + generation_deadline_s
     needed = -(-total_tasks // max(variants_per_archetype, 1))  # ceil
-    next_idx = n_archetypes  # astatus slots beyond the first wave
+    # Index of the next unattempted archetype slot == archetypes attempted
+    # so far, which is also the denominator of the observed keep rate.
+    next_idx = 0
+    # Seconds of wall clock per archetype ATTEMPTED, measured from the last
+    # wave. The release is throughput-bound on `oracle_concurrency`, so
+    # wave duration is close to linear in wave size — good enough to answer
+    # "can we afford this wave before the deadline?".
+    secs_per_attempt = 0.0
 
     while len(kept) < needed and wave < max_waves:
         remaining = needed - len(kept)
-        # Size the wave by observed yield (first wave: the caller's number).
-        if wave == 0:
-            size = n_archetypes
-        else:
-            yield_rate = max(len(kept) / max(next_idx, 1), 0.05)
-            size = min(int(remaining / yield_rate) + 8, max_wave_size)
+        time_left = deadline_at - time.monotonic()
+        if time_left <= 0:
+            print("[waves] generation deadline reached; stopping archetype waves")
+            break
+        size, why = plan_wave(
+            wave=wave,
+            first_wave=first_wave,
+            remaining=remaining,
+            attempted=next_idx,
+            kept=len(kept),
+            max_wave_size=max_wave_size,
+            time_left_s=time_left,
+            secs_per_attempt=secs_per_attempt,
+        )
+        if why:
+            print(f"[waves] {why}")
+        if size < MIN_WAVE_SIZE:
+            print("[waves] too little time left for a useful wave; stopping")
+            break
         while len(astatus) < next_idx + size:
             i = len(astatus)
             astatus.append(
                 {"stage": "queued", "detail": "", "family": _hint_for(i)[0], "teacher": "?"}
             )
-        idxs = list(range(next_idx if wave else 0, (next_idx if wave else 0) + size))
-        next_idx = idxs[-1] + 1
+        idxs = list(range(next_idx, next_idx + size))
+        next_idx += size
         await render(
             f"wave {wave + 1}: generating {size} archetypes "
             f"({len(kept)}/{needed} kept for {total_tasks:,} rows)",
             force=True,
         )
+        wave_started = time.monotonic()
         built = await asyncio.gather(*(build_archetype(i) for i in idxs))
         kept += [b for b in built if b]
         wave += 1
+        wave_secs = time.monotonic() - wave_started
+        secs_per_attempt = wave_secs / max(size, 1)
         elapsed = time.monotonic() - started_at
+        alive = ", ".join(ready_names[i] for i in pool.live()) or "(none)"
         print(
             f"[waves] wave {wave}: {len(kept)}/{needed} archetypes kept "
-            f"after {elapsed / 60:.0f}m"
+            f"after {elapsed / 60:.0f}m ({wave_secs / 60:.0f}m this wave, "
+            f"{secs_per_attempt:.0f}s/archetype) | teachers up: {alive}"
         )
-        if elapsed > generation_deadline_s:
+        if time.monotonic() > deadline_at:
             print("[waves] generation deadline reached; stopping archetype waves")
             break
+        revive_teachers()  # half-open probe for anything the breaker dropped
 
     await render(
         f"instantiating from {len(kept)} archetypes ({wave} waves)", force=True

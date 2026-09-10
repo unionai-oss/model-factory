@@ -190,6 +190,107 @@ STACKS_BY_FAMILY: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# ── per-stack API contracts ─────────────────────────────────────────────
+# Round 13 admitted a dozen new libraries with a one-line hint each, and
+# the dominant failure of the 1M release (run upnz22h5) was `curated out:
+# execution failed` — 462 pods running code that IMPORTED fine and then
+# raised: renamed methods, removed kwargs, wrong dtypes, constructors that
+# want the network. A one-line hint names a library; it does not pin the
+# handful of call signatures that actually decide whether the module runs.
+#
+# These notes are deliberately narrow: only the pitfalls observed to crash
+# oracle pods, stated as the calls to USE. Keep them short — they compete
+# with the rest of the prompt for the teacher's attention.
+STACK_PITFALLS: dict[str, str] = {
+    "polars": (
+        "polars>=1.0 API: pl.DataFrame({...}); group_by (NOT groupby); "
+        "with_columns (NOT with_column); map_elements (NOT apply); "
+        "LazyFrame work must end in .collect()."
+    ),
+    "duckdb": (
+        "duckdb>=1.1 API: con = duckdb.connect(); con.execute(sql).fetchdf() "
+        "or con.sql(sql).df(). A pandas/Arrow object in a local variable is "
+        "queryable BY ITS VARIABLE NAME in the SQL string."
+    ),
+    "dask": (
+        "dask API: import dask.dataframe as dd; dd.from_pandas(df, "
+        "npartitions=N); finish with .compute(scheduler='threads'). Every "
+        "dask result is lazy until compute() — an uncomputed graph measures "
+        "no memory."
+    ),
+    "ibis": (
+        "ibis>=9 API: t = ibis.memtable(df); build the expression, then "
+        "expr.execute() (the duckdb backend is the default in-process one)."
+    ),
+    "xgboost": (
+        "xgboost>=2.1 API: d = xgb.DMatrix(X, label=y); xgb.train(params, d, "
+        "num_boost_round=N) with params={'objective': ..., 'tree_method': "
+        "'hist'}. early_stopping_rounds REQUIRES an evals list."
+    ),
+    "lightgbm": (
+        "lightgbm>=4.5 API: ds = lgb.Dataset(X, label=y); lgb.train(params, "
+        "ds, num_boost_round=N) with params={'objective': ..., 'verbose': -1}. "
+        "verbose_eval was REMOVED in 4.x — passing it raises."
+    ),
+    "statsmodels": (
+        "statsmodels API: sm.OLS(y, sm.add_constant(X)).fit() over float64 "
+        "arrays; ARIMA lives at statsmodels.tsa.arima.model.ARIMA."
+    ),
+    "networkx": (
+        "networkx>=3 API: nx.Graph()/nx.DiGraph() + add_edges_from(...); "
+        "from_numpy_array (from_numpy_matrix was REMOVED in 3.x)."
+    ),
+    "jax": (
+        "jax API: import jax.numpy as jnp; randomness needs an explicit key "
+        "(key = jax.random.PRNGKey(0); jax.random.normal(key, shape)); jax "
+        "arrays are IMMUTABLE — update via x.at[idx].set(v); call "
+        "jax.block_until_ready(out) before measuring, since jax is async."
+    ),
+    "lightning": (
+        "lightning>=2.4 API: import lightning as L; subclass L.LightningModule "
+        "with training_step(self, batch, batch_idx) + configure_optimizers; "
+        "L.Trainer(max_epochs=1, accelerator='cpu', logger=False, "
+        "enable_checkpointing=False, enable_progress_bar=False, "
+        "default_root_dir=<a tempdir>) — the defaults WRITE TO DISK in the "
+        "working directory and fail. Feed it a torch DataLoader."
+    ),
+    "transformers": (
+        "transformers OFFLINE only: cfg = AutoConfig.for_model('bert', "
+        "vocab_size=V, hidden_size=H, num_hidden_layers=L, "
+        "num_attention_heads=A, intermediate_size=4*H); model = "
+        "AutoModel.from_config(cfg). H MUST be divisible by A. Feed "
+        "torch.randint(0, V, (batch, seq)) as input_ids — there is no "
+        "tokenizer and from_pretrained will fail with no network."
+    ),
+    "faiss": (
+        "faiss API: index = faiss.IndexFlatIP(d); index.add(x) where x is a "
+        "C-CONTIGUOUS float32 numpy array (np.ascontiguousarray(x, "
+        "dtype='float32')) — any other dtype raises. An IVF index must be "
+        "train()ed before add(), with nlist well under the vector count."
+    ),
+    "langchain_core": (
+        "langchain_core only (the `langchain` package is NOT installed): "
+        "from langchain_core.documents import Document → Document("
+        "page_content=..., metadata={}); from langchain_text_splitters import "
+        "RecursiveCharacterTextSplitter → .split_documents(docs). Embedders "
+        "and chat models must be local stub callables."
+    ),
+    "langgraph": (
+        "langgraph>=0.2 API: from langgraph.graph import StateGraph, START, "
+        "END; state is a TypedDict; g = StateGraph(State); g.add_node(name, "
+        "fn); g.add_edge(START, name); g.add_edge(name, END); "
+        "app = g.compile(); app.invoke(state). Any loop MUST terminate — pass "
+        "config={'recursion_limit': N} and bound the iteration count in the "
+        "state, or the graph raises instead of finishing."
+    ),
+    "llama_index": (
+        "llama_index.core only: from llama_index.core.schema import Document, "
+        "TextNode; from llama_index.core.node_parser import SentenceSplitter → "
+        ".get_nodes_from_documents(docs). Do NOT build a VectorStoreIndex or "
+        "anything taking an embed_model — those reach for the network."
+    ),
+}
+
 # Never let the teacher reach for the network: these pods have none.
 OFFLINE_RULE = (
     "The runner has NO NETWORK and NO pre-downloaded model weights: never "
@@ -216,6 +317,10 @@ def build_scenario(rng, family: str | None = None) -> str:
     if family:
         name, guidance = pick_stack(family, rng)
         parts.append(f"Stack: use {guidance} as the primary library.")
+        pitfall = STACK_PITFALLS.get(name)
+        if pitfall:
+            # On its own line: this is a contract to satisfy, not scenery.
+            parts.append(f"\nAPI contract for that stack — {pitfall}")
     return " ".join(parts)
 
 
