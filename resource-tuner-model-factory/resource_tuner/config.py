@@ -308,8 +308,19 @@ AMBITIOUS = TunerProfile(
     eval_contexts=512,
     reward_stage="c-cost",  # round-7's best arm on the business metric
     max_steps=1200,
-    num_generations=8,
-    per_device_batch=8,
+    # Group size 4, not 8 — forced by the VRAM arithmetic once the prompt
+    # truncation was fixed, and the preflight on run uzd8ktrh2qqjlqgzgqfx
+    # measured the real cost: Qwen3.5's tokenizer is ~248k tokens (NOT the
+    # 151,936 of Qwen3, which is what I first assumed), so batch 8 x 1,664
+    # tokens needs ~55 GiB and does not fit even one L40S's 44.
+    #
+    # Given the choice between a shorter prompt and a smaller group, the
+    # group loses: a left-truncated prompt is CORRUPT input — it drops the
+    # system instructions entirely — whereas 4 completions per group is a
+    # perfectly ordinary GRPO configuration, just a noisier advantage
+    # estimate. Never trade data integrity for batch size.
+    num_generations=4,
+    per_device_batch=4,
     max_completion_length=128,
     # Round-13/14 corpora carry real library code, so prompts run past the
     # 512 TRL would have silently left-truncated to. 1536 keeps the whole
