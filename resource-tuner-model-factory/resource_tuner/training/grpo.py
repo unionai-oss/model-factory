@@ -176,15 +176,70 @@ def _record_to_row(r: dict, baselines: dict | None = None, ml_hint=None) -> dict
     }
 
 
+def clip_prompt(messages: list[dict], tok, max_tokens: int) -> tuple[list[dict], bool]:
+    """Bound a prompt to `max_tokens`, trimming the CODE and nothing else.
+
+    Current TRL removed `max_prompt_length` from GRPOConfig — prompt length
+    is the dataset's problem now — and unbounded prompts are what put
+    `per_device_batch x seq x 248k vocab` past the GPU (run
+    u5cqz99dmhgmkllmn9w4).
+
+    Where the cut falls matters more than that it happens. The system
+    message carries the instructions and the schema; the user message ends
+    with the input profile and the answer cue. Both must survive. So the
+    trim comes out of the MIDDLE of the source code — the part a longer
+    listing merely repeats — and leaves a visible marker, rather than
+    lopping off either end of the prompt.
+
+    Returns (messages, was_clipped).
+    """
+    n = len(tok.apply_chat_template(messages, tokenize=True, add_generation_prompt=True))
+    if n <= max_tokens:
+        return messages, False
+    # Trim the longest message's code body, halving until it fits.
+    idx = max(range(len(messages)), key=lambda i: len(messages[i]["content"]))
+    body = messages[idx]["content"]
+    lo, hi = 0, len(body)
+    marker = "\n\n# … [source truncated to fit the prompt budget] …\n\n"
+    best = body
+    while lo < hi:
+        keep = (lo + hi) // 2
+        head, tail = body[: keep // 2], body[-(keep - keep // 2) :]
+        trial = list(messages)
+        trial[idx] = {**messages[idx], "content": head + marker + tail}
+        size = len(
+            tok.apply_chat_template(trial, tokenize=True, add_generation_prompt=True)
+        )
+        if size <= max_tokens:
+            best, lo = head + marker + tail, keep + 1
+        else:
+            hi = keep
+    out = list(messages)
+    out[idx] = {**messages[idx], "content": best}
+    return out, True
+
+
 def _records_to_dataset(
-    records: list[dict], baselines: dict | None = None, ml_hints: list | None = None
+    records: list[dict],
+    baselines: dict | None = None,
+    ml_hints: list | None = None,
+    tok=None,
+    max_prompt_tokens: int = 0,
 ):
     from datasets import Dataset
 
     hints = ml_hints or [None] * len(records)
-    return Dataset.from_list(
-        [_record_to_row(r, baselines, ml_hint=h) for r, h in zip(records, hints)]
-    )
+    rows = [_record_to_row(r, baselines, ml_hint=h) for r, h in zip(records, hints)]
+    clipped = 0
+    if tok is not None and max_prompt_tokens:
+        for row in rows:
+            row["prompt"], hit = clip_prompt(row["prompt"], tok, max_prompt_tokens)
+            clipped += hit
+        print(
+            f"[dataset] {clipped}/{len(rows)} prompts clipped to "
+            f"{max_prompt_tokens} tokens ({clipped / max(len(rows), 1):.1%})"
+        )
+    return Dataset.from_list(rows), clipped
 
 
 # Deliberately NOT @flyte.trace'd: traced functions serialize inputs AND
@@ -552,10 +607,18 @@ async def train_tuner(
         n_hints = sum(1 for h in ml_hints if h is not None)
         meta["gbt_hints"] = f"{n_hints}/{len(records)} (out-of-fold)"
         print(f"[gbt-hint] {n_hints}/{len(records)} train contexts carry GBT hints")
-    dataset = _records_to_dataset(records, baselines=baselines, ml_hints=ml_hints)
-    meta["n_contexts"] = len(records)
-
+    # Model first: the tokenizer is what bounds the prompts, and TRL no
+    # longer does that for us (max_prompt_length left GRPOConfig).
     model, tok, bf16 = _load_model(profile)
+    dataset, n_clipped = _records_to_dataset(
+        records,
+        baselines=baselines,
+        ml_hints=ml_hints,
+        tok=tok,
+        max_prompt_tokens=profile.max_prompt_length,
+    )
+    meta["n_contexts"] = len(records)
+    meta["prompts_clipped"] = f"{n_clipped}/{len(records)}"
     import torch
 
     meta["device"] = (
@@ -653,12 +716,10 @@ async def train_tuner(
         per_device_train_batch_size=profile.per_device_batch,
         num_generations=profile.num_generations,
         max_completion_length=profile.max_completion_length,
-        # Never leave this to the library: TRL defaults it to 512 and
-        # truncates LEFT, which silently removed the system prompt and task
-        # description from every prompt once the round-13 corpora made them
-        # longer than that. It is also the dominant memory term (see the
-        # profile field).
-        max_prompt_length=profile.max_prompt_length,
+        # NOTE: no max_prompt_length here — current TRL removed it from
+        # GRPOConfig and made prompt length the dataset's responsibility.
+        # We enforce profile.max_prompt_length in `clip_prompt` instead,
+        # which also lets us choose WHERE the cut falls.
         learning_rate=profile.learning_rate,
         temperature=1.0,
         # 2026 small-model GRPO consensus (DAPO / Dr.GRPO line): no KL

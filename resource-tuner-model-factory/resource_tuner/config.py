@@ -137,12 +137,14 @@ class TunerProfile:
     # Prompt budget, in TOKENS. Load-bearing twice over, which is why it is
     # a profile knob and not left to the library default:
     #
-    # CORRECTNESS — TRL's GRPOConfig defaults this to 512 and truncates
-    # LEFT. Our prompts run ~1,000-1,700 tokens once the round-13 corpora
-    # put real library code in them, so the default was silently eating the
-    # FRONT of every prompt: the system instructions and the task
-    # description, keeping only the tail. A policy cannot learn a rule it
-    # never sees.
+    # CORRECTNESS — current TRL REMOVED max_prompt_length from GRPOConfig
+    # and made prompt length the dataset's job, so nothing bounds a prompt
+    # unless we do. `clip_prompt` enforces this budget and, crucially,
+    # chooses where the cut falls: out of the middle of the source code,
+    # never off either end, so the system instructions and the answer cue
+    # always survive. (An older TRL truncated LEFT at 512 by default, which
+    # would have silently eaten the instructions — worth knowing if this
+    # ever runs against a pinned-back version.)
     #
     # MEMORY — the GRPO backward pass holds a B x T x vocab logits tensor
     # AND its gradient, and Qwen3.5's vocab is 151,936. Prompt length is
