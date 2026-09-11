@@ -736,6 +736,13 @@ async def train_tuner(
     manifest = {
         "base_model": profile.base_model,
         "profile": profile.name,
+        # WHICH corpus version trained this checkpoint. Nothing else
+        # records it: a trigger-fired training run shares no run name with
+        # the run that published the corpus, so without this the lineage
+        # view can only guess (and a lineage tool that guesses is worse
+        # than one that admits a gap). eval_tuner echoes it into the eval
+        # report, which is what the dashboard already reads.
+        "corpus_path": getattr(corpus, "path", "") or "",
         "reward_stage": profile.reward_stage,
         # Full shape config for shaped stages — eval and the dashboard show
         # WHICH reward produced this checkpoint, not just a stage name.
