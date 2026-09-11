@@ -226,6 +226,78 @@ def _load_model(profile: TunerProfile):
     return model, tok, bf16
 
 
+def vram_estimate_gib(profile: TunerProfile, vocab_size: int) -> dict:
+    """What the GRPO step will need on the GPU, in GiB.
+
+    The term that decides it is the LOGITS tensor:
+    `per_device_batch x (prompt + completion) x vocab`. With Qwen3.5's
+    151,936-token vocab that dwarfs the 4-bit weights — which is how run
+    u5cqz99dmhgmkllmn9w4 got through generation and then died in
+    `accelerator.backward()`.
+
+    Two details make this bigger than it first looks, and the first one is
+    easy to miss:
+
+    - `prepare_model_for_kbit_training` upcasts the non-quantized modules,
+      so the lm_head emits **fp32** logits, not fp16. That is 4 bytes per
+      element, not 2.
+    - the backward holds the gradient as well, and TRL's DAPO loss builds
+      log_softmax/gather temporaries of the same shape.
+
+    CALIBRATION, stated plainly: the multiplier is fitted to ONE observed
+    failure — run u5cqz99dmhgmkllmn9w4, which at batch 8 x 640 tokens had
+    ~12.2 GiB of post-weights headroom on a T4 and OOMed. That puts the
+    real peak above 4.2x the fp32 logits tensor; 4.5 is the next step up. So this is a calibrated
+    lower bound on the dominant term, not a simulator, and it is
+    deliberately biased toward rejecting: a wrong "too small" costs a
+    bigger instance, a wrong "fits" costs a day of a 3-day run.
+    """
+    seq = profile.max_prompt_length + profile.max_completion_length
+    # fp32 — see the upcast note above.
+    logits_gib = profile.per_device_batch * seq * vocab_size * 4 / 1024**3
+    return {
+        "seq_tokens": seq,
+        "logits_gib": logits_gib,
+        # logits + grad + loss temporaries, calibrated against the one
+        # failure we have measured.
+        "needed_gib": logits_gib * 4.5,
+    }
+
+
+def preflight_vram(profile: TunerProfile, vocab_size: int) -> str:
+    """Fail NOW, with numbers, if the step cannot fit the GPU we landed on.
+
+    Returns a one-line summary for the report; raises RuntimeError when the
+    rung does not fit. An OOM an hour into a 3-day run costs a day; this
+    costs a second and names the knob to turn.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return "no CUDA device — skipping VRAM preflight"
+    free_b, total_b = torch.cuda.mem_get_info()
+    est = vram_estimate_gib(profile, vocab_size)
+    free_gib, total_gib = free_b / 1024**3, total_b / 1024**3
+    name = torch.cuda.get_device_name(0)
+    line = (
+        f"{name}: {free_gib:.1f} GiB free of {total_gib:.1f} · "
+        f"step needs ~{est['needed_gib']:.1f} GiB "
+        f"(logits {profile.per_device_batch}x{est['seq_tokens']}x{vocab_size:,} "
+        f"= {est['logits_gib']:.1f} GiB x2.5)"
+    )
+    print(f"[preflight] {line}")
+    if est["needed_gib"] > free_gib:
+        raise RuntimeError(
+            f"Profile {profile.name!r} does not fit this GPU. {line}. "
+            f"The profile asks for {profile.train_gpu} — deploy with "
+            f"RT_TRAIN_GPU={profile.train_gpu} (and "
+            f"RT_TRAIN_MEMORY={profile.train_memory}), or cut "
+            f"per_device_batch / max_prompt_length / max_completion_length. "
+            f"Sequence length and batch scale this LINEARLY."
+        )
+    return line
+
+
 def _report_html(profile: TunerProfile, rows: list[dict], meta: dict | None = None) -> str:
     """Live training report, re-rendered every logged step.
 
@@ -490,6 +562,10 @@ async def train_tuner(
         torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
     )
     meta["dtype"] = "bf16" if bf16 else "fp16"
+    # Check the rung against the GPU it actually landed on, before any of
+    # the 3-day budget is spent. Weights are already resident here, so
+    # mem_get_info() reports the headroom the step will really have.
+    meta["vram"] = preflight_vram(profile, len(tok))
     await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
     if profile.lora_mlp:
@@ -577,6 +653,12 @@ async def train_tuner(
         per_device_train_batch_size=profile.per_device_batch,
         num_generations=profile.num_generations,
         max_completion_length=profile.max_completion_length,
+        # Never leave this to the library: TRL defaults it to 512 and
+        # truncates LEFT, which silently removed the system prompt and task
+        # description from every prompt once the round-13 corpora made them
+        # longer than that. It is also the dominant memory term (see the
+        # profile field).
+        max_prompt_length=profile.max_prompt_length,
         learning_rate=profile.learning_rate,
         temperature=1.0,
         # 2026 small-model GRPO consensus (DAPO / Dr.GRPO line): no KL

@@ -134,6 +134,34 @@ class TunerProfile:
     cluster_episode_fraction: float
     # on-cluster validation episodes in eval
     eval_cluster_episodes: int
+    # Prompt budget, in TOKENS. Load-bearing twice over, which is why it is
+    # a profile knob and not left to the library default:
+    #
+    # CORRECTNESS — TRL's GRPOConfig defaults this to 512 and truncates
+    # LEFT. Our prompts run ~1,000-1,700 tokens once the round-13 corpora
+    # put real library code in them, so the default was silently eating the
+    # FRONT of every prompt: the system instructions and the task
+    # description, keeping only the tail. A policy cannot learn a rule it
+    # never sees.
+    #
+    # MEMORY — the GRPO backward pass holds a B x T x vocab logits tensor
+    # AND its gradient, and Qwen3.5's vocab is 151,936. Prompt length is
+    # therefore the dominant term in whether a rung fits its GPU. Pinning
+    # it makes the requirement explicit instead of an accident of whatever
+    # the corpus happens to contain.
+    max_prompt_length: int = 1024
+    # ── GPU sizing ──
+    # The accelerator this rung NEEDS, as a flyte.Resources gpu string.
+    # Recorded per profile because it is a property of the arm, not of the
+    # deployment: "ambitious" was written as a T4 rung when it meant a
+    # 1.7B model, and quietly became wrong when it moved to 4B-class with a
+    # 151,936-token vocab. The trainer env still takes its actual request
+    # from RT_TRAIN_GPU at deploy time, but `preflight_vram` checks the GPU
+    # it actually landed on against what the knobs require, so a mismatch
+    # fails in seconds with the numbers rather than OOMing in the backward
+    # pass an hour later.
+    train_gpu: str = "T4:1"
+    train_memory: str = "10Gi"
     # ── checkpointing (defaults off; long runs turn these on) ──
     # intra-task cadence: TRL saves full trainer state every N steps and
     # the flyte Checkpoint uploads it, so a retried attempt resumes
@@ -255,10 +283,24 @@ SMOKE_CKPT = _dc.replace(
 # committing a 3-day run to the model.
 PROBE_QWEN35 = None  # defined after AMBITIOUS (needs _dc)
 
-# The most ambitious rung: 0.5M-row corpus, ~3-day budget on a SINGLE T4
-# (minimal GPU spend), 4B-class model via QLoRA. Qwen3.5-4B first; if the
-# known TRL-multimodal blocker (trl#5269) still bites, the text-only
-# Qwen3-4B is the 4B-class fallback.
+# The most ambitious rung: ~3-day budget, 4B-class model via QLoRA.
+# Qwen3.5-4B first; if the known TRL-multimodal blocker (trl#5269) still
+# bites, the text-only Qwen3-4B is the 4B-class fallback.
+#
+# GPU: L40S, not T4 (changed 2026-09-11 after run u5cqz99dmhgmkllmn9w4
+# OOMed in `accelerator.backward()`). This rung was written as "minimal GPU
+# spend on a single T4" when the arm was a 1.7B model. Two things broke
+# that: the model is now 4B-class with a 151,936-token vocab, and fixing
+# the silent 512-token prompt truncation (below) triples the sequence the
+# logits tensor is built over. Sized by `vram_estimate_gib`: batch 8 x
+# 1,664 tokens x 151,936 vocab in fp32 needs ~34 GiB for logits + gradient
+# + loss temporaries, which clears neither the T4 (14.7) nor the L4 (24).
+#
+# The cheaper alternative was halving num_generations and per_device_batch
+# to fit an L4 at $0.512/hr, but num_generations IS the GRPO group size —
+# cutting it to 4 weakens every advantage estimate and stops this being
+# the same arm as the previous ambitious run. Paying $1.634/hr to keep the
+# arm intact is the better trade for a comparison experiment.
 AMBITIOUS = TunerProfile(
     name="ambitious",
     base_model=MODEL_LADDER["m-qwen35"],
@@ -269,6 +311,12 @@ AMBITIOUS = TunerProfile(
     num_generations=8,
     per_device_batch=8,
     max_completion_length=128,
+    # Round-13/14 corpora carry real library code, so prompts run past the
+    # 512 TRL would have silently left-truncated to. 1536 keeps the whole
+    # prompt for the overwhelming majority of rows.
+    max_prompt_length=1536,
+    train_gpu="L40s:1",
+    train_memory="32Gi",
     learning_rate=5e-6,
     lora_r=32,
     use_qlora=True,
