@@ -421,10 +421,27 @@ R11_FULLFT_14B = _dc.replace(
     artifact_checkpoint_every=0,
 )
 
+# The 9B rung of the Qwen3.5 tier — the biggest model this factory has put
+# through GRPO. Same arm as AMBITIOUS in every respect except size, so the
+# pair is a clean capacity comparison on the round-14 100k corpus.
+#
+# Sizing: QLoRA keeps 9B of weights near ~6 GiB in nf4, and the logits term
+# is unchanged by parameter count — it is batch x sequence x the same
+# ~248k vocab — so the step lands around 34 GiB and still clears one
+# L40S's 44. `preflight_vram` re-checks that against the real device before
+# spending any of the budget. Step time should be ~2x the 4B rung's
+# measured 4.5s on L40S, so 1200 steps is a few hours, not days.
+AMBITIOUS_9B = _dc.replace(
+    AMBITIOUS,
+    name="ambitious-9b",
+    base_model=MODEL_LADDER["l-qwen35"],
+)
+
 PROFILES: dict[str, TunerProfile] = {
     p.name: p
     for p in (
-        SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, PROBE_QWEN35,
+        SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, AMBITIOUS_9B,
+        PROBE_QWEN35,
         *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT, R11_FULLFT_4B,
         R11_FULLFT_8B, R11_FULLFT_14B,
     )
