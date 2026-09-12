@@ -437,10 +437,38 @@ AMBITIOUS_9B = _dc.replace(
     base_model=MODEL_LADDER["l-qwen35"],
 )
 
+# The 9B rung given a real training budget: ~2 days of wall clock.
+#
+# Sized from measurement, not guesswork — run uncglj5xdhrk9rn7597j clocked
+# 5.8s/step for this exact arm on an L40S. 48h is 29,800 steps at that
+# rate; 26,000 leaves ~10% for checkpoint I/O and step-time drift.
+#
+# Two knobs have to move WITH max_steps, and both are easy to miss:
+#
+# - save_steps: at the 25 inherited from AMBITIOUS, 26,000 steps would
+#   upload full trainer state 1,040 times. The cadence that is cheap
+#   insurance on a 1,200-step run is a tax on a 26,000-step one, so it
+#   scales to every 500 steps (~52 saves, still ≤45min of lost work on a
+#   retry).
+# - train_contexts: AMBITIOUS subsamples the corpus to 16,384 rows, which
+#   made sense when the run was 1,200 steps. At batch 4 / ngen 4 GRPO
+#   consumes ONE unique prompt per step, so 26,000 steps would recycle that
+#   subsample ~1.6x while 108,000 real rows sat unused. Raised to the full
+#   train split: every step now sees a prompt the policy has never seen.
+AMBITIOUS_9B_2D = _dc.replace(
+    AMBITIOUS_9B,
+    name="ambitious-9b-2d",
+    max_steps=26_000,
+    train_contexts=108_000,
+    save_steps=500,
+    artifact_checkpoint_every=2_000,
+)
+
 PROFILES: dict[str, TunerProfile] = {
     p.name: p
     for p in (
         SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, AMBITIOUS_9B,
+        AMBITIOUS_9B_2D,
         PROBE_QWEN35,
         *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT, R11_FULLFT_4B,
         R11_FULLFT_8B, R11_FULLFT_14B,
