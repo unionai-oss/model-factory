@@ -449,16 +449,43 @@ def _report_html(profile: TunerProfile, rows: list[dict], meta: dict | None = No
 
 
 @flyte.trace
-async def _upload_checkpoint(out_dir: str, manifest: dict) -> "flyte.io.Dir":
-    """Write the manifest and upload the checkpoint dir (traced — the span
-    marks the write/upload). Traced functions serialize their INPUTS as
-    literals, so only plain data crosses this boundary: passing the
-    trainer object here pickled the accelerate-wrapped model and died with
-    PicklingError (hit for real on run ullwh6kd4s727k5jvm59).
+async def _upload_checkpoint(out_dir: str) -> "flyte.io.Dir":
+    """Upload the checkpoint dir (traced — the span marks the upload).
+
+    Takes ONLY a path. Traced functions serialize their inputs as literals
+    and the runtime caps that at 10 MB, so nothing sized by the training
+    run may cross this boundary:
+
+    - passing the trainer object pickled the accelerate-wrapped model and
+      died with PicklingError (run ullwh6kd4s727k5jvm59);
+    - passing the manifest dict died with InlineIOMaxBytesBreached at
+      17.2 MB (run u6q4bg4b89l7v8p54dx7), because the manifest carries
+      log_history and that grows one entry per step — fine at 1,200 steps,
+      fatal at 26,000. The manifest is written to the directory by the
+      caller now, so it travels INSIDE the uploaded Dir where no such limit
+      applies.
+
+    The rule this encodes: a traced argument must be O(1) in the size of
+    the run.
     """
-    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=2)
     return await flyte.io.Dir.from_local(out_dir)
+
+
+def decimate(series: list[dict], keep: int = 750) -> list[dict]:
+    """Thin a per-step series to at most `keep` evenly spaced points,
+    always retaining the first and last.
+
+    The manifest is read by eval and rendered by the lineage app's artifact
+    card; both want the SHAPE of the curve, and neither is improved by
+    26,000 points. The full series is written alongside it as
+    `training_history.json`, so nothing is actually lost.
+    """
+    n = len(series)
+    if n <= keep:
+        return series
+    step = (n - 1) / (keep - 1)
+    idx = sorted({int(round(i * step)) for i in range(keep)} | {0, n - 1})
+    return [series[i] for i in idx]
 
 
 def find_trl_checkpoint(root: str) -> str | None:
@@ -908,13 +935,28 @@ async def train_tuner(
         "final_metrics": {
             "mean_reward_first": mean_rewards[0] if mean_rewards else None,
             "mean_reward_last": mean_rewards[-1] if mean_rewards else None,
-            "log_history": history,
+            "logged_steps": len(history),
+            # Decimated: these are read for their SHAPE (eval's first→last
+            # summary, the lineage card's reward chart) and a 26,000-point
+            # series serves that no better than 750 — while being what blew
+            # the trace-input limit on run u6q4bg4b89l7v8p54dx7.
+            "log_history": decimate(history),
             # Per-step means of every reward component — the shape
             # diagnosis travels with the checkpoint.
-            "component_history": reward_fn.component_history,
+            "component_history": decimate(reward_fn.component_history),
         },
     }
-    ckpt = await _upload_checkpoint(out_dir, manifest)
+    # Written HERE, not inside the traced upload: the manifest is sized by
+    # the run and traced inputs are capped at 10 MB. Inside the Dir it has
+    # no such limit, and the full un-decimated series rides along beside it.
+    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+    with open(os.path.join(out_dir, "training_history.json"), "w") as f:
+        json.dump(
+            {"log_history": history, "component_history": reward_fn.component_history},
+            f,
+        )
+    ckpt = await _upload_checkpoint(out_dir)
     return publish(
         ckpt,
         ARTIFACT_TUNER_CHECKPOINT,

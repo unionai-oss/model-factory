@@ -136,3 +136,61 @@ def test_vram_estimate_scales_linearly_in_batch_and_sequence():
     assert abs(twice_batch["needed_gib"] - 2 * base["needed_gib"]) < 1e-6
     longer = vram_estimate_gib(dc.replace(AMBITIOUS, max_prompt_length=AMBITIOUS.max_prompt_length * 2), 248_000)
     assert longer["needed_gib"] > base["needed_gib"]
+
+
+# ── traced-input size (round 15) ────────────────────────────────────────
+def test_upload_checkpoint_takes_only_a_path():
+    """Traced functions serialize their INPUTS as literals, capped at 10MB.
+    Run u6q4bg4b89l7v8p54dx7 died on InlineIOMaxBytesBreached at 17.2MB
+    because the manifest -- which carries one log_history entry per step --
+    crossed that boundary. Fine at 1,200 steps, fatal at 26,000.
+
+    The rule: a traced argument must be O(1) in the size of the run."""
+    import inspect
+
+    from resource_tuner.training.grpo import _upload_checkpoint
+
+    params = inspect.signature(_upload_checkpoint).parameters
+    assert list(params) == ["out_dir"]
+    # `from __future__ import annotations` keeps these as strings.
+    assert params["out_dir"].annotation in (str, "str")
+
+
+def test_decimate_bounds_a_series_and_keeps_both_ends():
+    from resource_tuner.training.grpo import decimate
+
+    series = [{"step": i, "reward": i / 100} for i in range(26_000)]
+    out = decimate(series, keep=750)
+    assert len(out) <= 750
+    assert out[0] == series[0]
+    assert out[-1] == series[-1]
+    # Monotonic in step: it thins, it does not reorder.
+    assert [r["step"] for r in out] == sorted(r["step"] for r in out)
+
+
+def test_decimate_leaves_short_series_untouched():
+    from resource_tuner.training.grpo import decimate
+
+    series = [{"step": i} for i in range(1_200)]
+    assert decimate(series, keep=750) is not series or len(series) <= 750
+    short = [{"step": i} for i in range(10)]
+    assert decimate(short, keep=750) == short
+
+
+def test_decimated_manifest_stays_far_under_the_trace_limit():
+    """The size check that matters, in bytes: a 26,000-step run's manifest
+    must not approach 10MB even though it once hit 17.2."""
+    import json
+
+    from resource_tuner.training.grpo import decimate
+
+    row = {
+        "loss": 0.1, "grad_norm": 1.2, "learning_rate": 5e-6, "reward": 0.74,
+        "reward_std": 0.0, "entropy": 0.045, "step_time": 5.8, "epoch": 0.24,
+        "completions/mean_length": 26.0, "num_tokens": 1.02e8,
+    }
+    history = [dict(row, step=i) for i in range(26_000)]
+    full_mb = len(json.dumps(history).encode()) / 1e6
+    thin_mb = len(json.dumps(decimate(history)).encode()) / 1e6
+    assert full_mb > 4  # the real thing was 17.2MB with both series + indent
+    assert thin_mb < 0.5
