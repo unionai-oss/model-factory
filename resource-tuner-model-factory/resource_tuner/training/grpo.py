@@ -31,7 +31,7 @@ from ..contracts import (
     ARTIFACT_TUNER_CHECKPOINT_INTERMEDIATE,
     publish,
 )
-from ..shared import assets
+from ..shared import assets, cards
 from ..environment.simulator import simulate_episode
 from ..policy.parsing import format_credit, try_extract_proposal
 from ..policy.prompts import parse_context_fields, render_messages
@@ -512,7 +512,13 @@ def find_trl_checkpoint(root: str) -> str | None:
 
 @ckpt_publisher_env.task(produces_artifacts=True)
 async def publish_intermediate_checkpoint(
-    ckpt: flyte.io.Dir, step: int, profile_name: str, reward_stage: str
+    ckpt: flyte.io.Dir,
+    step: int,
+    profile_name: str,
+    reward_stage: str,
+    base_model: str = "",
+    use_lora: bool = True,
+    max_steps: int = 0,
 ) -> flyte.io.Dir:
     """Version a mid-training adapter as a Union artifact.
 
@@ -520,11 +526,26 @@ async def publish_intermediate_checkpoint(
     the wrapped value is RETURNED from a task, and a distinct artifact
     name (tuner-checkpoint-intermediate) keeps the eval-on-new-checkpoint
     trigger quiet until the FINAL checkpoint lands."""
+    # The manifest lives inside the Dir; the card is built from what the
+    # publisher was handed, which is enough to say what this snapshot IS
+    # without downloading the checkpoint to describe it.
+    manifest = {
+        "profile": profile_name,
+        "reward_stage": reward_stage,
+        "base_model": base_model,
+        "use_lora": use_lora,
+        "max_steps": max_steps,
+    }
+    card = await cards.upload(
+        cards.checkpoint_card(manifest, step=step), card_type="model"
+    )
     return publish(
         ckpt,
         ARTIFACT_TUNER_CHECKPOINT_INTERMEDIATE,
         description=f"step {step} — {profile_name}/{reward_stage} (intermediate)",
         kind="model",
+        attrs=cards.checkpoint_attrs(manifest, step=step),
+        card=card,
     )
 
 
@@ -851,6 +872,11 @@ async def train_tuner(
                         step=step,
                         profile_name=profile.name,
                         reward_stage=profile.reward_stage,
+                        # So the card names the model it is an adapter for
+                        # (or says "full fine-tune") instead of assuming.
+                        base_model=profile.base_model,
+                        use_lora=profile.use_lora,
+                        max_steps=profile.max_steps,
                     )
 
                 pending_publishes.append(asyncio.run_coroutine_threadsafe(_publish(), loop))
@@ -957,10 +983,13 @@ async def train_tuner(
             f,
         )
     ckpt = await _upload_checkpoint(out_dir)
+    card = await cards.upload(cards.checkpoint_card(manifest), card_type="model")
     return publish(
         ckpt,
         ARTIFACT_TUNER_CHECKPOINT,
         description=f"{profile.base_model} LoRA, stage={profile.reward_stage}, "
         f"steps={profile.max_steps}",
         kind="model",
+        attrs=cards.checkpoint_attrs(manifest),
+        card=card,
     )

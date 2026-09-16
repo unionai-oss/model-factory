@@ -56,6 +56,29 @@ uv run flyte --config $CFG run main.py tuner_pipeline --profile_name smoke
 uv run flyte --config $CFG run main.py synthetic_data_release --n_tasks 10
 ```
 
+## Artifacts
+
+Stations hand off through versioned artifacts — publishing one IS the
+request to run the next station (the triggers bind to these names):
+
+| artifact | kind | what it is | produced by |
+|---|---|---|---|
+| `tuning-task-corpus` | data | parquet of workloads + measured footprints; the training/eval corpus | `build_task_corpus`, `synthetic_data_release`, `archetype_data_release` |
+| `synthetic-task-corpus` | data | the oracle-verified teacher rows on their own | `publish_synthetic_corpus` |
+| `tuner-checkpoint` | model | GRPO-trained resource-proposal policy (PEFT adapter + tokenizer + manifest) | `train_tuner` |
+| `tuner-checkpoint-intermediate` | model | mid-training snapshot; deliberately a separate name so it fires no eval | `publish_intermediate_checkpoint` |
+| `tuner-eval-report` | data | held-out metrics + gate verdict for one checkpoint | `eval_tuner` |
+| `ml-baseline-model` | model | quantile-GBT floor the policy has to beat | `fit_ml_baseline` |
+| `tuning-ab-report` | data | tuned vs hard-coded prior on real pods — the auditable savings record | `tune_ab_experiment` |
+
+Every one of them publishes an **artifact card** (markdown, rendered in
+the console) plus flat `attrs` for filtering: schema and composition for
+corpora, base model / reward stage / trajectory for checkpoints, verdicts
+for reports. The renderers live in `resource_tuner/shared/cards.py` and
+are pure functions — the producing task already holds every number, so a
+consumer never has to download a payload to find out what it is. Cards
+are best-effort: a card failure logs and the artifact still publishes.
+
 ## Teachers (synthetic data)
 
 `llm-service` project apps, llama.cpp with OpenAI-compatible `/v1`:

@@ -19,7 +19,7 @@ import flyte.io
 from .. import pricing
 from ..contracts import ARTIFACT_ML_BASELINE, ARTIFACT_TASK_CORPUS, publish
 from ..environment.simulator import simulate_episode
-from ..shared import assets
+from ..shared import assets, cards
 from ..shared.reporting import GOOD, Reporter, esc
 from .baseline import baseline_proposal, fit_family_baseline
 from .envs import driver_env
@@ -130,10 +130,13 @@ async def fit_ml_baseline(
     rep.p(f"bundle: {len(ml.feature_names)} features + {len(ml.families)} family one-hots", color=GOOD)
     await rep.flush()
 
+    card = await cards.upload(cards.ml_baseline_card(manifest), card_type="model")
     return publish(
         await flyte.io.Dir.from_local(out_dir),
         ARTIFACT_ML_BASELINE,
         description=f"quantile-GBT on {len(train)} rows — heldout fit "
         f"{ml_stats.get('fit', 0):.0%}, {fmt_usd(ml_stats.get('cost_per_task_hr'))}/task-hr",
         kind="model",
+        attrs=cards.ml_baseline_attrs(manifest),
+        card=card,
     )

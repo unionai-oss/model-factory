@@ -36,7 +36,7 @@ from ..contracts import (
 # bundled and the task dies with ImportError in the pod (hit for real with
 # llm_client). Both modules are stdlib-only, so importing them here is free.
 from ..environment.harness import run_generated
-from ..shared import llm_client
+from ..shared import cards, llm_client
 from .. import tune
 from ..shared.reporting import GOOD, MUTED, Reporter, esc, ok_pill, pill
 from ..taskgen import archetypes as arch
@@ -94,10 +94,32 @@ async def build_task_corpus(
     path = tempfile.mktemp(suffix=".parquet")
     df.to_parquet(path, index=False)
     out = await flyte.io.File.from_local(path)
+    stats = cards.corpus_stats_safe(path)
+    provenance = {
+        "produced_by": "build_task_corpus",
+        "profile": profile.name,
+        "seed": seed,
+        "gpu_max_vram_mib": gpu_max_vram_mib or "",
+    }
+    card = await cards.upload(
+        cards.corpus_card(
+            artifact=ARTIFACT_TASK_CORPUS,
+            stats=stats,
+            provenance=provenance,
+            intended_use="Template-only corpus: every row is generated from a "
+            "parameterized template, so the labels are analytic and exactly "
+            "reproducible from `seed`. Use it for machinery checks and small "
+            "profiles; for training runs that need workload diversity, prefer "
+            "a corpus version that merges teacher-written rows.",
+        ),
+        card_type="data",
+    )
     return publish(
         out,
         ARTIFACT_TASK_CORPUS,
         description=f"{profile.train_contexts} train / {profile.eval_contexts} heldout, seed={seed}",
+        attrs=cards.corpus_attrs(stats, provenance),
+        card=card,
     )
 
 
@@ -113,8 +135,11 @@ async def publish_synthetic_corpus(corpus_file: flyte.io.File, n: int, teacher: 
     import pandas as pd
 
     rep = Reporter("Synthetic corpus publish", f"{n} tasks from {teacher}")
+    # One download, two consumers: the live report below and the artifact
+    # card attached at publish.
+    local = await corpus_file.download()
     try:
-        df = pd.read_parquet(await corpus_file.download())
+        df = pd.read_parquet(local)
         peaks = df["true_peak_memory_mib"]
         code_len = df["source_code"].str.len()
         rep.kv(
@@ -154,10 +179,27 @@ async def publish_synthetic_corpus(corpus_file: flyte.io.File, n: int, teacher: 
     except Exception as e:  # noqa: BLE001 — stats must not block the publish
         rep.p(f"stats unavailable: {e}")
     await rep.flush()
+    stats = cards.corpus_stats_safe(local)
+    provenance = {"produced_by": "synthetic_data_release", "teachers": teacher}
+    card = await cards.upload(
+        cards.corpus_card(
+            artifact=ARTIFACT_SYNTHETIC,
+            stats=stats,
+            provenance=provenance,
+            intended_use="Teacher-written rows ONLY, every one of them "
+            "oracle-verified: the code ran in a harness pod and its measured "
+            "peak RSS and CPU are the labels. Published separately from the "
+            "merged corpus so the teacher contribution can be inspected (and "
+            "its keep rate audited) without diffing two merged versions.",
+        ),
+        card_type="data",
+    )
     return publish(
         corpus_file,
         ARTIFACT_SYNTHETIC,
         description=f"{n} oracle-verified tasks from {teacher}",
+        attrs=cards.corpus_attrs(stats, provenance),
+        card=card,
     )
 
 
@@ -327,12 +369,50 @@ async def synthetic_data_release(
     )
     merged_path = tempfile.mktemp(suffix=".parquet")
     merged.to_parquet(merged_path, index=False)
+    stats = cards.corpus_stats_safe(merged_path)
+    provenance = {
+        "produced_by": "synthetic_data_release",
+        "profile": profile.name,
+        "seed": seed,
+        "teachers": teacher,
+        "template_rows": len(template_records),
+        "synthetic_rows": len(records),
+    }
+    card = await cards.upload(
+        cards.corpus_card(
+            artifact=ARTIFACT_TASK_CORPUS,
+            stats=stats,
+            provenance=provenance,
+            intended_use=MERGED_CORPUS_USE,
+        ),
+        card_type="data",
+    )
     return publish(
         await flyte.io.File.from_local(merged_path),
         ARTIFACT_TASK_CORPUS,
         description=f"templates({len(template_records)}) + synthetic({len(records)}) "
         f"via {teacher}, seed={seed}",
+        attrs=cards.corpus_attrs(stats, provenance),
+        card=card,
     )
+
+
+MERGED_CORPUS_USE = (
+    "The corpus the tuner TRAINS on: template rows (analytic labels, "
+    "reproducible from `seed`) merged with teacher-written rows whose labels "
+    "a harness pod measured. Publishing this artifact is what fires the "
+    "train-on-new-corpus trigger, so a new version is a training request, "
+    "not just a dataset. Train on `split=train` only — `heldout` is what "
+    "every eval report scores against, and mixing them makes the gate "
+    "meaningless."
+)
+ARCHETYPE_CORPUS_USE = (
+    " Archetype rows are instantiated in bulk from a smaller number of "
+    "teacher-written, oracle-calibrated archetypes, so rows sharing an "
+    "`params_json.archetype` are variants of one workload rather than "
+    "independent samples — count archetypes, not rows, when judging "
+    "diversity."
+)
 
 
 # Below this a wave is not worth the fixed overhead (teacher wake-ups,
@@ -1256,11 +1336,31 @@ async def archetype_data_release(
         mwriter.write_table(src.read_row_group(i))
     mwriter.close()
     await render("publishing merged corpus", force=True)
+    stats = cards.corpus_stats_safe(merged_path)
+    provenance = {
+        "produced_by": "archetype_data_release",
+        "profile": profile.name,
+        "seed": seed,
+        "teachers": teacher,
+        "template_rows": len(template_records),
+        "archetype_rows": n_rows,
+    }
+    card = await cards.upload(
+        cards.corpus_card(
+            artifact=ARTIFACT_TASK_CORPUS,
+            stats=stats,
+            provenance=provenance,
+            intended_use=MERGED_CORPUS_USE + ARCHETYPE_CORPUS_USE,
+        ),
+        card_type="data",
+    )
     return publish(
         await flyte.io.File.from_local(merged_path),
         ARTIFACT_TASK_CORPUS,
         description=f"templates({len(template_records)}) + archetypes({n_rows}) "
         f"via {teacher}, seed={seed}",
+        attrs=cards.corpus_attrs(stats, provenance),
+        card=card,
     )
 
 
@@ -1404,9 +1504,12 @@ async def tune_ab_experiment(
     path = tempfile.mktemp(suffix=".json")
     with open(path, "w") as f:
         json.dump(report, f, indent=2, default=str)
+    card = await cards.upload(cards.ab_report_card(report), card_type="data")
     return publish(
         await flyte.io.File.from_local(path),
         ARTIFACT_AB_REPORT,
+        attrs=cards.ab_report_attrs(report),
+        card=card,
         description=f"{n_tasks} tasks: OOM {p['oom_rate']:.0%}→{t['oom_rate']:.0%}, "
         f"waste {p['median_overprovision_pct'] and round(p['median_overprovision_pct'])}%→"
         f"{t['median_overprovision_pct'] and round(t['median_overprovision_pct'])}%",

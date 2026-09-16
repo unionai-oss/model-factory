@@ -28,22 +28,31 @@ AB_REPORT_KEYS = [
 ]
 
 # tuning-task-corpus: parquet File with exactly these columns.
-CORPUS_COLUMNS = [
-    "task_id",
-    "family",  # data_engineering | data_science | ml_training | batch_inference | etl
-    "source_code",  # the rendered flyte task the policy sees
-    "harness_code",  # the same workload as a plain function, for episode pods
-    "input_profile",  # human-readable input description shown to the policy
-    "params_json",  # sampled template params (ground truth generator state)
-    "generator",  # provenance: "template" or the teacher model that wrote it
-    "prior_json",  # author-declared prior (JSON kwargs; "" = cold start)
-    "history_json",  # past runs [{resources, peak, ok}]; "" = none
-    "true_peak_memory_mib",  # analytic footprint estimate
-    "true_cpu_cores",  # sustained parallel CPU demand
-    "true_gpu_mem_mib",  # VRAM the task needs; 0 = CPU task
-    "duration_s",  # how long the workload holds its footprint
-    "split",  # "train" | "heldout"
-]
+#
+# The docs are DATA, not comments, because the artifact card renders this
+# schema table into every published corpus version — a consumer reading
+# the card in the console gets the same column meanings the code enforces,
+# and a column added without a description shows up as undocumented
+# instead of unexplained.
+CORPUS_COLUMN_DOCS: dict[str, str] = {
+    "task_id": "stable id for the workload within its corpus version",
+    "family": "data_engineering | data_science | ml_training | batch_inference | etl",
+    "source_code": "the rendered flyte task the policy sees",
+    "harness_code": "the same workload as a plain function, for episode pods",
+    "input_profile": "human-readable input description shown to the policy",
+    "params_json": "sampled template params (ground truth generator state); "
+    "archetype rows also carry `label_source` = measured | fitted",
+    "generator": 'provenance: "template" or the teacher model that wrote it',
+    "prior_json": 'author-declared prior (JSON kwargs; "" = cold start)',
+    "history_json": 'past runs [{resources, peak, ok}]; "" = none',
+    "true_peak_memory_mib": "LABEL: peak RSS the workload actually reaches "
+    "(analytic for templates, pod-measured for teacher rows)",
+    "true_cpu_cores": "LABEL: sustained parallel CPU demand",
+    "true_gpu_mem_mib": "LABEL: VRAM the task needs; 0 = CPU task",
+    "duration_s": "how long the workload holds its footprint",
+    "split": '"train" | "heldout" — heldout is the eval split, never train on it',
+}
+CORPUS_COLUMNS = list(CORPUS_COLUMN_DOCS)
 
 # tuner-checkpoint-intermediate: same Dir shape as tuner-checkpoint, but
 # published mid-training by publish_intermediate_checkpoint. A separate
@@ -77,8 +86,32 @@ EVAL_REPORT_KEYS = [
 ]
 
 
-def publish(obj, name: str, description: str = "", kind: str = "data"):
-    """Publish an offloaded asset as a versioned artifact (team hand-off)."""
+def publish(
+    obj,
+    name: str,
+    description: str = "",
+    kind: str = "data",
+    attrs: dict | None = None,
+    card=None,
+):
+    """Publish an offloaded asset as a versioned artifact (team hand-off).
+
+    `card` is a rendered `flyte.artifacts.Card` (see `shared/cards.py`) —
+    the contents documentation that travels WITH the artifact instead of
+    being re-derived by every consumer that downloads it. `attrs` are the
+    same facts as flat strings, for filtering artifacts without opening
+    the card. Both are optional: a publish never fails for lack of
+    documentation.
+    """
     import flyte.artifacts as artifacts
 
-    return artifacts.new(obj, artifacts.Metadata(name=name, description=description, kind=kind))
+    return artifacts.new(
+        obj,
+        artifacts.Metadata(
+            name=name,
+            description=description,
+            kind=kind,
+            attrs=attrs or None,
+            card=card,
+        ),
+    )

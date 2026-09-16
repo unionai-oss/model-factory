@@ -26,7 +26,7 @@ from ..contracts import (
     publish,
 )
 from .. import pricing
-from ..shared import assets
+from ..shared import assets, cards
 from ..shared.reporting import GOOD, MUTED, Reporter, esc, markdown_block, ok_pill, pill
 from ..environment.episodes import run_cluster_episode
 from ..environment.metrics import harness_action_peaks, metrics_available
@@ -538,4 +538,11 @@ async def eval_tuner(
     with open(path, "w") as f:
         json.dump(report, f, indent=2, default=str)
     out = await flyte.io.File.from_local(path)
-    return publish(out, ARTIFACT_EVAL_REPORT, description=f"gate={'PASS' if gate else 'FAIL'}")
+    card = await cards.upload(cards.eval_report_card(report), card_type="data")
+    return publish(
+        out,
+        ARTIFACT_EVAL_REPORT,
+        description=f"gate={'PASS' if gate else 'FAIL'}",
+        attrs=cards.eval_report_attrs(report),
+        card=card,
+    )
