@@ -14,7 +14,7 @@ sim-first environment, reward curriculum, model choice rationale).
 ## The loop
 
 ```
-teacher LLM (qwen38-27b / glm-5-2      build_task_corpus (templates,
+teacher LLM (qwen38-27b / minimax-m3    build_task_corpus (templates,
 on llm-service, in-cluster svc DNS)     analytic footprints)
         │                                       │
 synthetic_data_release: generate ─► AST screen ─► EXECUTION ORACLE
@@ -59,9 +59,10 @@ uv run flyte --config $CFG run main.py synthetic_data_release --n_tasks 10
 ## Teachers (synthetic data)
 
 `llm-service` project apps, llama.cpp with OpenAI-compatible `/v1`:
-`qwen38-27b` (default — cheapest, single L40S) and `glm-5-2`. In-cluster
-tasks reach them via internal service DNS (the public app URL sits behind
-OIDC and answers pods with a login redirect); locally set `RT_TEACHER_URL`.
+`qwen38-27b` (default — cheapest, single L40S), plus the frontier-class
+`minimax-m3` and `qwen35-397b`. In-cluster tasks reach them via internal
+service DNS (the public app URL sits behind OIDC and answers pods with a
+login redirect); locally set `RT_TEACHER_URL`.
 The teacher only writes code — footprint labels always come from the
 execution oracle, because a teacher's guess about resource needs is
 exactly the bias this factory exists to remove.

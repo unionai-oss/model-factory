@@ -176,15 +176,70 @@ def _record_to_row(r: dict, baselines: dict | None = None, ml_hint=None) -> dict
     }
 
 
+def clip_prompt(messages: list[dict], tok, max_tokens: int) -> tuple[list[dict], bool]:
+    """Bound a prompt to `max_tokens`, trimming the CODE and nothing else.
+
+    Current TRL removed `max_prompt_length` from GRPOConfig — prompt length
+    is the dataset's problem now — and unbounded prompts are what put
+    `per_device_batch x seq x 248k vocab` past the GPU (run
+    u5cqz99dmhgmkllmn9w4).
+
+    Where the cut falls matters more than that it happens. The system
+    message carries the instructions and the schema; the user message ends
+    with the input profile and the answer cue. Both must survive. So the
+    trim comes out of the MIDDLE of the source code — the part a longer
+    listing merely repeats — and leaves a visible marker, rather than
+    lopping off either end of the prompt.
+
+    Returns (messages, was_clipped).
+    """
+    n = len(tok.apply_chat_template(messages, tokenize=True, add_generation_prompt=True))
+    if n <= max_tokens:
+        return messages, False
+    # Trim the longest message's code body, halving until it fits.
+    idx = max(range(len(messages)), key=lambda i: len(messages[i]["content"]))
+    body = messages[idx]["content"]
+    lo, hi = 0, len(body)
+    marker = "\n\n# … [source truncated to fit the prompt budget] …\n\n"
+    best = body
+    while lo < hi:
+        keep = (lo + hi) // 2
+        head, tail = body[: keep // 2], body[-(keep - keep // 2) :]
+        trial = list(messages)
+        trial[idx] = {**messages[idx], "content": head + marker + tail}
+        size = len(
+            tok.apply_chat_template(trial, tokenize=True, add_generation_prompt=True)
+        )
+        if size <= max_tokens:
+            best, lo = head + marker + tail, keep + 1
+        else:
+            hi = keep
+    out = list(messages)
+    out[idx] = {**messages[idx], "content": best}
+    return out, True
+
+
 def _records_to_dataset(
-    records: list[dict], baselines: dict | None = None, ml_hints: list | None = None
+    records: list[dict],
+    baselines: dict | None = None,
+    ml_hints: list | None = None,
+    tok=None,
+    max_prompt_tokens: int = 0,
 ):
     from datasets import Dataset
 
     hints = ml_hints or [None] * len(records)
-    return Dataset.from_list(
-        [_record_to_row(r, baselines, ml_hint=h) for r, h in zip(records, hints)]
-    )
+    rows = [_record_to_row(r, baselines, ml_hint=h) for r, h in zip(records, hints)]
+    clipped = 0
+    if tok is not None and max_prompt_tokens:
+        for row in rows:
+            row["prompt"], hit = clip_prompt(row["prompt"], tok, max_prompt_tokens)
+            clipped += hit
+        print(
+            f"[dataset] {clipped}/{len(rows)} prompts clipped to "
+            f"{max_prompt_tokens} tokens ({clipped / max(len(rows), 1):.1%})"
+        )
+    return Dataset.from_list(rows), clipped
 
 
 # Deliberately NOT @flyte.trace'd: traced functions serialize inputs AND
@@ -224,6 +279,78 @@ def _load_model(profile: TunerProfile):
     else:
         model.enable_input_require_grads()
     return model, tok, bf16
+
+
+def vram_estimate_gib(profile: TunerProfile, vocab_size: int) -> dict:
+    """What the GRPO step will need on the GPU, in GiB.
+
+    The term that decides it is the LOGITS tensor:
+    `per_device_batch x (prompt + completion) x vocab`. With Qwen3.5's
+    151,936-token vocab that dwarfs the 4-bit weights — which is how run
+    u5cqz99dmhgmkllmn9w4 got through generation and then died in
+    `accelerator.backward()`.
+
+    Two details make this bigger than it first looks, and the first one is
+    easy to miss:
+
+    - `prepare_model_for_kbit_training` upcasts the non-quantized modules,
+      so the lm_head emits **fp32** logits, not fp16. That is 4 bytes per
+      element, not 2.
+    - the backward holds the gradient as well, and TRL's DAPO loss builds
+      log_softmax/gather temporaries of the same shape.
+
+    CALIBRATION, stated plainly: the multiplier is fitted to ONE observed
+    failure — run u5cqz99dmhgmkllmn9w4, which at batch 8 x 640 tokens had
+    ~12.2 GiB of post-weights headroom on a T4 and OOMed. That puts the
+    real peak above 4.2x the fp32 logits tensor; 4.5 is the next step up. So this is a calibrated
+    lower bound on the dominant term, not a simulator, and it is
+    deliberately biased toward rejecting: a wrong "too small" costs a
+    bigger instance, a wrong "fits" costs a day of a 3-day run.
+    """
+    seq = profile.max_prompt_length + profile.max_completion_length
+    # fp32 — see the upcast note above.
+    logits_gib = profile.per_device_batch * seq * vocab_size * 4 / 1024**3
+    return {
+        "seq_tokens": seq,
+        "logits_gib": logits_gib,
+        # logits + grad + loss temporaries, calibrated against the one
+        # failure we have measured.
+        "needed_gib": logits_gib * 4.5,
+    }
+
+
+def preflight_vram(profile: TunerProfile, vocab_size: int) -> str:
+    """Fail NOW, with numbers, if the step cannot fit the GPU we landed on.
+
+    Returns a one-line summary for the report; raises RuntimeError when the
+    rung does not fit. An OOM an hour into a 3-day run costs a day; this
+    costs a second and names the knob to turn.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return "no CUDA device — skipping VRAM preflight"
+    free_b, total_b = torch.cuda.mem_get_info()
+    est = vram_estimate_gib(profile, vocab_size)
+    free_gib, total_gib = free_b / 1024**3, total_b / 1024**3
+    name = torch.cuda.get_device_name(0)
+    line = (
+        f"{name}: {free_gib:.1f} GiB free of {total_gib:.1f} · "
+        f"step needs ~{est['needed_gib']:.1f} GiB "
+        f"(logits {profile.per_device_batch}x{est['seq_tokens']}x{vocab_size:,} "
+        f"= {est['logits_gib']:.1f} GiB x2.5)"
+    )
+    print(f"[preflight] {line}")
+    if est["needed_gib"] > free_gib:
+        raise RuntimeError(
+            f"Profile {profile.name!r} does not fit this GPU. {line}. "
+            f"The profile asks for {profile.train_gpu} — deploy with "
+            f"RT_TRAIN_GPU={profile.train_gpu} (and "
+            f"RT_TRAIN_MEMORY={profile.train_memory}), or cut "
+            f"per_device_batch / max_prompt_length / max_completion_length. "
+            f"Sequence length and batch scale this LINEARLY."
+        )
+    return line
 
 
 def _report_html(profile: TunerProfile, rows: list[dict], meta: dict | None = None) -> str:
@@ -322,16 +449,43 @@ def _report_html(profile: TunerProfile, rows: list[dict], meta: dict | None = No
 
 
 @flyte.trace
-async def _upload_checkpoint(out_dir: str, manifest: dict) -> "flyte.io.Dir":
-    """Write the manifest and upload the checkpoint dir (traced — the span
-    marks the write/upload). Traced functions serialize their INPUTS as
-    literals, so only plain data crosses this boundary: passing the
-    trainer object here pickled the accelerate-wrapped model and died with
-    PicklingError (hit for real on run ullwh6kd4s727k5jvm59).
+async def _upload_checkpoint(out_dir: str) -> "flyte.io.Dir":
+    """Upload the checkpoint dir (traced — the span marks the upload).
+
+    Takes ONLY a path. Traced functions serialize their inputs as literals
+    and the runtime caps that at 10 MB, so nothing sized by the training
+    run may cross this boundary:
+
+    - passing the trainer object pickled the accelerate-wrapped model and
+      died with PicklingError (run ullwh6kd4s727k5jvm59);
+    - passing the manifest dict died with InlineIOMaxBytesBreached at
+      17.2 MB (run u6q4bg4b89l7v8p54dx7), because the manifest carries
+      log_history and that grows one entry per step — fine at 1,200 steps,
+      fatal at 26,000. The manifest is written to the directory by the
+      caller now, so it travels INSIDE the uploaded Dir where no such limit
+      applies.
+
+    The rule this encodes: a traced argument must be O(1) in the size of
+    the run.
     """
-    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=2)
     return await flyte.io.Dir.from_local(out_dir)
+
+
+def decimate(series: list[dict], keep: int = 750) -> list[dict]:
+    """Thin a per-step series to at most `keep` evenly spaced points,
+    always retaining the first and last.
+
+    The manifest is read by eval and rendered by the lineage app's artifact
+    card; both want the SHAPE of the curve, and neither is improved by
+    26,000 points. The full series is written alongside it as
+    `training_history.json`, so nothing is actually lost.
+    """
+    n = len(series)
+    if n <= keep:
+        return series
+    step = (n - 1) / (keep - 1)
+    idx = sorted({int(round(i * step)) for i in range(keep)} | {0, n - 1})
+    return [series[i] for i in idx]
 
 
 def find_trl_checkpoint(root: str) -> str | None:
@@ -480,16 +634,28 @@ async def train_tuner(
         n_hints = sum(1 for h in ml_hints if h is not None)
         meta["gbt_hints"] = f"{n_hints}/{len(records)} (out-of-fold)"
         print(f"[gbt-hint] {n_hints}/{len(records)} train contexts carry GBT hints")
-    dataset = _records_to_dataset(records, baselines=baselines, ml_hints=ml_hints)
-    meta["n_contexts"] = len(records)
-
+    # Model first: the tokenizer is what bounds the prompts, and TRL no
+    # longer does that for us (max_prompt_length left GRPOConfig).
     model, tok, bf16 = _load_model(profile)
+    dataset, n_clipped = _records_to_dataset(
+        records,
+        baselines=baselines,
+        ml_hints=ml_hints,
+        tok=tok,
+        max_prompt_tokens=profile.max_prompt_length,
+    )
+    meta["n_contexts"] = len(records)
+    meta["prompts_clipped"] = f"{n_clipped}/{len(records)}"
     import torch
 
     meta["device"] = (
         torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
     )
     meta["dtype"] = "bf16" if bf16 else "fp16"
+    # Check the rung against the GPU it actually landed on, before any of
+    # the 3-day budget is spent. Weights are already resident here, so
+    # mem_get_info() reports the headroom the step will really have.
+    meta["vram"] = preflight_vram(profile, len(tok))
     await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
     if profile.lora_mlp:
@@ -577,6 +743,10 @@ async def train_tuner(
         per_device_train_batch_size=profile.per_device_batch,
         num_generations=profile.num_generations,
         max_completion_length=profile.max_completion_length,
+        # NOTE: no max_prompt_length here — current TRL removed it from
+        # GRPOConfig and made prompt length the dataset's responsibility.
+        # We enforce profile.max_prompt_length in `clip_prompt` instead,
+        # which also lets us choose WHERE the cut falls.
         learning_rate=profile.learning_rate,
         temperature=1.0,
         # 2026 small-model GRPO consensus (DAPO / Dr.GRPO line): no KL
@@ -765,13 +935,28 @@ async def train_tuner(
         "final_metrics": {
             "mean_reward_first": mean_rewards[0] if mean_rewards else None,
             "mean_reward_last": mean_rewards[-1] if mean_rewards else None,
-            "log_history": history,
+            "logged_steps": len(history),
+            # Decimated: these are read for their SHAPE (eval's first→last
+            # summary, the lineage card's reward chart) and a 26,000-point
+            # series serves that no better than 750 — while being what blew
+            # the trace-input limit on run u6q4bg4b89l7v8p54dx7.
+            "log_history": decimate(history),
             # Per-step means of every reward component — the shape
             # diagnosis travels with the checkpoint.
-            "component_history": reward_fn.component_history,
+            "component_history": decimate(reward_fn.component_history),
         },
     }
-    ckpt = await _upload_checkpoint(out_dir, manifest)
+    # Written HERE, not inside the traced upload: the manifest is sized by
+    # the run and traced inputs are capped at 10 MB. Inside the Dir it has
+    # no such limit, and the full un-decimated series rides along beside it.
+    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+    with open(os.path.join(out_dir, "training_history.json"), "w") as f:
+        json.dump(
+            {"log_history": history, "component_history": reward_fn.component_history},
+            f,
+        )
+    ckpt = await _upload_checkpoint(out_dir)
     return publish(
         ckpt,
         ARTIFACT_TUNER_CHECKPOINT,

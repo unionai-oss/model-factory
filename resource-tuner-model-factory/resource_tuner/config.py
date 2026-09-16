@@ -134,6 +134,36 @@ class TunerProfile:
     cluster_episode_fraction: float
     # on-cluster validation episodes in eval
     eval_cluster_episodes: int
+    # Prompt budget, in TOKENS. Load-bearing twice over, which is why it is
+    # a profile knob and not left to the library default:
+    #
+    # CORRECTNESS — current TRL REMOVED max_prompt_length from GRPOConfig
+    # and made prompt length the dataset's job, so nothing bounds a prompt
+    # unless we do. `clip_prompt` enforces this budget and, crucially,
+    # chooses where the cut falls: out of the middle of the source code,
+    # never off either end, so the system instructions and the answer cue
+    # always survive. (An older TRL truncated LEFT at 512 by default, which
+    # would have silently eaten the instructions — worth knowing if this
+    # ever runs against a pinned-back version.)
+    #
+    # MEMORY — the GRPO backward pass holds a B x T x vocab logits tensor
+    # AND its gradient, and Qwen3.5's vocab is 151,936. Prompt length is
+    # therefore the dominant term in whether a rung fits its GPU. Pinning
+    # it makes the requirement explicit instead of an accident of whatever
+    # the corpus happens to contain.
+    max_prompt_length: int = 1024
+    # ── GPU sizing ──
+    # The accelerator this rung NEEDS, as a flyte.Resources gpu string.
+    # Recorded per profile because it is a property of the arm, not of the
+    # deployment: "ambitious" was written as a T4 rung when it meant a
+    # 1.7B model, and quietly became wrong when it moved to 4B-class with a
+    # 151,936-token vocab. The trainer env still takes its actual request
+    # from RT_TRAIN_GPU at deploy time, but `preflight_vram` checks the GPU
+    # it actually landed on against what the knobs require, so a mismatch
+    # fails in seconds with the numbers rather than OOMing in the backward
+    # pass an hour later.
+    train_gpu: str = "T4:1"
+    train_memory: str = "10Gi"
     # ── checkpointing (defaults off; long runs turn these on) ──
     # intra-task cadence: TRL saves full trainer state every N steps and
     # the flyte Checkpoint uploads it, so a retried attempt resumes
@@ -255,10 +285,24 @@ SMOKE_CKPT = _dc.replace(
 # committing a 3-day run to the model.
 PROBE_QWEN35 = None  # defined after AMBITIOUS (needs _dc)
 
-# The most ambitious rung: 0.5M-row corpus, ~3-day budget on a SINGLE T4
-# (minimal GPU spend), 4B-class model via QLoRA. Qwen3.5-4B first; if the
-# known TRL-multimodal blocker (trl#5269) still bites, the text-only
-# Qwen3-4B is the 4B-class fallback.
+# The most ambitious rung: ~3-day budget, 4B-class model via QLoRA.
+# Qwen3.5-4B first; if the known TRL-multimodal blocker (trl#5269) still
+# bites, the text-only Qwen3-4B is the 4B-class fallback.
+#
+# GPU: L40S, not T4 (changed 2026-09-11 after run u5cqz99dmhgmkllmn9w4
+# OOMed in `accelerator.backward()`). This rung was written as "minimal GPU
+# spend on a single T4" when the arm was a 1.7B model. Two things broke
+# that: the model is now 4B-class with a 151,936-token vocab, and fixing
+# the silent 512-token prompt truncation (below) triples the sequence the
+# logits tensor is built over. Sized by `vram_estimate_gib`: batch 8 x
+# 1,664 tokens x 151,936 vocab in fp32 needs ~34 GiB for logits + gradient
+# + loss temporaries, which clears neither the T4 (14.7) nor the L4 (24).
+#
+# The cheaper alternative was halving num_generations and per_device_batch
+# to fit an L4 at $0.512/hr, but num_generations IS the GRPO group size —
+# cutting it to 4 weakens every advantage estimate and stops this being
+# the same arm as the previous ambitious run. Paying $1.634/hr to keep the
+# arm intact is the better trade for a comparison experiment.
 AMBITIOUS = TunerProfile(
     name="ambitious",
     base_model=MODEL_LADDER["m-qwen35"],
@@ -266,9 +310,26 @@ AMBITIOUS = TunerProfile(
     eval_contexts=512,
     reward_stage="c-cost",  # round-7's best arm on the business metric
     max_steps=1200,
-    num_generations=8,
-    per_device_batch=8,
+    # Group size 4, not 8 — forced by the VRAM arithmetic once the prompt
+    # truncation was fixed, and the preflight on run uzd8ktrh2qqjlqgzgqfx
+    # measured the real cost: Qwen3.5's tokenizer is ~248k tokens (NOT the
+    # 151,936 of Qwen3, which is what I first assumed), so batch 8 x 1,664
+    # tokens needs ~55 GiB and does not fit even one L40S's 44.
+    #
+    # Given the choice between a shorter prompt and a smaller group, the
+    # group loses: a left-truncated prompt is CORRUPT input — it drops the
+    # system instructions entirely — whereas 4 completions per group is a
+    # perfectly ordinary GRPO configuration, just a noisier advantage
+    # estimate. Never trade data integrity for batch size.
+    num_generations=4,
+    per_device_batch=4,
     max_completion_length=128,
+    # Round-13/14 corpora carry real library code, so prompts run past the
+    # 512 TRL would have silently left-truncated to. 1536 keeps the whole
+    # prompt for the overwhelming majority of rows.
+    max_prompt_length=1536,
+    train_gpu="L40s:1",
+    train_memory="32Gi",
     learning_rate=5e-6,
     lora_r=32,
     use_qlora=True,
@@ -360,10 +421,55 @@ R11_FULLFT_14B = _dc.replace(
     artifact_checkpoint_every=0,
 )
 
+# The 9B rung of the Qwen3.5 tier — the biggest model this factory has put
+# through GRPO. Same arm as AMBITIOUS in every respect except size, so the
+# pair is a clean capacity comparison on the round-14 100k corpus.
+#
+# Sizing: QLoRA keeps 9B of weights near ~6 GiB in nf4, and the logits term
+# is unchanged by parameter count — it is batch x sequence x the same
+# ~248k vocab — so the step lands around 34 GiB and still clears one
+# L40S's 44. `preflight_vram` re-checks that against the real device before
+# spending any of the budget. Step time should be ~2x the 4B rung's
+# measured 4.5s on L40S, so 1200 steps is a few hours, not days.
+AMBITIOUS_9B = _dc.replace(
+    AMBITIOUS,
+    name="ambitious-9b",
+    base_model=MODEL_LADDER["l-qwen35"],
+)
+
+# The 9B rung given a real training budget: ~2 days of wall clock.
+#
+# Sized from measurement, not guesswork — run uncglj5xdhrk9rn7597j clocked
+# 5.8s/step for this exact arm on an L40S. 48h is 29,800 steps at that
+# rate; 26,000 leaves ~10% for checkpoint I/O and step-time drift.
+#
+# Two knobs have to move WITH max_steps, and both are easy to miss:
+#
+# - save_steps: at the 25 inherited from AMBITIOUS, 26,000 steps would
+#   upload full trainer state 1,040 times. The cadence that is cheap
+#   insurance on a 1,200-step run is a tax on a 26,000-step one, so it
+#   scales to every 500 steps (~52 saves, still ≤45min of lost work on a
+#   retry).
+# - train_contexts: AMBITIOUS subsamples the corpus to 16,384 rows, which
+#   made sense when the run was 1,200 steps. At batch 4 / ngen 4 GRPO
+#   consumes ONE unique prompt per step, so 26,000 steps would recycle that
+#   subsample ~1.6x while 108,000 real rows sat unused. Raised to the full
+#   train split: every step now sees a prompt the policy has never seen.
+AMBITIOUS_9B_2D = _dc.replace(
+    AMBITIOUS_9B,
+    name="ambitious-9b-2d",
+    max_steps=26_000,
+    train_contexts=108_000,
+    save_steps=500,
+    artifact_checkpoint_every=2_000,
+)
+
 PROFILES: dict[str, TunerProfile] = {
     p.name: p
     for p in (
-        SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, PROBE_QWEN35,
+        SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, AMBITIOUS_9B,
+        AMBITIOUS_9B_2D,
+        PROBE_QWEN35,
         *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT, R11_FULLFT_4B,
         R11_FULLFT_8B, R11_FULLFT_14B,
     )
