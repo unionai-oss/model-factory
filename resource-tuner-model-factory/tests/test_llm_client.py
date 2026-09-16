@@ -38,7 +38,7 @@ def test_api_key_switches_to_public_endpoint_with_bearer(monkeypatch):
     monkeypatch.setenv("LLM_SERVICE_API_KEY", "sekrit")
     url = resolve_teacher("qwen38-27b")
     assert url == "https://qwen38-27b-llm-service-development.apps.demo.hosted.unionai.cloud"
-    assert resolve_teacher("glm-5-2").startswith("https://glm-5-2-")
+    assert resolve_teacher("minimax-m3").startswith("https://minimax-m3-")
     assert _headers()["Authorization"] == "Bearer sekrit"
 
 
@@ -54,7 +54,7 @@ def test_default_and_explicit_url_pass_through():
 def test_env_override_wins_even_over_api_key(monkeypatch):
     monkeypatch.setenv("LLM_SERVICE_API_KEY", "sekrit")
     monkeypatch.setenv("RT_TEACHER_URL", "http://tunnel:9999/")
-    assert resolve_teacher("glm-5-2") == "http://tunnel:9999"
+    assert resolve_teacher("minimax-m3") == "http://tunnel:9999"
 
 
 def test_unknown_teacher_fails_loudly():

@@ -64,8 +64,11 @@ machinery problem.
 - Cluster project: [resource-tuner-model-factory / development](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs)
 - Metrics plugin: [flyteplugins-union @ niels/get-metrics](https://github.com/unionai/flyteplugins-union/tree/niels/get-metrics)
 - Teacher LLMs: [qwen38-27b](https://demo.hosted.unionai.cloud/v2/domain/development/project/llm-service/apps/qwen38-27b) ·
-  [glm-5-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/llm-service/apps/glm-5-2) ·
+  [minimax-m3](https://demo.hosted.unionai.cloud/v2/domain/development/project/llm-service/apps/minimax-m3) ·
+  [qwen35-397b](https://demo.hosted.unionai.cloud/v2/domain/development/project/llm-service/apps/qwen35-397b) ·
   [llm-service source](https://github.com/unionai/internal-union-apps/tree/main/llm-service)
+  (`glm-5-2` retired from the roster 2026-09-15; rounds 12-14 corpora were
+  generated with it in the pool)
 - PRs: [#6 project + reorg](https://github.com/unionai-oss/model-factory/pull/6) ·
   [#7 experiments + dark loop + dashboard](https://github.com/unionai-oss/model-factory/pull/7)
 - Upstream blockers for Qwen3.5 RL: [trl#5269](https://github.com/huggingface/trl/issues/5269) ·
