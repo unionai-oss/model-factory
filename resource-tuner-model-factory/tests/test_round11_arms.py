@@ -95,3 +95,42 @@ def test_record_row_uses_hint_for_prompt_and_reward_reference():
     plain = _record_to_row(records[0], baselines=None)
     assert plain["baseline_cost_per_hr"] is None
     assert "Statistical estimate" not in plain["prompt"][1]["content"]
+
+
+def test_fullft_1d_arm_fits_trl_and_the_l40s():
+    """The 1-day full-FT rung, pinned to the two things that broke it.
+
+    Run umnzhngvwbf9d6fbhwfz CUDA-OOMed at batch 4 on a 44.39 GiB L40S;
+    the fix must keep the group size TRL requires while fitting the card.
+    """
+    from resource_tuner.config import get_profile
+    from resource_tuner.training.grpo import vram_estimate_gib
+
+    p = get_profile("ambitious-fullft-4b-1d")
+    assert p.use_lora is False and p.use_qlora is False, "this rung is a FULL fine-tune"
+
+    # TRL: generation_batch_size must be divisible by num_generations.
+    gen_batch = p.per_device_batch * p.gradient_accumulation_steps
+    assert gen_batch % p.num_generations == 0, (gen_batch, p.num_generations)
+
+    # ...and the step must fit the L40S with the full-FT state modelled.
+    # ~35 GiB is the headroom left after 4B of bf16 weights are resident.
+    est = vram_estimate_gib(p, vocab_size=151_936, n_params=4_022_000_000)
+    assert est["state_gib"] > 0, "full FT must carry a grads/optimizer term"
+    assert est["needed_gib"] < 35, f"needs {est['needed_gib']:.1f} GiB"
+
+
+def test_vram_estimate_rejects_the_config_that_actually_oomed():
+    """Regression: batch 4 at 1,536 prompt tokens must NOT pass preflight."""
+    import dataclasses
+
+    from resource_tuner.config import get_profile
+    from resource_tuner.training.grpo import vram_estimate_gib
+
+    died = dataclasses.replace(
+        get_profile("ambitious-fullft-4b-1d"),
+        per_device_batch=4,
+        gradient_accumulation_steps=1,
+    )
+    est = vram_estimate_gib(died, vocab_size=151_936, n_params=4_022_000_000)
+    assert est["needed_gib"] > 35, "the estimator would let umnzhngvwbf9d6fbhwfz run again"
