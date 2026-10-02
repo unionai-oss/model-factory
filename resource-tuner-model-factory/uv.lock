@@ -10,9 +10,6 @@ resolution-markers = [
     "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
-[manifest]
-overrides = [{ name = "flyte", specifier = ">=2.7.0,<2.8.0" }]
-
 [[package]]
 name = "accelerate"
 version = "1.14.0"
@@ -711,7 +708,7 @@ wheels = [
 
 [[package]]
 name = "flyte"
-version = "2.7.0"
+version = "2.10.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -739,12 +736,12 @@ dependencies = [
     { name = "toml" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c0/41/43e8ada46b08266e4eb27726addf4137c4e2e3f62c0298ddd45d43c8281a/flyte-2.7.0-py3-none-any.whl", hash = "sha256:b25a9204dc9ec8aadd80b58b7c51ebb76053c275b1e939d704c73ac4f2842a3c", size = 1061766, upload-time = "2026-09-03T19:28:06.182Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/5b/31fdadfd224bfdb84df343717733852ddd2e2a74aca27dca280176812ed2/flyte-2.10.6-py3-none-any.whl", hash = "sha256:a84c25fb392120b3204368373c47b8aae89ec6d5907b20c09dd2d37b57fb1eed", size = 1129516, upload-time = "2026-10-02T01:04:11.474Z" },
 ]
 
 [[package]]
 name = "flyteidl2"
-version = "2.0.45"
+version = "2.0.50"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "googleapis-common-protos" },
@@ -753,12 +750,12 @@ dependencies = [
     { name = "protovalidate" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8d/2c/c9255865f121d485988167002ebe9b5c2d22440abee02db620d369bf636f/flyteidl2-2.0.45-py3-none-any.whl", hash = "sha256:6d30c90926aa7d9a50a9dbb16fc639185c1df95fa56865e7d955b4cb4b91adec", size = 378430, upload-time = "2026-09-01T04:28:48.287Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/e9/b2adf0dadf127d1443e7785dbca0e217f23186630a3d52a39a54070a0d96/flyteidl2-2.0.50-py3-none-any.whl", hash = "sha256:33056d03e3b87b1539973b3c312894f4d0d20a9b547afeef3891df9e41a03f8a", size = 384743, upload-time = "2026-09-24T23:33:16.437Z" },
 ]
 
 [[package]]
 name = "flyteplugins-union"
-version = "0.10.0"
+version = "0.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
@@ -771,13 +768,13 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rich-click" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/67/a5d3bf19d778f163abc0e6fc69fac2d6677d34dd124736bb9c477c03998f/flyteplugins_union-0.10.0.tar.gz", hash = "sha256:59dfcd6eb43b62ab1cb870c755fe046255c4117e050983e9a096ea7aa8f904b4", size = 297986, upload-time = "2026-09-03T19:52:03.544Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/f8/2ba7fdb5d33a0fd57a1c0b93c4458c1336aa3fd4b170bd4295d7d83b7d12/flyteplugins_union-0.15.1.tar.gz", hash = "sha256:de63ec094c18dd20da96034ffb4027d984323e50d09a62f6e2d38a1e15eb092e", size = 448921, upload-time = "2026-10-01T17:50:32.37Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/71/6c/a95a4f401fd9d806113aeb98378c9adc55eb966f13efa12b944c1e1e3258/flyteplugins_union-0.10.0-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:80c4a74bc8e883f046591b49a4eb236c7b19f9944379a25e88d8b9c7db806228", size = 36051987, upload-time = "2026-09-03T19:51:47.364Z" },
-    { url = "https://files.pythonhosted.org/packages/e2/59/8d7268765a4f611fd0d56206673119a6f2b58c67f90bd1c778cbed9c3ea4/flyteplugins_union-0.10.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:b6d328800e8a52a4f90e0a4829a946406a5387b532488e5bf78a91d73cbb717c", size = 34147502, upload-time = "2026-09-03T19:51:51.045Z" },
-    { url = "https://files.pythonhosted.org/packages/6a/59/789631130071ebb29734fc77e8f59155352b45b7d4f5dadee4344db7bfb9/flyteplugins_union-0.10.0-py3-none-manylinux2014_aarch64.whl", hash = "sha256:786ca779d0c81116b5cae2f59e6682396cf95eaa50419ac02eece71b620df65b", size = 19185733, upload-time = "2026-09-03T19:51:54.197Z" },
-    { url = "https://files.pythonhosted.org/packages/f6/d7/206eea864ddc5eb016ad64f691bc2861e3b8eedf4e17afdc2bd5ccdebb8d/flyteplugins_union-0.10.0-py3-none-manylinux2014_x86_64.whl", hash = "sha256:b51d29cfc5dd1fcd9e72ffee76a85c57f713d5d08c88407f497d5b58b384c52f", size = 21577451, upload-time = "2026-09-03T19:51:57.35Z" },
-    { url = "https://files.pythonhosted.org/packages/42/b2/c68a571d0029d24d77f161905c15bbca2722637bd841c29ca475e27965c2/flyteplugins_union-0.10.0-py3-none-win_amd64.whl", hash = "sha256:5e38eefc98efce2abc3e1f326ca572ecd6e16c7ecc12e654c325975503a57e82", size = 34811003, upload-time = "2026-09-03T19:52:01.097Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/1d/6bc3b90372b2b8e8768d5e1f9fd3670c140627bcdacd6f47f7670fef3f8b/flyteplugins_union-0.15.1-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:c34acf0e688f21cfabc9afdd437462ce21d02333ea238d191b16d6dbfaa5a54a", size = 36223520, upload-time = "2026-10-01T17:50:15.911Z" },
+    { url = "https://files.pythonhosted.org/packages/43/9b/3b11dc4a3823463c4a739b5616c2138bb6238618273e20ed69be7e55cb78/flyteplugins_union-0.15.1-py3-none-macosx_11_0_arm64.whl", hash = "sha256:b364f5ab617502217686cac0ced5a1d174ea4786a919540948efb3224a373e9c", size = 34319035, upload-time = "2026-10-01T17:50:19.156Z" },
+    { url = "https://files.pythonhosted.org/packages/01/2f/784e59d12db14c0565cf5827763f1e5aed10c57206134fc487ac49c175cf/flyteplugins_union-0.15.1-py3-none-manylinux2014_aarch64.whl", hash = "sha256:059d82e9afe38e9e2705ac4b7c553714844b1270e00cc0ba453c6ea4d9b19477", size = 19521133, upload-time = "2026-10-01T17:50:22.285Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/8a/30bba9718502c5c1bbb774eb7a7f5ee92802e46d2f90e7b8105d1f19ed8c/flyteplugins_union-0.15.1-py3-none-manylinux2014_x86_64.whl", hash = "sha256:00737b38d1324cf2c50280580594836e07c3701d423c0558c57ff1517e421883", size = 21950493, upload-time = "2026-10-01T17:50:26.386Z" },
+    { url = "https://files.pythonhosted.org/packages/21/9e/89dfd4d84ff459878bc458ca5889376e25c95c54f045c64ba7a4f99c85d3/flyteplugins_union-0.15.1-py3-none-win_amd64.whl", hash = "sha256:00e33e948e41657306710c6ea34365228ffefe49ffe137a22a3e2d6d391487ed", size = 34982533, upload-time = "2026-10-01T17:50:30.272Z" },
 ]
 
 [[package]]
@@ -2480,8 +2477,8 @@ dev = [
 requires-dist = [
     { name = "accelerate", marker = "extra == 'train'", specifier = ">=0.34" },
     { name = "datasets", marker = "extra == 'train'", specifier = ">=3.2" },
-    { name = "flyte", specifier = ">=2.7.0,<2.8.0" },
-    { name = "flyteplugins-union", specifier = ">=0.10.0" },
+    { name = "flyte", specifier = ">=2.10.0" },
+    { name = "flyteplugins-union", specifier = ">=0.12.0" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "peft", marker = "extra == 'train'", specifier = ">=0.13" },
     { name = "pyarrow", specifier = ">=17" },

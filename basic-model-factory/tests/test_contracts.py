@@ -1,28 +1,43 @@
-"""The inter-team contract: artifact names and payload schemas.
+"""The inter-team contract: artifact names, payload schemas, partitioning.
 
-Artifacts are the ONLY interface between teams, so the registry and payload
-shapes are load-bearing — renaming an artifact or dropping a schema column
-breaks another team's OnArtifact trigger without any import error.
+Artifacts are the ONLY interface between teams, and the factory graph is
+declared against these exact names — renaming one breaks a build's output
+declaration without any import error.
 """
-
-import pytest
 
 from model_factory import contracts
 
 
+ARTIFACT_NAMES = [
+    contracts.ARTIFACT_SEED_TASKS,
+    contracts.ARTIFACT_SYNTHETIC,
+    contracts.ARTIFACT_RL_DATASET,
+    contracts.ARTIFACT_CHECKPOINT,
+    contracts.ARTIFACT_EVAL_REPORT,
+    contracts.ARTIFACT_PROMOTED,
+]
+
+
 def test_artifact_names_are_unique_and_url_safe():
-    names = [
-        contracts.ARTIFACT_RL_DATASET,
-        contracts.ARTIFACT_SYNTHETIC,
-        contracts.ARTIFACT_CHECKPOINT,
-        contracts.ARTIFACT_EVAL_REPORT,
-        contracts.ARTIFACT_PROMOTED,
-        contracts.ARTIFACT_INFERENCE_ENDPOINT,
-    ]
-    assert len(set(names)) == len(names)
-    # OnArtifact trigger names end up in URLs and label selectors.
-    for n in names:
+    assert len(set(ARTIFACT_NAMES)) == len(ARTIFACT_NAMES)
+    # Artifact names end up in URLs, k8s labels and factory build declarations.
+    for n in ARTIFACT_NAMES:
         assert n == n.lower() and " " not in n
+
+
+def test_endpoint_is_not_one_of_the_artifacts():
+    # The serve node is an app, never published to the registry; treating it as
+    # an artifact is what the old `inference-endpoint` artifact did.
+    assert contracts.ENDPOINT_APP not in ARTIFACT_NAMES
+
+
+def test_endpoint_name_is_a_dns_label():
+    # factory.serve() requires the app's name to be lowercase letters, digits
+    # and '-', because it becomes a k8s/DNS label.
+    name = contracts.ENDPOINT_APP
+    assert name == name.lower()
+    assert all(c.isalnum() or c == "-" for c in name)
+    assert name[0].isalnum() and name[-1].isalnum()
 
 
 def test_dataset_schema_names_the_split_column():
@@ -37,18 +52,12 @@ def test_checkpoint_manifest_names_base_model():
     assert "base_model" in contracts.CHECKPOINT_MANIFEST_KEYS
 
 
-def test_inference_endpoint_round_trips_through_json():
-    ep = contracts.InferenceEndpoint(
-        url="https://app.example.com",
-        base_model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
-        checkpoint_path="s3://bucket/ckpt",
-        checkpoint_run="uwbwvdrsf2gzj27gmvgp",
-    )
-    assert contracts.InferenceEndpoint.from_json(ep.to_json()) == ep
+def test_eval_report_names_the_gate_field():
+    # promote_checkpoint refuses to promote on auto_gate_passed being False.
+    assert "auto_gate_passed" in contracts.EVAL_REPORT_KEYS
 
 
-def test_inference_endpoint_rejects_a_shape_drifted_payload():
-    # A payload written by a newer producer with renamed fields must fail
-    # loudly at the consumer, not half-populate.
-    with pytest.raises(TypeError):
-        contracts.InferenceEndpoint.from_json('{"url": "x", "endpoint": "y"}')
+def test_partition_dimension_is_an_identifier():
+    # A factory partition dimension must be a valid Python identifier: the
+    # value is injected into a task parameter of the same name.
+    assert contracts.PARTITION_DATE.isidentifier()
