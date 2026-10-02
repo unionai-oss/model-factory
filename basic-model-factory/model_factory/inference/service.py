@@ -1,4 +1,10 @@
-"""The inference serving app: loads policy checkpoints, serves generations.
+"""The inference serving app: serves the model the factory bound to it.
+
+The model comes in as an app *parameter* bound to the `promoted-model`
+artifact: `factory.serve("mf-inference").using(inference_app_env,
+model=promoted)` deploys this app with the exact artifact version the
+materialization resolved, and Flyte downloads it before the app starts.
+`/reload` is kept for pointing the app at some other checkpoint by hand.
 
 Endpoints:
 - GET  /health    → {loaded, base_model, checkpoint_path, loading, reload_error}
@@ -36,7 +42,7 @@ from ..config import (
     inference_resources,
     REQUIRE_APP_AUTH,
 )
-from ..contracts import ARTIFACT_CHECKPOINT
+from ..contracts import ARTIFACT_PROMOTED
 from ..shared import assets
 from ..shared.images import gpu_image
 
@@ -59,9 +65,31 @@ _load_lock = asyncio.Lock()
 _bg_tasks: set = set()
 
 
+#: Name of the app parameter the factory binds the model artifact to.
+MODEL_PARAM = "model"
+
+
+def bound_model_path() -> str | None:
+    """Local path of the artifact the factory bound to this app, if any.
+
+    `flyte.app.get_parameter` returns a path relative to the app's working
+    directory (Flyte has already downloaded the artifact), so this is a local
+    directory, not an object-store URI. Returns None when the app was deployed
+    without a bound parameter — e.g. a plain `flyte deploy` of the app env.
+    """
+    try:
+        value = flyte.app.get_parameter(MODEL_PARAM)
+    except Exception:
+        return None
+    if value and os.path.exists(value):
+        return os.path.abspath(value)
+    return None
+
+
 async def _resolve_latest_checkpoint() -> str:
+    """Fallback model source: the newest `promoted-model` in the registry."""
     v = await assets.latest(
-        ARTIFACT_CHECKPOINT,
+        ARTIFACT_PROMOTED,
         project=os.environ.get("MF_PROJECT", "model-factory"),
         domain=os.environ.get("MF_DOMAIN", "development"),
     )
@@ -101,7 +129,13 @@ async def _load(checkpoint_path: str) -> dict:
 
     import torch
 
-    local = await flyte.io.Dir.from_existing_remote(checkpoint_path).download()
+    # A bound artifact parameter is already on local disk; anything else is a
+    # remote URI that still has to come down.
+    local = (
+        checkpoint_path
+        if os.path.isdir(checkpoint_path)
+        else await flyte.io.Dir.from_existing_remote(checkpoint_path).download()
+    )
     with open(os.path.join(local, "manifest.json")) as f:
         manifest = json.load(f)
     base_model = manifest["base_model"]
@@ -123,12 +157,17 @@ async def _load(checkpoint_path: str) -> dict:
     return {"base_model": base_model, "checkpoint_path": checkpoint_path}
 
 
+async def _default_checkpoint() -> str:
+    """What to serve when the caller named nothing: the bound artifact first."""
+    return bound_model_path() or await _resolve_latest_checkpoint()
+
+
 async def _ensure_loaded(checkpoint_path: str | None) -> None:
     async with _load_lock:
         if checkpoint_path and checkpoint_path != _state["checkpoint_path"]:
             await _load(checkpoint_path)
         elif _state["model"] is None:
-            await _load(checkpoint_path or await _resolve_latest_checkpoint())
+            await _load(checkpoint_path or await _default_checkpoint())
 
 
 @app.get("/health")
@@ -140,6 +179,7 @@ async def health() -> JSONResponse:
             "checkpoint_path": _state["checkpoint_path"],
             "loading": _state["loading"],
             "reload_error": _state["reload_error"],
+            "bound_model": bound_model_path(),
         }
     )
 
@@ -155,7 +195,7 @@ async def reload(body: dict | None = None) -> JSONResponse:
     """
     body = body or {}
     try:
-        path = body.get("checkpoint_path") or await _resolve_latest_checkpoint()
+        path = body.get("checkpoint_path") or await _default_checkpoint()
     except Exception as e:
         return JSONResponse(
             {"ok": False, "error": f"could not resolve checkpoint: {e}"}, status_code=500
@@ -270,13 +310,26 @@ inference_app_env = FastAPIAppEnvironment(
         "MF_PROJECT": APP_PROJECT,
         "MF_DOMAIN": APP_DOMAIN,
     },
-    description="Serves the latest policy-checkpoint for rollouts and evals (adapter toggleable)",
+    parameters=[
+        # The factory rebinds this to the version it resolved on every
+        # materialization; `version=None` means a plain `flyte deploy` of this
+        # env still comes up, on whatever the newest promoted model is.
+        #
+        # Deliberately no `mount=`: a mount path outside the app's writable
+        # working directory crash-loops the container, and `get_parameter`
+        # already hands back the downloaded path.
+        flyte.app.Parameter(
+            name=MODEL_PARAM,
+            value=flyte.app.ArtifactValue(name=ARTIFACT_PROMOTED),
+        )
+    ],
+    description="Serves the promoted model bound by the factory (adapter toggleable)",
 )
 
 
 @inference_app_env.on_startup
 async def _init() -> None:
-    """Init control-plane access; never raise (would 500 every request)."""
+    """Init control-plane access and preload; never raise (would 500 every request)."""
     try:
         await flyte.init_in_cluster.aio(
             org=os.environ.get("MF_ORG") or None,
@@ -288,3 +341,24 @@ async def _init() -> None:
             await flyte.init_in_cluster.aio()
         except Exception:
             pass
+
+    # Warm the bound model in the background. Loading inline would hold up
+    # readiness for the whole weight load, and /health is exactly what callers
+    # poll to watch it; a failure here must only show up in `reload_error`.
+    bound = bound_model_path()
+    if not bound:
+        return
+
+    async def _preload() -> None:
+        try:
+            _state["loading"] = bound
+            async with _load_lock:
+                await _load(bound)
+        except Exception as e:
+            _state["reload_error"] = f"preload {type(e).__name__}: {e}"
+        finally:
+            _state["loading"] = None
+
+    task = asyncio.create_task(_preload())
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)

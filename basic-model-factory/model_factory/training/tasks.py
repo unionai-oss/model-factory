@@ -1,9 +1,9 @@
 """Model training team: GRPO with verifiable code-execution rewards.
 
-Consumes: `rl-tasks-dataset` (OnArtifact trigger — a new approved dataset
-version starts a training run automatically where the backend supports
-artifact events). Publishes: `policy-checkpoint`. The team never calls data
-engineering or eval code; artifacts are the only interface.
+Consumes `rl-tasks-dataset`, produces `policy-checkpoint` — but neither the
+wiring nor the publishing lives here: the factory declares this task as the
+`policy-checkpoint` build and publishes its return value (see
+model_factory/factory.py). This module just trains and returns a Dir.
 
 TRL GRPOTrainer + LoRA on a single 24GB GPU (A10G/L4). Rollout completions
 are scored by the reward stack in rewards.py — sandboxed test execution is
@@ -26,19 +26,9 @@ import flyte.io
 import flyte.report
 
 from ..config import WANDB_PROJECT, get_profile
-from ..contracts import ARTIFACT_CHECKPOINT, ARTIFACT_RL_DATASET, publish
 from ..shared import reporting
 from ..shared.rewards import MAX_REWARD, build_prompt, score_completion
 from .envs import trainer_env
-
-# Dark-mode wiring: a new approved dataset version IS the request to train.
-_retrain_trigger = flyte.Trigger(
-    name="train-on-new-dataset",
-    automation=flyte.OnArtifact(name=ARTIFACT_RL_DATASET),
-    inputs={"dataset": flyte.TriggeredArtifact, "profile_name": "smoke"},
-    description="New approved dataset version -> GRPO training",
-    auto_activate=False,
-)
 
 _SCORE_WORKERS = 8
 
@@ -73,9 +63,12 @@ def make_reward_fn(metrics_sink: list[dict]):
     return reward_fn
 
 
-@trainer_env.task(report=True, timeout=flyte.Timeout(max_runtime=7200), triggers=[_retrain_trigger], produces_artifacts=True)
+@trainer_env.task(report=True, timeout=flyte.Timeout(max_runtime=7200))
 async def train_grpo(dataset: flyte.io.File, profile_name: str = "smoke") -> flyte.io.Dir:
-    """Run GRPO; emit the LoRA adapter as a `policy-checkpoint` artifact."""
+    """Run GRPO and return the LoRA adapter directory.
+
+    Returns a plain Dir; the factory build publishes it as `policy-checkpoint`.
+    """
     import pandas as pd
     from datasets import Dataset
     from peft import LoraConfig
@@ -198,13 +191,4 @@ async def train_grpo(dataset: flyte.io.File, profile_name: str = "smoke") -> fly
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2, default=str)
 
-    d = await flyte.io.Dir.from_local(out_dir)
-    return publish(
-        d,
-        ARTIFACT_CHECKPOINT,
-        description=(
-            f"LoRA adapter for {profile.base_model}, {profile.max_steps} GRPO steps, "
-            f"final mean reward {history[-1].get('reward/mean_total', 'n/a') if history else 'n/a'}"
-        ),
-        kind="model",
-    )
+    return await flyte.io.Dir.from_local(out_dir)
