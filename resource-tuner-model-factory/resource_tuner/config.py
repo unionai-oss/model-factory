@@ -152,6 +152,12 @@ class TunerProfile:
     # it makes the requirement explicit instead of an accident of whatever
     # the corpus happens to contain.
     max_prompt_length: int = 1024
+    # Micro-batching. TRL needs generation_batch_size (= per_device_batch x
+    # this) to be divisible by num_generations, so raising it is how a rung
+    # keeps its GROUP SIZE and its PROMPT BUDGET while halving the logits
+    # tensor that decides whether the step fits the GPU. Compute per
+    # optimizer step is unchanged — the same sequences, in smaller slices.
+    gradient_accumulation_steps: int = 1
     # ── GPU sizing ──
     # The accelerator this rung NEEDS, as a flyte.Resources gpu string.
     # Recorded per profile because it is a property of the arm, not of the
@@ -464,11 +470,92 @@ AMBITIOUS_9B_2D = _dc.replace(
     artifact_checkpoint_every=2_000,
 )
 
+# The full-fine-tune rung given a 1-day budget, on the 1,016,896-row
+# round-15 corpus (artifact tuning-task-corpus/uhrmbq9th9pwvcnr2vfb-a0-1,
+# templates 16,896 + archetypes 1,000,000 via qwen35-397b/minimax-m3/
+# qwen38-27b, seed 31). Round 11 showed full FT beating LoRA on fit
+# (79% vs 53%) on 300 steps; this asks what it does with 60x the steps and
+# 4x the corpus.
+#
+# WHY Qwen3-4B on ONE L40S and not something bigger: it is the only
+# full-FT rung that reliably provisions. L40s:1 has scheduled in ~4 min
+# every time; the L40s:4 (14B) and L4:4 (8B) node groups failed to
+# provision on most round-11 attempts, and a 1-day budget spent in a queue
+# is a day lost. The 14B also costs ~10x per step (~36 s/step derived from
+# run uk9pj886sxmw9sqnhgrt) — 24h buys ~2,400 steps there against ~18,000
+# here, and at this stage more optimizer steps is the better bet.
+#
+# STEP BUDGET, from measurement OF THIS ARM: run u74ftlrgr5fvt7sfpkmh
+# logged 839 steps at mean 2.92 s/step (median 2.69, recent 3.01) on the
+# 1M corpus. 26,000 steps is ~21.7h of stepping at the pessimistic end of
+# that, plus ~1h for model load, 26 intra-task saves and the final ~8GB
+# checkpoint upload — a real day.
+#
+# The first sizing said 18,000 and was 25% short, which is worth recording
+# because the error was structural, not arithmetic: it extrapolated from
+# run unv2hq4csvqzqv4tnpg2's 3.57 s/step, measured at batch 8 / ngen 8.
+# This arm puts FOUR sequences through an optimizer step, not eight, so
+# its steps are cheaper. Step time tracks sequences per step, not the
+# nominal batch size — extrapolating across a different batch/group shape
+# is not measurement, it is a guess wearing measurement's clothes.
+#
+# GROUP 4, NOT 8 — and this is the one knob that is NOT inherited from
+# r11-fullft-4b. That arm ran batch 8 at the default 1,024-token prompt
+# budget; this corpus is the archetype corpus whose rows carry real
+# library code, and AMBITIOUS already raised the budget to 1,536 for it.
+# Paying for the longer prompt out of the GROUP rather than out of the
+# prompt is the same trade AMBITIOUS made: a clipped prompt drops real
+# code out of the middle of the workload, whereas 4 completions per group
+# is an ordinary GRPO configuration with a noisier advantage estimate.
+# The VRAM arithmetic agrees — batch 4 x 1,664 tokens x Qwen3's 151,936
+# vocab is ~3.8 GiB of fp32 logits (~17 GiB by vram_estimate_gib's
+# calibrated multiplier) on top of ~24 GiB of bf16 weights + grads +
+# 8-bit Adam state, which clears one L40S's ~44 GiB. Batch 8 at 1,536
+# would not.
+#
+# train_contexts is 4x max_steps, not the whole train split: at batch 4 /
+# ngen 4 GRPO consumes ONE unique prompt per step, so 26,000 steps can
+# never touch more than 26,000 rows — and materializing 10^6 rows in the
+# trainer's pandas frame costs RAM for nothing.
+#
+# artifact_checkpoint_every stays 0 (the full-FT convention here): every
+# intermediate would be a full ~8GB model publish. save_steps=1000 is the
+# resilience layer instead — 26 saves, so a retry loses at most ~0.8h.
+AMBITIOUS_FULLFT_4B_1D = _dc.replace(
+    R11_FULLFT_4B,
+    name="ambitious-fullft-4b-1d",
+    max_steps=26_000,
+    # 4x max_steps: at group 4 GRPO consumes ONE unique prompt per step, so
+    # this is enough that no prompt is ever seen twice, while still not
+    # materializing 10^6 rows the run cannot reach.
+    train_contexts=104_000,
+    num_generations=4,
+    # Batch 2 x accum 2, NOT batch 4 — corrected by measurement, not
+    # theory. Run umnzhngvwbf9d6fbhwfz took batch 4 into training on a
+    # 44.39 GiB L40S and CUDA-OOMed asking for 5.64 GiB with 4.23 free.
+    # The optimizer step still sees all 4 sequences (generation_batch_size
+    # = 2 x 2 = 4, divisible by num_generations, as TRL requires), so the
+    # ARM is unchanged — group 4, prompt 1,536 — while the fp32 logits
+    # tensor that decides the fit halves from 3.8 to 1.9 GiB. Estimated
+    # ~29 GiB against ~35 free, vs ~40 for the config that died.
+    per_device_batch=2,
+    gradient_accumulation_steps=2,
+    max_prompt_length=1536,
+    save_steps=1_000,
+    artifact_checkpoint_every=0,
+    train_gpu="L40s:1",
+    # The corpus is 10^6 rows and train_tuner reads it into pandas before
+    # subsampling, so the trainer pod needs headroom the 32Gi rungs never
+    # did. g6e.2xlarge carries 64GiB, so 48Gi still schedules.
+    train_memory="48Gi",
+)
+
+
 PROFILES: dict[str, TunerProfile] = {
     p.name: p
     for p in (
         SMOKE, SMOKE_COMPOSITE, SMOKE_CKPT, DEV, FULL, AMBITIOUS, AMBITIOUS_9B,
-        AMBITIOUS_9B_2D,
+        AMBITIOUS_9B_2D, AMBITIOUS_FULLFT_4B_1D,
         PROBE_QWEN35,
         *_DEV_SHAPED, *_R8_SHAPED, R11_R64, R11_GBT, R11_FULLFT, R11_FULLFT_4B,
         R11_FULLFT_8B, R11_FULLFT_14B,

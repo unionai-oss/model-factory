@@ -32,6 +32,7 @@ Conventions:
 | 2026-09-05 | [round-10-ml-baseline](2026-09-05-round-10-ml-baseline.md) | Quantile-GBT baseline: 99% fit vs policy 55%; TIED at ~\$0.22/successful task-hr — the LLM has not yet earned its GPU |
 | 2026-09-06 | [round-11-format-capacity-composition](2026-09-06-round-11-format-capacity-composition.md) | Graded JSON reward -> 100% validity on every arm; **FIRST GATE PASS** (Qwen3.5-4B, +\$40.52/1k task-hrs); GBT-hint hits 93% fit but copies the anchor's padding; full FT > LoRA on fit |
 | 2026-09-09 | [round-12-14-corpus-at-scale](2026-09-09-round-12-14-corpus-at-scale.md) | Corpus quality gates (2 gate bugs, recovered via `flyte fork`) + stack axis + teacher tiers; **the 1M release shipped 31,704 rows and reported success** — post-mortem: deadline unenforceable inside a wave, retries feeding dead endpoints, 7 pods to reject broken code, ~17 min/pod at 1/10 the available fan-out |
+| 2026-09-16 | [round-15-fullft-1day](2026-09-16-round-15-fullft-1day.md) | Artifact cards on every published artifact; **the 1M corpus target is met** (1,016,896 rows); 1-day Qwen3-4B FULL fine-tune launched after 3 dead runs that each fixed something real — `flyte run` re-registers trainer resources, 10⁶ rows can't be read with pandas, preflight was blind to full-FT optimizer state |
 
 ## Standing results (as of 2026-09-03)
 

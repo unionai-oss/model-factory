@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import tempfile
 
 import flyte
@@ -29,6 +30,7 @@ from ..contracts import (
     ARTIFACT_TASK_CORPUS,
     ARTIFACT_TUNER_CHECKPOINT,
     ARTIFACT_TUNER_CHECKPOINT_INTERMEDIATE,
+    CORPUS_COLUMNS,
     publish,
 )
 from ..shared import assets, cards
@@ -281,7 +283,9 @@ def _load_model(profile: TunerProfile):
     return model, tok, bf16
 
 
-def vram_estimate_gib(profile: TunerProfile, vocab_size: int) -> dict:
+def vram_estimate_gib(
+    profile: TunerProfile, vocab_size: int, n_params: int = 0
+) -> dict:
     """What the GRPO step will need on the GPU, in GiB.
 
     The term that decides it is the LOGITS tensor:
@@ -310,16 +314,28 @@ def vram_estimate_gib(profile: TunerProfile, vocab_size: int) -> dict:
     seq = profile.max_prompt_length + profile.max_completion_length
     # fp32 — see the upcast note above.
     logits_gib = profile.per_device_batch * seq * vocab_size * 4 / 1024**3
+    # A FULL fine-tune allocates what LoRA never does: gradients (bf16,
+    # 2 B/param) and the 8-bit Adam moments (2 B/param). None of it is
+    # visible to mem_get_info() at preflight, because it appears on the
+    # first optimizer step — long after the check would have passed.
+    state_gib = (n_params * 4 / 1024**3) if (n_params and not profile.use_lora) else 0.0
+    # CALIBRATION POINT 2 — run umnzhngvwbf9d6fbhwfz (2026-09-16): Qwen3-4B
+    # FULL FT, batch 4 x 1,664 tokens, vocab 151,936, on a 44.39 GiB L40S.
+    # It died asking for 5.64 GiB with 4.23 free, i.e. ~45.8 GiB really
+    # wanted, ~37.8 GiB of it outside the resident weights. logits x4.5
+    # (17.0) + state (15.0) = 31.9 explains only ~84% of that; the residual
+    # is activations and the generation KV cache, which this function does
+    # not model. The 1.25x is that residual — measured, not padded.
+    margin = 1.25 if state_gib else 1.0
     return {
         "seq_tokens": seq,
         "logits_gib": logits_gib,
-        # logits + grad + loss temporaries, calibrated against the one
-        # failure we have measured.
-        "needed_gib": logits_gib * 4.5,
+        "state_gib": state_gib,
+        "needed_gib": (logits_gib * 4.5 + state_gib) * margin,
     }
 
 
-def preflight_vram(profile: TunerProfile, vocab_size: int) -> str:
+def preflight_vram(profile: TunerProfile, vocab_size: int, n_params: int = 0) -> str:
     """Fail NOW, with numbers, if the step cannot fit the GPU we landed on.
 
     Returns a one-line summary for the report; raises RuntimeError when the
@@ -331,14 +347,17 @@ def preflight_vram(profile: TunerProfile, vocab_size: int) -> str:
     if not torch.cuda.is_available():
         return "no CUDA device — skipping VRAM preflight"
     free_b, total_b = torch.cuda.mem_get_info()
-    est = vram_estimate_gib(profile, vocab_size)
+    est = vram_estimate_gib(profile, vocab_size, n_params)
     free_gib, total_gib = free_b / 1024**3, total_b / 1024**3
     name = torch.cuda.get_device_name(0)
     line = (
         f"{name}: {free_gib:.1f} GiB free of {total_gib:.1f} · "
         f"step needs ~{est['needed_gib']:.1f} GiB "
         f"(logits {profile.per_device_batch}x{est['seq_tokens']}x{vocab_size:,} "
-        f"= {est['logits_gib']:.1f} GiB x2.5)"
+        f"= {est['logits_gib']:.1f} GiB x4.5"
+        + (f" + {est['state_gib']:.1f} GiB full-FT grads/optimizer, x1.25 margin"
+           if est["state_gib"] else "")
+        + ")"
     )
     print(f"[preflight] {line}")
     if est["needed_gib"] > free_gib:
@@ -582,6 +601,55 @@ _train_trigger = flyte.Trigger(
 )
 
 
+def _sample_train_records(local_path: str, k: int) -> list[dict]:
+    """`k` random train rows, without ever holding the corpus in memory.
+
+    This used to be `pd.read_parquet(...)` + `.sample()`, which was fine
+    while corpora were 10^5 rows and fatal at 10^6: run
+    usnnr9xmpnnq4ftjqgzn OOMKilled four attempts on the 1,016,896-row
+    round-15 corpus before a single step ran. Materializing a million rows
+    to train on 72,000 of them was always waste — GRPO consumes ONE prompt
+    per step — and the corpus only grows from here.
+
+    Two passes, both bounded:
+      1. read ONLY `split` (one small column) to find the train rows and
+         choose k of them with a fixed seed;
+      2. re-read in row-group batches, keeping just the chosen rows.
+
+    Peak memory is proportional to k plus one batch, not to the corpus.
+    `harness_code` is never read at all: it is the executable twin of each
+    workload, used by episode pods in EVAL, and nothing in training opens
+    it.
+
+    The sample stays random rather than a head slice for the original
+    reason — merged corpora are ordered templates-then-archetypes, so a
+    head slice silently drops whole sources.
+    """
+    import pyarrow.parquet as pq
+
+    cols = [c for c in CORPUS_COLUMNS if c != "harness_code"]
+    pf = pq.ParquetFile(local_path)
+
+    splits = pq.read_table(local_path, columns=["split"])["split"].to_pylist()
+    train_idx = [i for i, sp in enumerate(splits) if sp == "train"]
+    if not train_idx:
+        return []
+    if len(train_idx) > k:
+        random.Random(0).shuffle(train_idx)
+        train_idx = train_idx[:k]
+    wanted = set(train_idx)
+
+    out: list[dict] = []
+    offset = 0
+    for batch in pf.iter_batches(batch_size=8192, columns=cols):
+        n = batch.num_rows
+        take = [i - offset for i in range(offset, offset + n) if i in wanted]
+        if take:
+            out.extend(batch.take(take).to_pylist())
+        offset += n
+    return out
+
+
 @trainer_env.task(
     triggers=[_train_trigger],
     # Long-run posture: 3-day ceiling, and retries>0 so a lost pod
@@ -623,7 +691,6 @@ async def train_tuner(
     """
     import asyncio
 
-    import pandas as pd
     from peft import LoraConfig
     from transformers import TrainerCallback
     from trl import GRPOConfig, GRPOTrainer
@@ -636,14 +703,7 @@ async def train_tuner(
     # run page should say so rather than sit blank.
     await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
 
-    df = pd.read_parquet(await corpus.download())
-    train_df = df[df["split"] == "train"]
-    if len(train_df) > profile.train_contexts:
-        # Random (fixed-seed) subset, not a head slice: merged corpora are
-        # ordered template-families-then-archetypes, and a head slice
-        # would silently drop whole sources (e.g. every archetype row).
-        train_df = train_df.sample(n=profile.train_contexts, random_state=0)
-    records = train_df.to_dict("records")
+    records = _sample_train_records(await corpus.download(), profile.train_contexts)
     # Family baselines priced per record: the baseline_relative shapes score
     # "cheaper than the rule baseline" directly in the reward.
     baselines = fit_family_baseline(records) if records else {}
@@ -676,7 +736,9 @@ async def train_tuner(
     # Check the rung against the GPU it actually landed on, before any of
     # the 3-day budget is spent. Weights are already resident here, so
     # mem_get_info() reports the headroom the step will really have.
-    meta["vram"] = preflight_vram(profile, len(tok))
+    meta["vram"] = preflight_vram(
+        profile, len(tok), sum(p.numel() for p in model.parameters())
+    )
     await flyte.report.replace.aio(_report_html(profile, [], meta), do_flush=True)
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
     if profile.lora_mlp:
@@ -742,7 +804,6 @@ async def train_tuner(
         if hypothesis_description:
             os.environ.setdefault("WANDB_NOTES", hypothesis_description[:1000])
     import dataclasses
-    import random
 
     # Disable Qwen3-style thinking during rollouts where the installed TRL
     # supports it (the /no_think prompt switch covers older versions).
@@ -762,6 +823,7 @@ async def train_tuner(
         output_dir=out_dir,
         max_steps=profile.max_steps,
         per_device_train_batch_size=profile.per_device_batch,
+        gradient_accumulation_steps=profile.gradient_accumulation_steps,
         num_generations=profile.num_generations,
         max_completion_length=profile.max_completion_length,
         # NOTE: no max_prompt_length here — current TRL removed it from
