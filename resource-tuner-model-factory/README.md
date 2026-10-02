@@ -1,10 +1,20 @@
 # resource-tuner-model-factory
 
-RL fine-tuning of a small LLM that right-sizes `flyte.Resources` for Flyte
-tasks — the prototype for the **AI Resource Tuning** PRD's RL track. The
-policy reads a task's source code + input profile and emits the kwargs for
-`flyte.Resources` (e.g. `{"cpu": 2, "memory": "4Gi"}`); the reward is
-"the task succeeded and didn't waste the request".
+Right-sizing `flyte.Resources` for Flyte tasks — the prototype for the
+**AI Resource Tuning** PRD's RL track.
+
+Three arms now decide the request, all scored through the same simulator and
+pricing so their numbers are directly comparable:
+
+| arm | how it decides | trained by | code |
+|---|---|---|---|
+| **LLM policy** | reads source + input profile, emits `{"cpu": 2, "memory": "4Gi"}` as text, snapped onto the action grid | GRPO on a shaped reward | `training/grpo.py` |
+| **GBT baseline** | regresses a high quantile per resource, then buckets | quantile loss | `training/ml_baseline.py` |
+| **decision model** | **chooses a grid cell directly** (3 heads: memory / CPU / GPU) | cost-weighted cross-entropy | `training/decision_model.py` |
+
+The decision arm is the newest and is wired as a **Union factory** (see
+[Decision arm](#decision-arm-a-factory-over-the-action-grid) below); the LLM
+arm keeps its OnArtifact trigger chain unchanged.
 
 See [research_log/](research_log/) for the experiment audit trail (run
 links, findings, standing results), and
@@ -55,6 +65,73 @@ uv run flyte --config $CFG run main.py tuner_pipeline --profile_name smoke
 # merged corpus fires train-on-new-corpus when triggers are active)
 uv run flyte --config $CFG run main.py synthetic_data_release --n_tasks 10
 ```
+
+## Decision arm: a factory over the action grid
+
+`policy/actions.py` has always bucketed proposals onto a finite grid
+(log-scale memory, fixed CPU increments, typed GPU counts). The LLM arm emits
+numbers and gets snapped onto it; the GBT baseline regresses numbers and
+rounds them. The decision model skips the number entirely and **picks the
+cell**, which lets the loss say the one thing a regression loss cannot:
+
+- one memory bucket too small → the task OOMs; the run is lost, plus a retry
+- one bucket too big → you pay for memory you did not use; a few percent
+
+So the loss is cross-entropy weighted by a cost matrix where
+under-provisioning costs a flat `under_penalty` and over-provisioning costs
+the extra resource actually paid for. **`under_penalty` is the arm's
+hyperparameter, and it is a partition dimension** — each setting is trained,
+scored and compared as its own artifact instance:
+
+```
+  tuning-task-corpus  (factory.source — published by build_task_corpus,
+          │                              OUTSIDE this factory)
+          │                        one instance per `arm`
+   ┌──────┼──────┐
+   ▼      ▼      ▼
+ rt-decision-model × 3        [arm]   fit_decision_model
+   ▼      ▼      ▼
+ rt-decision-scorecard × 3    [arm]   score_decision_model
+   └──────┼──────┘
+          ▼  .all("arm")
+ rt-decision-champion                 select_decision_tuner
+```
+
+The corpus is a **source**, not a build — which is exactly why this arm went
+in without touching `grpo.py`, `build_task_corpus`, the trigger wiring or the
+tune service. It also gives the trigger shape a factory cannot get from its
+own builds: `factory.on(corpus)` refits the whole suite on every new corpus
+version.
+
+```bash
+CFG=.flyte/config.yaml
+uv run flyte --config $CFG deploy decision.py decision_env
+uv run flyte --config $CFG factory deploy factory.py
+
+# the full frontier, three arms in parallel
+uv run flyte --config $CFG factory materialize resource-tuner rt-decision-champion \
+    --partition arm=balanced,oom-averse,oom-paranoid --wait
+
+# one arm; or pin the corpus version instead of taking the latest
+uv run flyte --config $CFG factory materialize resource-tuner rt-decision-scorecard \
+    --partition arm=oom-averse
+uv run flyte --config $CFG factory materialize resource-tuner rt-decision-champion \
+    --partition arm=balanced,oom-averse,oom-paranoid \
+    --version tuning-task-corpus=<version>
+```
+
+Results so far (512 heldout workloads,
+[rt-decision-r4](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-decision-r4)):
+the knob is **monotone on every metric** — fit 54.3% → 70.9% → 89.1% as
+`under_penalty` goes 2 → 12 → 40 — but only the paranoid arm beats the rule
+baseline's 76.0% fit, and it costs ~5% more per task-hour. The grid itself
+forces 36.1% median over-provisioning, so roughly half the waste is the action
+space rather than the model. Full numbers and caveats:
+[research_log/round-16](research_log/2026-10-02-round-16-decision-arm-and-factory.md).
+
+The action space is configurable (`policy/action_space.py`): `default`,
+`coarse` and `fine` are registered, and `ActionSpace` is serialized into every
+checkpoint's manifest because a model is undecodable with the wrong grid.
 
 ## Artifacts
 
