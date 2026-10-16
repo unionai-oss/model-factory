@@ -105,8 +105,11 @@ def _measure_rows(rows: list[dict], guard_mib: float, concurrency: int = 1) -> l
 
 
 # retries=3: pass 1 runs on interruptible capacity, so a spot reclaim is
-# an expected event, not a failure.
-@measure_env.task(retries=3, cache=corpus_cache(), timeout=flyte.Timeout(max_runtime=4 * 3600))
+# an expected event, not a failure. max_runtime=1h (a shard normally takes
+# 20-30 min) is what turns a reclaim into a retry: in rsb-v2-corpus-1, ~25
+# shards whose pods were "terminated in response to imminent node shutdown"
+# stayed RUNNING for 40+ min instead of failing over.
+@measure_env.task(retries=3, cache=corpus_cache(), timeout=flyte.Timeout(max_runtime=3600))
 async def measure_shard(rows_json: str, guard_mib: float = MEASURE_GUARD_MIB,
                         concurrency: int = MEASURE_CONCURRENCY) -> str:
     """Pass 1: measure a shard of runs, `concurrency` at a time."""
