@@ -248,14 +248,16 @@ FRONTIER_PENALTIES = (0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
 FRONTIER_SHIFTS = (-1, 0, 1, 2, 3, 4)
 
 
-def frontier(rows: list[dict], preds: dict[str, dict]) -> list[dict]:
+def frontier(rows: list[dict], preds: dict[str, dict], point_estimate: bool = False) -> list[dict]:
     """OOM rate vs memory regret as the arm's risk knob moves.
 
     A distributional arm re-decodes the SAME predictions under a range of
     OOM penalties -- no retraining, one matrix product per decision. A
-    point-estimate arm can only add or remove margin.
+    point-estimate rule can only add or remove margin -- including an argmax
+    decoding of a model that has probabilities (that is the point of
+    reporting it: same model, no decision theory).
     """
-    distributional = all(p.get("mem_probs") is not None for p in preds.values())
+    distributional = not point_estimate and all(p.get("mem_probs") is not None for p in preds.values())
     points = []
     if distributional:
         for lam in FRONTIER_PENALTIES:

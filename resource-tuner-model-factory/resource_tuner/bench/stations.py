@@ -307,7 +307,7 @@ async def score_bench_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str
     for variant, p in _preds_by_variant(preds).items():
         card["variants"][variant] = scoring.score_slices(rows, p)
         test_rows = [r for r in rows if r["split"] == "test" and r["run_id"] in p]
-        card.setdefault("frontier", {})[variant] = scoring.frontier(test_rows, p)
+        card.setdefault("frontier", {})[variant] = scoring.frontier(test_rows, p, point_estimate=variant.endswith("-argmax"))
         test = card["variants"][variant].get("split=test", {})
         rep.kv({f"{variant} test": f"memory regret {test.get('mem_regret', float('nan')):.1%}, "
                                    f"OOM {test.get('oom_rate', float('nan')):.1%}, $ regret {test.get('regret', float('nan')):.1%}"})
@@ -392,7 +392,7 @@ async def bench_leaderboard(scorecards: list[flyte.io.File],
 
 #: Decision rules re-run for real. One per arm family, the strongest
 #: decoding of each, so the live table reads like the leaderboard.
-LIVE_VARIANTS = ("static", "size-rule", "gbt", "gbt-dist", "sft-greedy", "jev")
+LIVE_VARIANTS = ("static", "size-rule", "gbt-dist", "sft-greedy", "jev-pointer")
 #: Largest request a CPU node here can schedule (c5.4xlarge allocatable).
 LIVE_MAX_MEMORY_MIB = 24 * 1024
 
