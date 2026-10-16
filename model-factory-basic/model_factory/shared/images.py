@@ -65,4 +65,10 @@ gpu_image = (
 #: torch 2.13 (what the stack already resolves); TRL 1.10 only *warns* above
 #: the vLLM 0.26 it was tested with. Kept separate so eval/synthetic/serving
 #: images do not carry it.
-trainer_image = gpu_image.with_pip_packages("vllm==0.31.0")
+#: FlashInfer's top-k/top-p sampler JIT-compiles a CUDA kernel at engine
+#: warm-up and needs nvcc, which this image does not carry ("Could not find
+#: nvcc"); the PyTorch-native sampler needs nothing.
+trainer_image = (
+    gpu_image.with_pip_packages("vllm==0.31.0")
+    .with_env_vars({"HF_HUB_ENABLE_HF_TRANSFER": "1", "VLLM_USE_FLASHINFER_SAMPLER": "0"})
+)

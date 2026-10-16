@@ -176,12 +176,21 @@ uv run flyte --config $CFG factory materialize model-factory mf-promoted-model -
 uv run flyte --config $CFG factory materialize model-factory mf-promoted-model --partition date=2026-10-14 --wait
 ```
 
-Profiles (`model_factory/config.py`): `daily` (the real one: 200 held-out
-tasks, 256 fresh tasks/day, 50 GRPO steps of 4 prompts × 8 rollouts, under an
-hour per day on one A10G) and `smoke` (tiny everything, minutes; its
-promotion margin is -1, so it proves plumbing, never quality). The profile is
-a constant in the deployed graph: `MF_PROFILE=smoke uv run flyte ... factory
-deploy factory.py` deploys a smoke factory.
+Profiles (`model_factory/config.py`):
+
+- `daily-r3` (the default): 500 held-out tasks; 384 fresh tasks/day; 80 GRPO
+  steps of 8 prompts × 8 rollouts on colocated vLLM; a fresh LoRA each day on
+  the champion's merged weights; a 7B teacher (vLLM) for the curriculum.
+- `daily`: round 2's day (200 held-out tasks, 50 HF-generate steps, one LoRA
+  continued across days).
+- `smoke`: tiny everything, minutes. Its promotion margin is -1, so it proves
+  plumbing, never quality.
+
+The profile is a constant in the deployed graph: `MF_PROFILE=smoke uv run flyte
+... factory deploy factory.py` deploys a smoke factory. **Never change what a
+profile name means.** The name is part of every build's cache key but its
+contents are not, so a redefined profile silently reuses artifacts built under
+the old settings. Add a new name instead.
 
 ## Layout
 
