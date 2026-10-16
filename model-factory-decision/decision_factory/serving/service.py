@@ -65,6 +65,11 @@ def bound_model_path() -> str | None:
 
 
 def _load_sync(model_dir: str):
+    import torch
+
+    # A container sees every core on the node but is only granted a few; torch
+    # defaulting to the node's core count oversubscribes them badly.
+    torch.set_num_threads(max(1, int(os.environ.get("DF_SERVING_CPU", "2"))))
     return modeling.DecisionModel(model_dir)
 
 
@@ -89,7 +94,7 @@ def decide_with(dm: "modeling.DecisionModel", obs: Observation, threshold: float
     """The model's answer for one observation, plus the gated answer.
     Pure (no app state), so a local test can pin its shape."""
     t0 = time.perf_counter()
-    out = dm.decide([build_chat(obs)])[0]
+    out = dm.decide([build_chat(obs)], prefix_cache=True)[0]
     latency_ms = (time.perf_counter() - t0) * 1000
     t = 0.5 if threshold is None else float(threshold)
     return {
@@ -101,6 +106,8 @@ def decide_with(dm: "modeling.DecisionModel", obs: Observation, threshold: float
         "latency_ms": round(latency_ms, 1),
         "input_tokens": out["input_tokens"],
         "output_tokens": out["output_tokens"],
+        # tokens actually run through the torso (the shared prefix is cached)
+        "computed_tokens": out.get("computed_tokens", out["input_tokens"]),
     }
 
 

@@ -134,6 +134,16 @@ def test_scorecard_selection_and_serving_shapes(trained, tmp_path):
     assert set(res["probabilities"]) == set(DECISIONS)
     assert abs(sum(res["probabilities"].values()) - 1) < 1e-3
 
+    # The serving path's prefix KV cache must give the same answer as a full pass.
+    pdm = modeling.DecisionModel(dirs["tiny-pointer"])
+    if True:
+        chats = [build_chat(Observation.from_row(r)) for r in df.head(5).to_dict("records")]
+        full = pdm.pointer_probs(chats)
+        cached = [pdm.pointer_probs_cached(c) for c in chats]
+        for a, b in zip(full, cached):
+            assert max(abs(x - y) for x, y in zip(a["probs"], b["probs"])) < 1e-4
+        assert cached[-1]["computed_tokens"] < cached[-1]["input_tokens"]
+
 
 def test_floor_rejects_a_bad_suite(trained, tmp_path):
     base_dir, df, dirs = trained

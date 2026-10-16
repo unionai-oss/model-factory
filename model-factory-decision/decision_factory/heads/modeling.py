@@ -405,9 +405,62 @@ class DecisionModel:
                             "input_tokens": len(p), "output_tokens": 0, "parsed": True})
         return out
 
-    def decide(self, chats) -> list[dict]:
-        """The head's native readout: pointer probabilities, or generate+parse."""
+    # ── prefix caching (serving) ────────────────────────────────────────
+    # Every decision prompt starts with the same few hundred tokens: the chat
+    # template and the policy text. Running them once and reusing their KV
+    # cache leaves only the ~130-token state + question + options to compute
+    # per request — the same trick that makes hosted decision models fast.
+
+    def _prefix_split(self, chat) -> int:
+        """Character index where the per-request part of the prompt starts."""
+        from .encoding import render_prompt
+
+        return render_prompt(self.tok, chat).find(chat[-1]["content"])
+
+    @torch.no_grad()
+    def pointer_probs_cached(self, chat, options: Sequence[str] = DECISIONS) -> dict:
+        """One pointer decision, reusing a KV cache of the shared prefix.
+
+        Falls back to a full pass if the prefix does not tokenize identically
+        on its own (a BPE merge across the split would change the ids, and a
+        cache built from different ids is a different prompt)."""
+        import copy
+
+        from .encoding import render_prompt
+
+        ex = encode_pointer(self.tok, chat, options)
+        text = render_prompt(self.tok, chat)
+        prefix_text = text[: self._prefix_split(chat)]
+        cache = getattr(self, "_prefix_cache", None)
+        if cache is None or cache[0] != prefix_text:
+            ids = self.tok(prefix_text, add_special_tokens=False)["input_ids"]
+            if ex.input_ids[: len(ids)] != list(ids) or not ids:
+                return self.pointer_probs([chat], options)[0]
+            out = self.model(input_ids=torch.tensor([ids], device=self.device), use_cache=True)
+            cache = (prefix_text, list(ids), out.past_key_values)
+            self._prefix_cache = cache
+        _, ids, kv = cache
+        n = len(ids)
+        if ex.input_ids[:n] != ids or min(ex.option_pos) < n:
+            return self.pointer_probs([chat], options)[0]
+        suffix = torch.tensor([ex.input_ids[n:]], device=self.device)
+        out = self.model(input_ids=suffix, past_key_values=copy.deepcopy(kv), use_cache=True)
+        h = (out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0])[0]  # [T-n, H]
+        h_ans = h[ex.answer_pos - n].unsqueeze(0)
+        h_opt = h[torch.tensor([p - n for p in ex.option_pos], device=self.device)].unsqueeze(0)
+        p = torch.softmax(self.pointer(h_ans, h_opt).float(), dim=-1)[0].cpu().tolist()
+        by_opt = dict(zip(options, p))
+        vec = [by_opt[d] for d in DECISIONS]
+        return {"probs": vec, "decision": DECISIONS[max(range(3), key=vec.__getitem__)],
+                "input_tokens": len(ex.input_ids), "computed_tokens": len(ex.input_ids) - n,
+                "output_tokens": 0, "parsed": True}
+
+    def decide(self, chats, prefix_cache: bool = False) -> list[dict]:
+        """The head's native readout: pointer probabilities, or generate+parse.
+        ``prefix_cache`` (pointer only) reuses the shared prompt prefix."""
         if self.head == "pointer":
+            if prefix_cache:
+                return [self.pointer_probs_cached(c) for c in chats]
             return self.pointer_probs(chats)
         return self.generate(chats)
 

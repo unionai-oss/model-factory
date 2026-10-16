@@ -22,7 +22,7 @@ env = flyte.TaskEnvironment(name="df-tools", image=cpu_image, resources=flyte.Re
 
 KEEP = ("accuracy", "unsafe_allow_rate", "severe_unsafe_rate", "unnecessary_ask_rate", "brier", "ece",
         "expected_cost", "gate", "val", "latency", "input_tokens", "output_tokens", "parse_rate",
-        "slices", "unseen_command", "confusion", "frontier", "reliability")
+        "slices", "unseen_command", "confusion", "frontier", "reliability", "heldout")
 
 
 @env.task

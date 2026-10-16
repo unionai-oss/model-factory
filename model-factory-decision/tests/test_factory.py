@@ -151,6 +151,17 @@ def test_smoke_trains_more_than_one_model():  # noqa: D103
     assert len(get_profile("smoke").models) >= 2
 
 
+def test_every_station_env_caches():
+    # Flyte 2 caching is off by default; without it a factory materialization
+    # re-runs every build even when the plan shows the artifact as existing.
+    from decision_factory.data.envs import data_env
+    from decision_factory.evaluation.envs import scorer_env, selector_env
+    from decision_factory.training.envs import trainer_env
+
+    for env in (data_env, trainer_env, scorer_env, selector_env):
+        assert env.cache == "auto", env.name
+
+
 def test_graph_renders_as_mermaid(graph):
     mermaid = graph.graph()
     assert "flowchart" in mermaid
