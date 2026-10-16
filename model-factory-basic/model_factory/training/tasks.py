@@ -5,9 +5,10 @@ Consumes `rl-tasks-dataset[D]` and `champion[D]`, produces
 the factory declares this task as the `policy-checkpoint` build and publishes
 its return value (see model_factory/factory.py).
 
-Closed loop: training WARM-STARTS from the champion's LoRA adapter (or a fresh
-adapter when the champion is the base model), so each day builds on the last
-promoted model instead of starting over. The checkpoint carries
+Closed loop: training WARM-STARTS from the champion. The champion's weights
+are loaded (merged, if it is a round-2 adapter), a FRESH LoRA is trained on top,
+and the merge is saved as full weights, so generation N is one model directory,
+never a stack of N adapters, and each day's optimizer starts clean. The checkpoint carries
 `hard_tasks.parquet` — the tasks its rollouts kept failing — which, once the
 checkpoint is crowned, seeds the next day's synthetic curriculum.
 
@@ -35,6 +36,7 @@ import pandas as pd
 from ..config import WANDB_PROJECT, get_profile
 from ..contracts import HARD_TASKS_FILE
 from ..shared import reporting
+from ..shared.checkpoints import load_causal_lm, read_manifest
 from ..shared.rewards import MAX_REWARD, build_prompt, score_completion
 from .envs import trainer_env
 
@@ -89,27 +91,17 @@ def hard_tasks(train_df: pd.DataFrame, task_stats: dict[str, list[int]], thresho
     return df.sort_values("rollout_pass_rate", kind="stable").reset_index(drop=True)
 
 
-def read_manifest(path: str) -> dict:
-    """A checkpoint/champion manifest, with defaults for pre-closed-loop checkpoints."""
-    with open(os.path.join(path, "manifest.json")) as f:
-        m = json.load(f)
-    m.setdefault("adapter", True)
-    m.setdefault("generation", 0)
-    return m
-
-
 @trainer_env.task(report=True, timeout=flyte.Timeout(max_runtime=7200))
 async def train_grpo(
     dataset: flyte.io.File, champion: flyte.io.Dir, profile_name: str = "daily"
 ) -> flyte.io.Dir:
-    """Continue GRPO from the champion and return the new LoRA adapter directory.
+    """GRPO from the champion's weights; return the merged full-weight model directory.
 
     Returns a plain Dir; the factory build publishes it as `policy-checkpoint`.
     """
-    import torch
     from datasets import Dataset
     from peft import LoraConfig, PeftModel
-    from transformers import AutoModelForCausalLM, TrainerCallback
+    from transformers import TrainerCallback
     from trl import GRPOConfig, GRPOTrainer
 
     profile = get_profile(profile_name)
@@ -164,23 +156,31 @@ async def train_grpo(
         logging_steps=1,
         save_strategy="no",
         report_to=["wandb"] if wandb_enabled else [],
+        # Rollouts on a colocated vLLM engine sharing the training GPU: the
+        # rollout phase is most of a GRPO step, and HF generate is the slow part.
+        use_vllm=profile.use_vllm,
+        **(
+            dict(vllm_mode="colocate", vllm_gpu_memory_utilization=profile.vllm_gpu_memory_utilization)
+            if profile.use_vllm
+            else {}
+        ),
     )
 
-    # Warm start: continue training the champion's adapter. A base-model
-    # champion (day one, or after `seed_champion`) gets a fresh adapter.
-    model = AutoModelForCausalLM.from_pretrained(profile.base_model, torch_dtype=torch.bfloat16)
-    if champ["adapter"]:
-        print(f"warm start: continuing the generation-{champ['generation']} champion's adapter")
-        model = PeftModel.from_pretrained(model, champ_dir, is_trainable=True)
-        peft_config = None
-    else:
-        print("cold start: the champion is the base model; training a fresh adapter")
-        peft_config = LoraConfig(
-            r=profile.lora_r,
-            lora_alpha=profile.lora_r * 2,
-            target_modules="all-linear",
-            task_type="CAUSAL_LM",
-        )
+    # Warm start: the champion's weights, with a fresh adapter on top.
+    model = load_causal_lm(champ_dir, champ)
+    if isinstance(model, PeftModel):  # a round-2 adapter champion: fold it in first
+        model = model.merge_and_unload()
+    print(
+        f"warm start from the generation-{champ['generation']} champion ({champ['weights']} weights); fresh LoRA"
+        if champ["generation"]
+        else "cold start: the champion is the base model; fresh LoRA"
+    )
+    peft_config = LoraConfig(
+        r=profile.lora_r,
+        lora_alpha=profile.lora_r * 2,
+        target_modules="all-linear",
+        task_type="CAUSAL_LM",
+    )
 
     history: list[dict] = []
 
@@ -198,7 +198,7 @@ async def train_grpo(
                 body = reporting.stats_row(
                     {
                         "step": state.global_step,
-                        "warm start": f"gen {champ['generation']}" if champ["adapter"] else "fresh adapter",
+                        "starts from": f"gen {champ['generation']}",
                         "mean reward": f"{entry.get('reward/mean_total', float('nan')):.3f}",
                         "pass rate": f"{entry.get('reward/pass_rate', float('nan')):.2%}",
                         "loss": f"{entry.get('loss', float('nan')):.4f}",
@@ -231,15 +231,20 @@ async def train_grpo(
     trainer.train()
 
     out_dir = "/tmp/policy-checkpoint"
-    trainer.save_model(out_dir)  # LoRA adapter + config
+    trained = trainer.model
+    if isinstance(trained, PeftModel):
+        trained = trained.merge_and_unload()
+    trained.save_pretrained(out_dir, safe_serialization=True)  # full merged weights
     trainer.processing_class.save_pretrained(out_dir)
     hard = hard_tasks(train_df, task_stats)
     hard.to_parquet(os.path.join(out_dir, HARD_TASKS_FILE), index=False)
     manifest = {
         "base_model": profile.base_model,
-        "adapter": True,
+        "weights": "full",
         "generation": champ["generation"] + 1,
-        "warm_start": bool(champ["adapter"]),
+        "warm_start": champ["generation"] > 0,
+        "use_vllm": profile.use_vllm,
+        "learning_rate": profile.learning_rate,
         "profile": profile.name,
         "max_steps": profile.max_steps,
         "train_tasks": len(train_df),

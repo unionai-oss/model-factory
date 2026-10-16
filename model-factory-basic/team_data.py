@@ -8,7 +8,10 @@ see `model_factory/factory.py` for the `heldout-tasks`, `seed-tasks`,
 """
 
 from model_factory.data_engineering.envs import de_cpu_env, de_gpu_env  # noqa: F401
-from model_factory.data_engineering.synthetic import generate_synthetic_tasks  # noqa: F401
+from model_factory.data_engineering.synthetic import (  # noqa: F401
+    generate_synthetic_tasks,
+    generate_synthetic_tasks_served,
+)
 from model_factory.data_engineering.tasks import (  # noqa: F401
     assemble_dataset,
     curate_heldout,

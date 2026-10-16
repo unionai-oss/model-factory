@@ -7,7 +7,7 @@ pipeline runs as a minutes-long smoke test or a multi-hour training run.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # Secret names on the Union cluster, scoped to the model-factory project
 # (created in demo/development; see TODO.md for creation commands).
@@ -201,7 +201,8 @@ def cpu_resources():
     """`flyte.Resources` for a CPU-bound task env, sized for the cluster."""
     import flyte
 
-    return flyte.Resources(cpu=CPU_TASK_CPU, memory=CPU_TASK_MEMORY)
+    # Disk for full-weight model copies (promotion copies a ~1GB checkpoint).
+    return flyte.Resources(cpu=CPU_TASK_CPU, memory=CPU_TASK_MEMORY, disk="20Gi")
 
 
 WANDB_PROJECT = "model-factory"
@@ -237,6 +238,13 @@ class FactoryProfile:
     # eval gate: candidate pass@1 must beat the CHAMPION's by this margin
     promotion_margin: float
     eval_batch: int = 32
+    #: Serve the synthetic-task teacher from an OpenAI-compatible app instead of
+    #: loading ``synthetic_model`` on a GPU: ``"<app>@<project>"``. None = local.
+    teacher_app: str | None = None
+    teacher_max_tokens: int = 2048
+    #: TRL colocated vLLM rollouts (needs the trainer's vLLM image).
+    use_vllm: bool = False
+    vllm_gpu_memory_utilization: float = 0.3
 
     @property
     def wandb_enabled(self) -> bool:
@@ -267,12 +275,13 @@ SMOKE = FactoryProfile(
     learning_rate=2e-5,
     lora_r=16,
     promotion_margin=-1.0,
+    use_vllm=True,
 )
 
-#: The real day: sized to move held-out pass@1 on one A10G in under an hour.
-#: 200 held-out tasks keep the standard error of a pass@1 around 3 points.
-DAILY = FactoryProfile(
-    name="daily",
+#: Round 2's day, kept so its numbers stay reproducible: 200 held-out tasks,
+#: HF-generate rollouts, one LoRA continued across days.
+DAILY_R2 = FactoryProfile(
+    name="daily-r2",
     base_model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
     eval_tasks=200,
     heldout_pool=600,
@@ -291,7 +300,35 @@ DAILY = FactoryProfile(
     promotion_margin=0.01,
 )
 
-PROFILES: dict[str, FactoryProfile] = {p.name: p for p in (SMOKE, DAILY)}
+#: The real day (round 3). 500 held-out tasks bring the paired 95% CI on a
+#: day-over-day delta down to roughly +/-3 points; vLLM rollouts buy ~3x the
+#: GRPO steps of round 2 in the same hour; a 27B teacher writes the curriculum.
+DAILY = FactoryProfile(
+    name="daily",
+    base_model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
+    eval_tasks=500,
+    heldout_pool=2000,
+    train_tasks=384,
+    min_test_functions=3,
+    synthetic_model="Qwen/Qwen2.5-Coder-7B-Instruct",
+    synthetic_seeds=64,
+    synthetic_max_new_tokens=768,
+    max_steps=80,
+    num_generations=8,
+    per_device_batch=32,
+    grad_accum=2,
+    max_completion_length=512,
+    learning_rate=2e-5,
+    lora_r=16,
+    promotion_margin=0.01,
+    use_vllm=True,
+)
+
+#: `daily`'s batch shape for a handful of steps: measures step time (and that
+#: vLLM rollouts work at all) without spending a day. Run train_grpo directly.
+PROBE = replace(DAILY, name="probe", max_steps=6)
+
+PROFILES: dict[str, FactoryProfile] = {p.name: p for p in (SMOKE, DAILY_R2, DAILY, PROBE)}
 
 
 def get_profile(name: str) -> FactoryProfile:

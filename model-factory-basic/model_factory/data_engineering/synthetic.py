@@ -14,18 +14,25 @@ question/solution/tests, then let the sandbox act as the oracle — only
 samples whose generated reference solution passes their own generated tests
 survive. Garbage generations are filtered by execution, not by a judge model.
 
-Batching: many per-seed coroutines submit prompts to a
-``flyte.extras.DynamicBatcher`` whose process_fn runs batched HF generation
-on the GPU — the POC-scale version of the factory's "batch inference soaks
-the idle GPU" pattern.
+Two ways to run the teacher, one curriculum (``_curriculum``):
+
+- ``generate_synthetic_tasks`` (GPU): loads ``synthetic_model`` locally. Many
+  per-seed coroutines submit prompts to a ``flyte.extras.DynamicBatcher`` whose
+  process_fn runs batched HF generation — self-contained.
+- ``generate_synthetic_tasks_served`` (CPU): calls an OpenAI-compatible app
+  (``profile.teacher_app``, e.g. a 27B vLLM app) over in-cluster DNS. A much
+  stronger problem writer, and no GPU held while waiting on it. The factory
+  picks one per profile.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import re
+import urllib.request
 
 import flyte
 import flyte.io
@@ -34,12 +41,12 @@ from flyte.extras import DynamicBatcher
 
 import pandas as pd
 
-from ..config import get_profile
+from ..config import APP_DOMAIN, FactoryProfile, get_profile
 from ..contracts import DATASET_COLUMNS, HARD_TASKS_FILE, find_leaks
 from ..shared import reporting
 from ..shared.rewards import count_test_functions
 from ..shared.sandbox import run_solution_against_tests
-from .envs import de_gpu_env
+from .envs import de_cpu_env, de_gpu_env
 
 _MUTATION_PROMPT = """You are generating a NEW Python programming exercise by mutating the one below. Change the problem meaningfully (different domain, constraint, or edge cases) but keep it self-contained and testable.
 
@@ -67,7 +74,7 @@ from solution import <function_name>
 """
 
 #: Mutations sampled per seed. A 1.5B teacher passes its own tests ~1 time in 8,
-#: so two draws per seed roughly doubles the day's curriculum for ~2 min of GPU.
+#: so two draws per seed roughly doubles the day's curriculum.
 SAMPLES_PER_SEED = 2
 
 _CODE_BLOCKS = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
@@ -198,19 +205,38 @@ def frontier_replay(hard: pd.DataFrame | None, n: int) -> pd.DataFrame:
     return f.reset_index(drop=True)
 
 
-@de_gpu_env.task(report=True)
-async def generate_synthetic_tasks(
-    dataset: flyte.io.File,
-    champion: flyte.io.Dir,
-    heldout: flyte.io.File,
-    profile_name: str = "daily",
-) -> flyte.io.File:
-    """Generate oracle-verified synthetic tasks, seeded by the champion's failures.
+def _strip_reasoning(text: str) -> str:
+    """Reasoning models may emit their thinking before the answer; keep the answer."""
+    return text.rsplit("</think>", 1)[-1]
 
-    Returns a plain File: the factory build that wraps this task declares and
-    publishes the `synthetic-tasks` artifact (see model_factory/factory.py).
+
+def teacher_url(teacher_app: str, domain: str = APP_DOMAIN) -> str:
+    """``"<app>@<project>"`` -> the app's in-cluster base URL.
+
+    Task pods cannot reach an app's public URL (it redirects to auth / 403s);
+    the internal service DNS name works.
     """
-    profile = get_profile(profile_name)
+    app, _, project = teacher_app.partition("@")
+    if not (app and project):
+        raise ValueError(f"teacher_app must look like '<app>@<project>', got {teacher_app!r}")
+    return f"http://{app}.{project}-{domain}.svc.cluster.local"
+
+
+def _http_json(url: str, payload: dict | None = None, timeout: float = 600) -> dict:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={"content-type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+async def _curriculum(dataset, champion, heldout, profile: FactoryProfile, generate_many, teacher_label: str):
+    """Seeds from the champion's failures -> teacher mutations -> oracle -> + frontier replay.
+
+    ``generate_many(prompts) -> texts`` is the only thing the teacher backends differ in.
+    """
     df = pd.read_parquet(await dataset.download())
     champ_dir = await champion.download()
     hard_path = os.path.join(champ_dir, HARD_TASKS_FILE)
@@ -218,33 +244,25 @@ async def generate_synthetic_tasks(
     seeds = pick_seeds(hard, df[df["split"] == "train"], profile.synthetic_seeds)
     held = pd.read_parquet(await heldout.download())
 
-    batcher = DynamicBatcher(
-        process_fn=lambda prompts: _generate_batch(
-            profile.synthetic_model, list(prompts), profile.synthetic_max_new_tokens
-        ),
-        max_batch_size=16,
-        batch_timeout_s=0.5,
-    )
-    await batcher.start()
-
-    async def one(seed) -> dict | None:
-        prompt = _MUTATION_PROMPT.format(
+    attempts = [s for s in seeds.itertuples() for _ in range(SAMPLES_PER_SEED)]
+    prompts = [
+        _MUTATION_PROMPT.format(
             question=seed.question[:1500],
             declaration=seed.function_declaration or "any function",
             min_tests=max(3, profile.min_test_functions),
         )
-        # submit() returns a future that resolves when its batch is processed
-        future = await batcher.submit(prompt)
-        text = await future
-        parsed = parse_generation(text)
-        if not parsed:
+        for seed in attempts
+    ]
+    texts = await generate_many(prompts)
+
+    async def one(seed, text: str | None) -> dict | None:
+        if not text:
             return None
-        if count_test_functions(parsed["tests"]) < 1:
+        parsed = parse_generation(_strip_reasoning(text))
+        if not parsed or count_test_functions(parsed["tests"]) < 1:
             return None
         # Execution as the oracle: generated solution must pass generated tests.
-        result = await asyncio.to_thread(
-            run_solution_against_tests, parsed["solution"], parsed["tests"]
-        )
+        result = await asyncio.to_thread(run_solution_against_tests, parsed["solution"], parsed["tests"])
         if not result.passed:
             return None
         qid = hashlib.sha1(parsed["question"].encode()).hexdigest()[:12]
@@ -260,9 +278,7 @@ async def generate_synthetic_tasks(
             "split": "train",
         }
 
-    attempts = [s for s in seeds.itertuples() for _ in range(SAMPLES_PER_SEED)]
-    results = await asyncio.gather(*(one(s) for s in attempts))
-    await batcher.stop()
+    results = await asyncio.gather(*(one(s, t) for s, t in zip(attempts, texts)))
     kept = list({r["task_id"]: r for r in results if r}.values())  # dedup identical mutations
     # A mutation that reproduces a held-out problem verbatim is dropped here;
     # assemble_dataset re-checks the whole release.
@@ -286,7 +302,7 @@ async def generate_synthetic_tasks(
             "kept": len(kept),
             "replayed frontier tasks": len(replay),
             "yield": f"{len(kept) / max(len(attempts), 1):.0%}",
-            "teacher": profile.synthetic_model.split("/")[-1],
+            "teacher": teacher_label,
         }
     )
     if kept:
@@ -295,9 +311,116 @@ async def generate_synthetic_tasks(
             ["task_id", "seeded from", "n_tests", "question", "solution (head)"],
             [[k["task_id"], k["difficulty"].split(":")[-1], k["n_tests"], k["question"][:250], k["reference_solution"][:250]] for k in kept[:10]],
         )
-    await flyte.report.replace.aio(
-        reporting.page("Synthetic tasks (failure-driven curriculum)", body)
-    )
+    await flyte.report.replace.aio(reporting.page("Synthetic tasks (failure-driven curriculum)", body))
     await flyte.report.flush.aio()
-
+    print(f"curriculum: {len(kept)}/{len(attempts)} mutations kept, {len(replay)} replayed, teacher {teacher_label}")
     return await flyte.io.File.from_local(out)
+
+
+def _has_vllm() -> bool:
+    try:
+        import vllm  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _vllm_generate_sync(model_name: str, prompts: list[str], max_new_tokens: int) -> list[str]:
+    """All of the day's mutation prompts in one vLLM call (continuous batching)."""
+    from vllm import LLM, SamplingParams
+
+    llm = LLM(model=model_name, dtype="bfloat16", gpu_memory_utilization=0.85, max_model_len=4096)
+    outs = llm.chat(
+        [[{"role": "user", "content": p}] for p in prompts],
+        SamplingParams(temperature=0.8, top_p=0.95, max_tokens=max_new_tokens),
+    )
+    return [o.outputs[0].text for o in outs]
+
+
+@de_gpu_env.task(report=True)
+async def generate_synthetic_tasks(
+    dataset: flyte.io.File,
+    champion: flyte.io.Dir,
+    heldout: flyte.io.File,
+    profile_name: str = "daily",
+) -> flyte.io.File:
+    """The curriculum with a local teacher (``synthetic_model``) on this task's GPU.
+
+    vLLM when the image has it (the 7B teacher writes ~128 mutations in a few
+    minutes); otherwise batched HF generate through a ``DynamicBatcher``.
+    Returns a plain File: the factory publishes it as `synthetic-tasks`.
+    """
+    profile = get_profile(profile_name)
+    label = profile.synthetic_model.split("/")[-1]
+    if _has_vllm():
+
+        async def generate_many(prompts: list[str]) -> list[str]:
+            return await asyncio.to_thread(
+                _vllm_generate_sync, profile.synthetic_model, prompts, profile.synthetic_max_new_tokens
+            )
+
+        return await _curriculum(dataset, champion, heldout, profile, generate_many, label + " (vLLM)")
+
+    batcher = DynamicBatcher(
+        process_fn=lambda prompts: _generate_batch(
+            profile.synthetic_model, list(prompts), profile.synthetic_max_new_tokens
+        ),
+        max_batch_size=16,
+        batch_timeout_s=0.5,
+    )
+    await batcher.start()
+
+    async def generate_many(prompts: list[str]) -> list[str]:
+        async def one(p: str) -> str:
+            future = await batcher.submit(p)  # resolves when its batch is processed
+            return await future
+
+        return list(await asyncio.gather(*(one(p) for p in prompts)))
+
+    try:
+        return await _curriculum(dataset, champion, heldout, profile, generate_many, label)
+    finally:
+        await batcher.stop()
+
+
+@de_cpu_env.task(report=True)
+async def generate_synthetic_tasks_served(
+    dataset: flyte.io.File,
+    champion: flyte.io.Dir,
+    heldout: flyte.io.File,
+    profile_name: str = "daily",
+) -> flyte.io.File:
+    """The curriculum with a served teacher (``profile.teacher_app``), from a CPU task.
+
+    The model name is read from the app's ``/v1/models``, so the profile names
+    only the app, never a model id that could drift from what it serves.
+    """
+    profile = get_profile(profile_name)
+    base = teacher_url(profile.teacher_app)
+    model = (await asyncio.to_thread(_http_json, base + "/v1/models", None, 60))["data"][0]["id"]
+    sem = asyncio.Semaphore(16)
+
+    async def generate(prompt: str) -> str | None:
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt + "\n/no_think"}],
+            "max_tokens": profile.teacher_max_tokens,
+            "temperature": 0.8,
+            "top_p": 0.95,
+        }
+        async with sem:
+            for attempt in range(3):
+                try:
+                    out = await asyncio.to_thread(_http_json, base + "/v1/chat/completions", payload)
+                    return out["choices"][0]["message"]["content"] or ""
+                except Exception as e:  # one failed request must not sink the day
+                    if attempt == 2:
+                        print(f"teacher call failed: {type(e).__name__}: {str(e)[:200]}")
+                        return None
+                    await asyncio.sleep(5 * (attempt + 1))
+        return None
+
+    async def generate_many(prompts: list[str]) -> list[str | None]:
+        return list(await asyncio.gather(*(generate(p) for p in prompts)))
+
+    return await _curriculum(dataset, champion, heldout, profile, generate_many, f"{model} ({profile.teacher_app})")

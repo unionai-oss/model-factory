@@ -10,8 +10,9 @@ Endpoints:
 - GET  /health    -> {loaded, loading, error, base_model, adapter, generation}
 - POST /generate  -> {"chats": [[{role,content},...]], "use_adapter": bool,
                       "max_new_tokens": int}
-                     ``use_adapter: false`` answers with the base model, from
-                     the same weights, for side-by-side comparisons.
+                     ``use_adapter: false`` answers with the base model when
+                     the release is a LoRA adapter (round 2); merged
+                     full-weight releases (round 3+) ignore it.
 
 Deploy: flyte deploy team_inference.py inference_app_env
 """
@@ -19,7 +20,6 @@ Deploy: flyte deploy team_inference.py inference_app_env
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import traceback
 
@@ -31,6 +31,7 @@ from flyte.app.extras import FastAPIAppEnvironment
 
 from ..config import REQUIRE_APP_AUTH, cluster_env_vars, inference_resources
 from ..contracts import ARTIFACT_PROMOTED, ENDPOINT_APP
+from ..shared.checkpoints import load_causal_lm, read_manifest
 from ..shared.images import gpu_image
 
 _GEN_BATCH = 8
@@ -64,23 +65,13 @@ def bound_model_path() -> str | None:
 
 
 def _load_sync(local: str):
-    """Base weights (+ the LoRA adapter, when the release has one) onto the GPU."""
+    """The release onto the GPU: base, base + LoRA, or full merged weights."""
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer
 
-    with open(os.path.join(local, "manifest.json")) as f:
-        manifest = json.load(f)
-    base_model = manifest["base_model"]
-    tok = AutoTokenizer.from_pretrained(base_model, padding_side="left")
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        torch_dtype=torch.bfloat16,
-        device_map="cuda" if torch.cuda.is_available() else "cpu",
-    )
-    if manifest.get("adapter", True):
-        from peft import PeftModel
-
-        model = PeftModel.from_pretrained(model, local)
+    manifest = read_manifest(local)
+    tok = AutoTokenizer.from_pretrained(manifest["base_model"], padding_side="left")
+    model = load_causal_lm(local, manifest, device_map="cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     return model, tok, manifest
 
@@ -92,7 +83,7 @@ def _generate_sync(chats: list, use_adapter: bool, max_new_tokens: int) -> list[
     import torch
 
     model, tok = _state["model"], _state["tok"]
-    has_adapter = bool(_state["manifest"].get("adapter", True))
+    has_adapter = _state["manifest"]["weights"] == "lora"
     outs: list[str] = []
     for i in range(0, len(chats), _GEN_BATCH):
         rendered = [
@@ -120,7 +111,7 @@ async def health() -> JSONResponse:
             "loading": _state["loading"],
             "error": _state["error"],
             "base_model": m.get("base_model"),
-            "adapter": m.get("adapter"),
+            "weights": m.get("weights"),
             "generation": m.get("generation"),
             "bound_model": bound_model_path(),
         }

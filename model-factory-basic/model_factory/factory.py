@@ -66,6 +66,7 @@ import flyte.io
 from flyte.remote import Task
 from flyteplugins.union import factory
 
+from .config import get_profile
 from .contracts import (
     ARTIFACT_BASELINE,
     ARTIFACT_CHAMPION,
@@ -103,7 +104,13 @@ def build_graph(profile: str = DEFAULT_PROFILE) -> factory.Factory:
     """Declare the factory. Importable without a cluster connection."""
     curate_heldout = _task("de-cpu.curate_heldout")
     ingest_and_curate = _task("de-cpu.ingest_and_curate")
-    generate_synthetic_tasks = _task("de-gpu.generate_synthetic_tasks")
+    # The curriculum's teacher is a profile choice: a served model (a CPU task
+    # calling an OpenAI-compatible app) or a local one (a GPU task).
+    generate_synthetic_tasks = _task(
+        "de-cpu.generate_synthetic_tasks_served"
+        if get_profile(profile).teacher_app
+        else "de-gpu.generate_synthetic_tasks"
+    )
     assemble_dataset = _task("de-cpu.assemble_dataset")
     train_grpo = _task("trainer.train_grpo")
     evaluate_baseline = _task("eval-gpu.evaluate_baseline")

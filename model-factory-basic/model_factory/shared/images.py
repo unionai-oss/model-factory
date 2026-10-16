@@ -60,3 +60,9 @@ gpu_image = (
     )
     .with_env_vars({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
+
+#: The trainer's image adds vLLM for colocated GRPO rollouts. vLLM 0.31 pins
+#: torch 2.13 (what the stack already resolves); TRL 1.10 only *warns* above
+#: the vLLM 0.26 it was tested with. Kept separate so eval/synthetic/serving
+#: images do not carry it.
+trainer_image = gpu_image.with_pip_packages("vllm==0.31.0")

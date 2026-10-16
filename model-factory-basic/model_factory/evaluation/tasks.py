@@ -31,38 +31,23 @@ import pandas as pd
 from ..config import get_profile
 from ..contracts import ARTIFACT_CHAMPION, ARTIFACT_PROMOTED, EVAL_FILE, PARTITION_DATE, heldout_fingerprint
 from ..shared import reporting
+from ..shared.checkpoints import load_causal_lm, read_manifest
 from ..shared.gates import gate
 from ..shared.rewards import build_prompt, score_completion
 from .envs import eval_cpu_env, eval_gpu_env
 from .metrics import paired_delta, pass_at_1, promotion_decision
 
 
-def _read_manifest(path: str) -> dict:
-    with open(os.path.join(path, "manifest.json")) as f:
-        m = json.load(f)
-    m.setdefault("adapter", True)
-    m.setdefault("generation", 0)
-    return m
-
-
 @flyte.trace
 async def _generate(
-    base_model: str, adapter_dir: str | None, prompts: list[list[dict]], max_new_tokens: int, batch: int
+    model_dir: str | None, manifest: dict, prompts: list[list[dict]], max_new_tokens: int, batch: int
 ) -> list[str]:
-    """Greedy batched generation in-task; ``adapter_dir=None`` is the base model."""
+    """Greedy batched generation in-task, for any checkpoint shape (base / lora / full)."""
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(base_model, padding_side="left")
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        torch_dtype=torch.bfloat16,
-        device_map="cuda" if torch.cuda.is_available() else "cpu",
-    )
-    if adapter_dir:
-        from peft import PeftModel
-
-        model = PeftModel.from_pretrained(model, adapter_dir)
+    tok = AutoTokenizer.from_pretrained(manifest["base_model"], padding_side="left")
+    model = load_causal_lm(model_dir or "", manifest, device_map="cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
 
     outs: list[str] = []
@@ -97,9 +82,9 @@ async def _score_all(completions: list[str], tests: list[str]) -> list[dict]:
     return list(await asyncio.gather(*(one(c, t) for c, t in zip(completions, tests))))
 
 
-async def _run_heldout(heldout: pd.DataFrame, base_model: str, adapter_dir: str | None, profile) -> tuple[list[str], list[dict]]:
+async def _run_heldout(heldout: pd.DataFrame, model_dir: str | None, manifest: dict, profile) -> tuple[list[str], list[dict]]:
     prompts = [build_prompt(r.question, r.function_declaration or None) for r in heldout.itertuples()]
-    outs = await _generate(base_model, adapter_dir, prompts, profile.max_completion_length, profile.eval_batch)
+    outs = await _generate(model_dir, manifest, prompts, profile.max_completion_length, profile.eval_batch)
     return outs, await _score_all(outs, list(heldout["tests"]))
 
 
@@ -108,7 +93,7 @@ async def evaluate_baseline(heldout: flyte.io.File, profile_name: str = "daily")
     """The base model's pass@1 on the held-out split. Built once, read every day."""
     profile = get_profile(profile_name)
     df = pd.read_parquet(await heldout.download())
-    _, scores = await _run_heldout(df, profile.base_model, None, profile)
+    _, scores = await _run_heldout(df, None, {"base_model": profile.base_model, "weights": "base"}, profile)
     passed = [s["tests_passed"] for s in scores]
     result = {
         "base_model": profile.base_model,
@@ -156,13 +141,14 @@ async def evaluate_checkpoint(
         )
     cand_dir = await checkpoint.download()
     champ_dir = await champion.download()
-    cand_m, champ_m = _read_manifest(cand_dir), _read_manifest(champ_dir)
+    cand_m, champ_m = read_manifest(cand_dir), read_manifest(champ_dir)
+    champion_is_base = champ_m["weights"] == "base"
 
-    cand_out, cand_scores = await _run_heldout(df, cand_m["base_model"], cand_dir, profile)
+    cand_out, cand_scores = await _run_heldout(df, cand_dir, cand_m, profile)
     cand = [s["tests_passed"] for s in cand_scores]
     base_passed = [base["per_task"][t] for t in df["task_id"]]
-    if champ_m["adapter"]:
-        _, champ_scores = await _run_heldout(df, champ_m["base_model"], champ_dir, profile)
+    if not champion_is_base:
+        _, champ_scores = await _run_heldout(df, champ_dir, champ_m, profile)
         champ = [s["tests_passed"] for s in champ_scores]
     else:
         champ = base_passed  # the champion IS the base model; its score is the baseline
@@ -177,7 +163,7 @@ async def evaluate_checkpoint(
         "heldout_fingerprint": fingerprint,
         "candidate_generation": cand_m["generation"],
         "champion_generation": champ_m["generation"],
-        "champion_is_base": not champ_m["adapter"],
+        "champion_is_base": champion_is_base,
         "candidate_pass_at_1": pass_at_1(cand),
         "base_pass_at_1": pass_at_1(base_passed),
         "champion_pass_at_1": pass_at_1(champ),
@@ -356,7 +342,7 @@ async def seed_champion(date: datetime, profile_name: str = "daily") -> flyte.io
     out_dir = "/tmp/base-champion"
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
-        json.dump({"base_model": profile.base_model, "adapter": False, "generation": 0}, f, indent=2)
+        json.dump({"base_model": profile.base_model, "weights": "base", "generation": 0}, f, indent=2)
     d = await flyte.io.Dir.from_local(out_dir)
     version = f"base-{profile.name}-{date:%Y%m%d}"
     return flyte.artifacts.new(d, champion_metadata(date, version, f"Base model {profile.base_model}"))
