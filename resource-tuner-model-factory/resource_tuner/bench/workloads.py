@@ -162,7 +162,9 @@ def _pandas_groupby(rng: Random) -> dict:
         lines.append('df["f1_rank"] = df.groupby("region")["f1"].rank(pct=True)')
         lines.append('out = df[df["f1_rank"] > 0.5]')
     else:
-        lines.append('out = df.describe(include="all") if len(df.columns) < 12 else df.describe()')
+        # numeric describe only: include="all" mixes strings into numeric
+        # columns and to_parquet then fails (24 v1 runs)
+        lines.append('out = df.describe()')
     if sort:
         lines.append('out = out.sort_values(out.columns[0])')
     if write:

@@ -47,6 +47,8 @@ ARTIFACT_ARM = "rt-bench-arm"
 ARTIFACT_SCORECARD = "rt-bench-scorecard"
 ARTIFACT_LEADERBOARD = "rt-bench-leaderboard"
 ARTIFACT_LIVE = "rt-bench-live"
+ARTIFACT_ENSEMBLE = "rt-bench-ensemble"
+ARTIFACT_ENSEMBLE_SCORECARD = "rt-bench-ensemble-scorecard"
 
 PARTITION_RELEASE = "release"
 PARTITION_ARM = "arm"
@@ -67,6 +69,7 @@ def build_graph() -> factory.Factory:
     score = _task("rt-bench.score_bench_arm")
     leaderboard = _task("rt-bench.bench_leaderboard")
     live = _task("rt-bench.live_validate")
+    fit_ensemble = _task("rt-bench.fit_bench_ensemble")
 
     runs = factory.build(
         ARTIFACT_RUNS,
@@ -94,11 +97,26 @@ def build_graph() -> factory.Factory:
         description="Cost to SUCCEEDED, OOM rate, regret vs oracle, calibration -- per split and slice",
     ).using(score, corpus=corpus, arm_dir=arm, arm=factory.partition(PARTITION_ARM))
 
+    # An artifact built from other arms' artifacts: the classical anchor pooled
+    # with the best calibrated LLM arm. Lineage records exactly which arm
+    # versions it pooled.
+    ensemble = factory.build(
+        ARTIFACT_ENSEMBLE,
+        kind="model",
+        description="gbt-dist pooled with the best calibrated LLM arm (log pool, weight tuned on val)",
+    ).using(fit_ensemble, corpus=corpus, arm_dirs=arm.all(PARTITION_ARM))
+
+    ensemble_card = factory.build(
+        ARTIFACT_ENSEMBLE_SCORECARD,
+        kind="data",
+        description="The ensemble's scorecard",
+    ).using(score, corpus=corpus, arm_dir=ensemble, arm="ensemble")
+
     board = factory.build(
         ARTIFACT_LEADERBOARD,
         kind="data",
         description="All arms side by side for one release",
-    ).using(leaderboard, scorecards=scorecard.all(PARTITION_ARM))
+    ).using(leaderboard, scorecards=scorecard.all(PARTITION_ARM), ensemble_scorecard=ensemble_card)
 
     live_check = factory.build(
         ARTIFACT_LIVE,

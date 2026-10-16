@@ -23,6 +23,7 @@ from random import Random
 
 import flyte
 import flyte.io
+import numpy as np
 import pandas as pd
 
 from ..shared.reporting import Reporter
@@ -323,14 +324,15 @@ async def score_bench_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str
 #: still in the JSON, just not on the chart.
 HEADLINE = ("static", "vpa", "size-rule", "gbt", "gbt-dist", "zeroshot-27b", "zeroshot",
             "sft-greedy", "sft-sampled", "jev-argmax", "jev", "jev-pointer-argmax", "jev-pointer",
-            "jev-num-argmax", "jev-num")
+            "jev-num-argmax", "jev-num", "ensemble")
 
 
 @bench_env.task(cache=arms_cache())
-async def bench_leaderboard(scorecards: list[flyte.io.File]) -> flyte.io.File:
+async def bench_leaderboard(scorecards: list[flyte.io.File],
+                            ensemble_scorecard: flyte.io.File | None = None) -> flyte.io.File:
     """Every arm side by side: the board, the frontier, and the slices."""
     cards = []
-    for f in scorecards:
+    for f in [*scorecards, *([ensemble_scorecard] if ensemble_scorecard is not None else [])]:
         with open(await f.download()) as fh:
             cards.append(json.load(fh))
     board: dict[str, dict] = {}
@@ -503,3 +505,63 @@ async def bench_peek(corpus: flyte.io.File | None = None, artifact_dir: flyte.io
         return json.dumps({"meta": meta, "predictions": preds.to_dict("records")}, default=float)
     with open(await artifact_file.download()) as f:
         return f.read()
+
+
+# ── 8. ensemble ─────────────────────────────────────────────────────────
+
+#: The classical member of the ensemble: tabular features, strong in-distribution.
+ENSEMBLE_ANCHOR = "gbt-dist"
+_POOL_WEIGHTS = tuple(round(w, 2) for w in np.linspace(0, 1, 11))
+
+
+def log_pool(p_anchor, p_llm, w: float):
+    """Logarithmic opinion pool: p ∝ p_anchor^w · p_llm^(1-w). Both members are
+    calibrated distributions over the same cells, so pooling is meaningful."""
+    p = np.exp(w * np.log(np.asarray(p_anchor) + 1e-9) + (1 - w) * np.log(np.asarray(p_llm) + 1e-9))
+    return p / p.sum()
+
+
+def build_ensemble(rows: list[dict], variants: dict[str, dict[str, dict]]) -> tuple[dict, dict]:
+    """Pool the anchor with the LLM variant that pools best on val, weight tuned on val."""
+    val = [r for r in rows if r["split"] == "val"]
+    anchor = variants[ENSEMBLE_ANCHOR]
+    candidates = [v for v, p in variants.items() if v != ENSEMBLE_ANCHOR and not v.endswith("-argmax")
+                  and all(x.get("mem_probs") is not None for x in p.values())]
+
+    def pooled(v, w):
+        out = {}
+        for rid, a in anchor.items():
+            b = variants[v].get(rid)
+            if b is None:
+                continue
+            p = log_pool(a["mem_probs"], b["mem_probs"], w)
+            out[rid] = {"mem_idx": scoring.bayes_mem_index(p), "cpu_idx": b["cpu_idx"], "mem_probs": p}
+        return out
+
+    grid_ = [(v, w) for v in candidates for w in _POOL_WEIGHTS]
+    scored = [(scoring.score(val, pooled(v, w))["mem_regret"], v, w) for v, w in grid_]
+    best_val, v, w = min(scored)
+    return pooled(v, w), {"anchor": ENSEMBLE_ANCHOR, "llm_member": v, "w_anchor": w,
+                          "val_mem_regret": best_val, "candidates": candidates}
+
+
+@bench_env.task(cache=arms_cache())
+async def fit_bench_ensemble(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir]) -> flyte.io.Dir:
+    """The classical anchor pooled with the best calibrated LLM arm.
+
+    The arms fail differently -- the GBT on code semantics it cannot read, the
+    LLM on numbers it reads as tokens -- and both emit calibrated
+    distributions over the same grid, so a logarithmic pool is one line of
+    math and needs no retraining.
+    """
+    rows = [r for r in await _read_rows(corpus) if dataset.usable(r)]
+    variants: dict[str, dict[str, dict]] = {}
+    for d in arm_dirs:
+        preds, _ = await _read_arm(d)
+        variants.update(_preds_by_variant(preds))
+    preds, meta = build_ensemble(rows, variants)
+    rep = Reporter("RightSize Bench: ensemble", f"{meta['anchor']} x {meta['llm_member']}, w={meta['w_anchor']}")
+    rep.kv({k: str(v) for k, v in meta.items()})
+    await rep.flush()
+    meta["arm"] = "ensemble"
+    return await _write_arm_dir(_pred_rows("ensemble", preds, rows), meta)

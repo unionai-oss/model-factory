@@ -15,6 +15,7 @@ from resource_tuner.bench.stations import (  # noqa: F401
     bench_peek,
     bench_pilot,
     fit_bench_arm,
+    fit_bench_ensemble,
     generate_bench_runs,
     live_run,
     live_validate,

@@ -311,3 +311,17 @@ def test_no_lazy_package_imports():
                     if isinstance(node, ast.ImportFrom) and node.level > 0:
                         offenders.append(f"{path.name}:{node.lineno} from {'.' * node.level}{node.module or ''}")
     assert not offenders, offenders
+
+
+def test_ensemble_pools_two_distributions(splits):
+    from resource_tuner.bench import stations
+
+    rows = splits["val"] + splits["test"]
+    st = arms.fit_gbt_dist(splits["train"], splits["val"])
+    g = arms.predict_gbt_dist(st, rows)
+    flat = {rid: {**p, "mem_probs": (np.ones(scoring.N_MEM) / scoring.N_MEM).tolist()} for rid, p in g.items()}
+    preds, meta = stations.build_ensemble(rows, {"gbt-dist": g, "jev-pointer": flat})
+    assert meta["llm_member"] == "jev-pointer" and 0.0 <= meta["w_anchor"] <= 1.0
+    assert set(preds) == set(g)
+    p = stations.log_pool([0.5, 0.5], [0.9, 0.1], 0.0)
+    assert p[0] == pytest.approx(0.9, abs=1e-6)

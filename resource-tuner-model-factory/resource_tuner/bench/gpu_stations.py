@@ -25,6 +25,7 @@ import pandas as pd
 from ..shared.reporting import Reporter
 from . import dataset, grid, prompting, scoring
 from .envs import bench_gpu_env
+from .versioning import arms_cache
 from .llm_arms import (
     TrainConfig,
     config_dict,
@@ -57,7 +58,10 @@ def _pred_table(variant: str, preds: dict, split_of: dict) -> list[dict]:
              "raw": str(p.get("raw", ""))[:200]} for rid, p in preds.items()]
 
 
-@bench_gpu_env.task(retries=1, timeout=flyte.Timeout(max_runtime=6 * 3600))
+# Cached on the arms' source hash: factory reuse IS task caching, so an
+# uncached GPU arm retrains on every re-materialization (rsb-v1-board-3's
+# arms could not be reused to add the ensemble node).
+@bench_gpu_env.task(retries=1, cache=arms_cache(), timeout=flyte.Timeout(max_runtime=8 * 3600))
 async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen/Qwen3-1.7B", epochs: int = 3,
                         max_train_rows: int = 0) -> flyte.io.Dir:
     cfg = TrainConfig(model_name=model_name, epochs=epochs, max_train_rows=max_train_rows)
