@@ -125,10 +125,10 @@ Base: `https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-
 | [rsb-v1-board-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-board-2) | arms on T4 | `sft` **OOMed** the 16 GB T4 on full-vocabulary logits (fix: `logits_to_keep`); decision heads ran at 20 steps/35 min -- `is_bf16_supported()` counts emulation, so the T4 ran emulated bf16. ABORTED |
 | [rsb-v1-sft-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-sft-1) | `sft` alone | ABORTED (same bf16 issue) |
 | [rsb-v1-board-3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-board-3) | **all arms on v1**, fp16 on T4 | CPU arms + `jev` / `jev-pointer` / `jev-num` succeeded (~1h50 each on a T4); `zeroshot-27b` parsed only 813/2,318 answers (max_tokens=64 cut off its reasoning); `sft` (running) |
-| [rsb-v1-zs27-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-zs27-2) | `zeroshot-27b` rebuilt with 1,024 tokens to reason | (running) |
+| [rsb-v1-zs27-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-zs27-2) | `zeroshot-27b` rebuilt with 1,024 tokens to reason | succeeded after ~4.5 h: 2,318 decisions, 639 generated tokens each on average, p50 103 s per decision on the shared vLLM app; 1,207 still ran out of budget mid-reasoning |
 | [rsb-v2-corpus-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-corpus-1) | **v2 corpus**: 400 tasks/family (14,400 runs), seed 1, describe fix, thread caps of 3, 4 workloads per measurement pod | (running) |
 
-## Results -- v1 (interim: `zeroshot-27b` rerun pending)
+## Results -- v1
 
 Corpus `rt-bench-corpus[release=v1]` @ `b45077fc`: 7,089 measured runs
 (train 4,167 / val 604 / test 1,144 / OOD 1,174). The OOD split is two
@@ -149,6 +149,7 @@ code rather than the input size (streaming / chunked / mmap / constants).
 | gbt-dist (19 quantiles -> expected cost) | 38.6% | 3.7% | 60.9% | 25.2% | 84.8% | 11.5% | 6.5% | 84% | 0.385 | 0.032 |
 | sft-greedy (autoregressive, +1-cell margin) | 58.7% | 3.3% | 76.8% | 40.7% | 88.5% | 9.2% | 10.1% | 98% | | |
 | sft-sampled (8 samples -> expected cost) | 54.9% | 3.1% | 92.8% | 54.4% | 83.3% | 10.2% | 7.7% | 97% | 0.417 | 0.008 |
+| zeroshot-27b (hosted, prompted; unanswered -> 4Gi) | 162.1% | 10.5% | | | 171.6% | 18.7% | 13.0% | 78% | | |
 | jev-num-argmax | 148.9% | 28.8% | 172.0% | 80.6% | 359.0% | 53.4% | 27.9% | 95% | 0.553 | 0.049 |
 | jev-num (decision head + numeric features) | 89.0% | 8.7% | 112.7% | 51.3% | 337.0% | 46.9% | 13.9% | 95% | 0.553 | 0.010 |
 | jev-argmax | 94.4% | 20.9% | 151.8% | 74.3% | 117.6% | 24.8% | 21.0% | 95% | 0.433 | 0.032 |
@@ -184,6 +185,13 @@ What the table says, honestly:
   that gives SFT a distribution takes 2,104 ms (16x). The decision model buys
   the same answer, with a calibrated probability attached, for 1/9-1/16 of the
   serving cost.
+- **A 27B model, zero-shot, is not the answer.** Given 1,024 tokens it
+  reasons at length (sizing arithmetic, risk trade-offs) and runs out before
+  answering on 52% of runs. On the runs it does answer it is respectable out
+  of distribution (108.8% vs gbt-dist 116.9% and jev-pointer 97.9% on the same
+  551 runs) and weak in-distribution (77.7% vs 32.9% / 41.4%, 560 runs) -- at
+  ~600 prompt + ~640 generated tokens and ~100 s per decision. The fine-tuned
+  1.7B decision head beats it on both splits at 129 ms and zero tokens.
 - **The two fail differently, so they pool.** A log-linear pool of the GBT's
   and the pointer head's distributions (one weight, tuned on val) beats both
   everywhere: 35.6% test, **75.4% OOD (-9.4 points vs either member)**, 3.2%
