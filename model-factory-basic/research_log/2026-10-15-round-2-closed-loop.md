@@ -16,9 +16,10 @@ reached the next. This round asked three questions:
 Short answers: (1) yes, through a partitioned `factory.source` that an
 artifact trigger writes, because a same-artifact cross-day edge is a cycle;
 (2) yes, +7.5 pass@1 points over base with a paired 95% CI that excludes 0;
-(3) **not yet**. Day 2 matched the champion (−0.5 pts, CI [−5, +4]), so the
-gate kept the champion. Day 3 ran with the repaired curriculum; see the
-results table.
+(3) **no**. Three warm-started days (with a broken curriculum, a
+repaired one, and frontier replay) all landed within noise of the day-1
+champion (−0.5, −1.5, −1.5 pts), so the gate kept generation 1 each time. The
+loop's machinery is shown working end to end; compounding is not.
 
 ## What the factory API supports (flyteplugins-union 0.15.1 / 0.17.0)
 
@@ -140,11 +141,14 @@ Daily profile (the real runs):
 | [bmf-r2-plan-d1](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-plan-d1) | `--plan` for 10-13 | reports partitions as "existing" (round 1's nightly cron had built smoke versions); see finding 8 |
 | [bmf-r2-daily-d1](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-daily-d1) | **day 1**, cold start | 97 min wall (≈50 min of it waiting for a GPU). Candidate 42.5% vs base 35.0%: **promoted**, crowned ([uf275db606406e29](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/uf275db606406e29)). **Bug: 0 of 48 synthetic tasks kept** |
 | [bmf-r2-daily-d2](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-daily-d2) | **day 2**, warm start from gen 1 | 55.6 min wall. Candidate 42.0% vs champion 42.5%: **champion kept**. Still 0 synthetic (ran before the fix) |
-| [bmf-r2-daily-d3](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-daily-d3) | **day 3**, gen-1 champion, repaired curriculum ([16d8b51](#code-changes)) | D3_OUTCOME |
-| [u41d15dc4e7494428](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/u41d15dc4e7494428), [ubb4d3acd7e0d6f9b](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/ubb4d3acd7e0d6f9b) | **nightly cron**, 2026-10-16 06:00 UTC (promoted + inference targets) | NIGHTLY_OUTCOME |
+| [bmf-r2-daily-d3](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-daily-d3) | **day 3**, gen-1 champion, repaired curriculum ([16d8b51](#code-changes)) | 61 min wall. Candidate 41.0% vs champion 42.5%: **champion kept**. Curriculum now non-empty: 3 mutations kept, all from champion failures. Crowned ([u465104b9307baac2](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/u465104b9307baac2)) → champion[10-16] |
+| [bmf-r2-serve-d3](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-serve-d3) | `mf-inference[2026-10-15]` | **ABORTED** by me: after the `de-gpu` redeploy it was rebuilding day 3 (finding 11) |
+| [bmf-r2-serve-d3b](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-serve-d3b) | `mf-inference[2026-10-15] --version mf-promoted-model=f6611f86…` | everything upstream `skipped`, endpoint built. App `spec.inputs` pins `mf-promoted-model@f6611f868f60…`; `/health` → `loaded, adapter: true, generation: 1`; `/generate` returned a correct `is_anagram` |
+| [bmf-r2-daily-d4](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-daily-d4) | **day 4**, gen-1 champion, + frontier replay (`frontier_replay`) | Candidate 41.0% vs champion 42.5%: **champion kept**. 48 replayed frontier tasks, 0 mutations kept. Crown trigger paused by me for this run (see "Operational state") |
+| [u41d15dc4e7494428](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/u41d15dc4e7494428), [ubb4d3acd7e0d6f9b](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/ubb4d3acd7e0d6f9b) | **nightly cron**, 2026-10-16 06:00 UTC (promoted + inference targets) | both **FAILED as designed**: `1 built, 2 reused, 5 blocked … Missing: mf-champion[2026-10-16]` (68 min, mostly waiting for a GPU slot to resolve a cache hit) and `0 built, 3 reused, 6 blocked` (25 min) |
 
 Report-reading helper runs (in-cluster, scratch task): `bmf-r2-read-d1`,
-`bmf-r2-read-d1b`, `bmf-r2-read-d2`, `bmf-r2-read-d3`.
+`bmf-r2-read-d1b`, `bmf-r2-read-d2`, `bmf-r2-read-d3`, `bmf-r2-read-d4`.
 
 Day-1 station timings (wall clock includes GPU queueing): `curate_heldout`
 4m, `ingest_and_curate` 5m, `generate_synthetic_tasks` 34m (about 1.5 min of
@@ -160,12 +164,17 @@ with the champion's adapter.
 |---|---|---|---|---|---|---|---|---|
 | 2026-10-13 | base (0) | 35.0% | 35.0% | **42.5%** | +7.5 [+3.0, +12.0] | 19/4 | +7.5 [+3.0, +12.0] | candidate → gen 1 |
 | 2026-10-14 | gen 1 | 35.0% | 42.5% | 42.0% | −0.5 [−5.0, +4.0] | 10/11 | +7.0 [+2.0, +12.0] | champion kept (gen 1) |
-| 2026-10-15 | gen 1 | D3_ROW |
+| 2026-10-15 | gen 1 | 35.0% | 42.5% | 41.0% | −1.5 [−6.5, +3.0] | 11/14 | +6.0 [+1.0, +11.5] | champion kept (gen 1) |
+| 2026-10-16 | gen 1 | 35.0% | 42.5% | 41.0% | −1.5 [−6.5, +3.5] | 13/16 | +6.0 [+1.0, +11.0] | champion kept (gen 1) |
+
+Release composition: 10-13 and 10-14 were 256 seed + 0 synthetic (the parser
+bug). 10-15 was 256 + 3 mutations of champion failures. 10-16 was 256 + 48
+replayed frontier tasks + 0 mutations.
 
 The held-out fingerprint is identical in every report, and the baseline
 report is the same artifact version (`e60c766b…`) across all three days.
 Leak check from in-cluster reads of the released datasets: 0 held-out
-questions and 0 held-out ids in `mf-rl-tasks-dataset[10-13]` and `[10-14]`.
+questions and 0 held-out ids in `mf-rl-tasks-dataset` for all four days.
 
 ## Findings
 
@@ -200,7 +209,7 @@ tasks gained, 4 lost; the paired CI excludes zero). Warm-starting a second day
 on 256 fresh tasks ends where it started (42.0%, 10 gained, 11 lost). The
 candidate's format compliance is already 100% after day 1, so the cheap part
 of the gain (answer in one fenced block, correct signature) has been
-harvested, and 200 more prompt visits at a decaying LR do not find more. The
+harvested, and 200 more prompt visits at a decaying LR do not find more. Days 3 and 4 (curriculum repaired, then frontier replay added) land at 41.0% both times. The
 champion/challenger gate did what it is for: day 2's release is still gen 1.
 
 **6. On this tenant, a cache hit on a GPU station still waits for a GPU
@@ -215,7 +224,9 @@ free in compute, not in latency, on a shared project.
 nightly for 2026-10-16 (no `champion[10-16]` then) still curated that day's
 seed tasks (5 min CPU) and queued for the baseline's GPU cache hit before
 blocking everything downstream of the champion. Docs that said "stops before
-any GPU work" were corrected. NIGHTLY_DETAIL
+any GPU work" were corrected. The seed tasks it built were not wasted: day 4
+(`bmf-r2-daily-d4`) reused `mf-seed-tasks[10-16]` from that failed nightly as
+a 0.1 s cache hit.
 
 **8. `--plan` reports per partition, not per version.** For 2026-10-13 it
 listed every node as "existing", because round 1's nightly cron had built
@@ -239,7 +250,27 @@ writes tests as bare module-level `assert`s with no `test_` function. The
 parser is now section-based and tolerant; tests get `from solution import *`
 when they forget it, and bare asserts get wrapped in one test function. The
 oracle still decides. Local re-check: 6/8 parse (was 0/3), 1/8 passes the
-oracle before the assert wrapping. Each seed now gets two draws. SYN_D3
+oracle before the assert wrapping. Each seed now gets two draws. On the cluster the repaired stage kept 3 of
+96 draws on day 3 and 0 of 96 on day 4: non-zero, but a 1.5B teacher is too
+weak a problem writer to matter at this scale.
+
+**11. A station redeploy changes the cache key of every past day.**
+`mf-inference[2026-10-15]` after the `de-gpu` redeploy started rebuilding day 3
+(new synthetic code version, so every downstream version changed). To serve
+or roll back a past release after code changes, pin it:
+`--version mf-promoted-model=<version>` marks the release `pinned` and every
+upstream node `skipped`, so only the endpoint is built.
+
+**12. The served artifact path is the app's working directory.**
+`flyte.app.get_parameter("model")` for a bound `Dir` returned the cwd
+(`/home/flyte`), with `manifest.json` and the adapter in it. The app treats
+whatever path it gets as the model directory, which works.
+
+**13. Pausing an OnArtifact trigger drops events; it does not queue them.**
+The crown was deactivated for day 4 and re-activated after it, and no crown ran
+for `promoted-model[10-16]`. Anyone pausing the crown to stop the nightly
+loop should know this: re-activating does not catch up, so the next day blocks
+until someone runs `seed_champion` or a new release appears.
 
 ## Code changes
 
@@ -253,9 +284,10 @@ On branch `round-2-basic-closed-loop`:
   flyte pin; 91 tests.
 - `16d8b51`: tolerant synthetic parser, assert wrapping, two draws per seed
   (finding 10).
-- (this commit) research log, README walkthrough, docs corrected per finding 7.
+- `c0364be`: replay the champion's learnable failures (day 4's hypothesis; not supported).
+- (final commit) research log, README walkthrough, docs corrected per finding 7.
 
-Tests: 97 pass (round 1: 68). New: graph-shape tests for the loop wiring
+Tests: 98 pass (round 1: 68). New: graph-shape tests for the loop wiring
 (champion is the only source, it feeds synthetic/train/eval/promote by
 identity, nothing reads the release back, the yardstick has no partitions,
 training never receives the held-out split), held-out isolation and window
@@ -264,11 +296,32 @@ teacher output.
 
 ## What is still open
 
-- **Compounding is not demonstrated.** NEXT_STEPS
+- **Compounding is not demonstrated.** Day 1 harvests ~7 points, and further
+  days at the same budget stay within ±1.5 points of that, inside a ±5-point
+  CI. What I would try next, in order: (1) **more GRPO steps per day**; generation
+  is plain HF `generate` at 32 s/step, so vLLM colocated rollouts (3–5× faster)
+  would buy 3–5× the steps inside the same hour. (2) **A lower learning rate
+  for warm starts**. Every warm start re-ran the 3e-5 → 0 schedule, and all
+  three candidates landed slightly below the champion. (3) **A larger held-out
+  split** (500+), so a real +2-point day can clear a CI. (4) **A stronger
+  teacher** (7B) for the mutations. (5) Seed the 1.5B student, where the base
+  has more headroom per step.
 - The nightly trigger is armed. Once a champion exists for "today", every
-  night trains a real day. See TODO.md for how to pause it.
+  night trains a real day (~1 A10G-hour). See TODO.md.
 - Leak checks are exact-text; KodCode contains near-duplicate problem
   variants, so a near-duplicate check (MinHash) would make the isolation
   claim stronger.
-- Serving: not re-verified this round (round 1 verified the serve step); the
-  app now loads base-only releases too.
+- `--plan` cannot say which builds will be cache hits (finding 8).
+
+## Operational state at the end of the round
+
+- Champions: `mf-champion[10-13]` = base, `[10-14]`, `[10-15]` and `[10-16]` =
+  generation 1 (the day-1 adapter). There is no `[10-17]`, so tomorrow's 06:00 UTC
+  nightly will curate seed tasks for 10-17 and block. **No unattended training
+  is armed.** Running `seed_champion` or materializing a day dated today
+  would arm it.
+- `crown-champion` is active, as the code declares (`auto_activate=True`).
+- `mf-inference` serves `mf-promoted-model@f6611f86…` (generation 1) and
+  scales to zero.
+- The throwaway probe factory `bmf-probe` and its `bmfprobe-*` artifacts
+  remain; its crown trigger is deactivated.
