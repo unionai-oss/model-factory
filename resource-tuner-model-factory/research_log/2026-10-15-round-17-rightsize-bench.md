@@ -128,7 +128,7 @@ Base: `https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-
 | [rsb-v1-zs27-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-zs27-2) | `zeroshot-27b` rebuilt with 1,024 tokens to reason | (running) |
 | [rsb-v2-corpus-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-corpus-1) | **v2 corpus**: 400 tasks/family (14,400 runs), seed 1, describe fix, thread caps of 3, 4 workloads per measurement pod | (running) |
 
-## Results -- v1 (interim: `sft` and `zeroshot-27b` pending)
+## Results -- v1 (interim: `zeroshot-27b` rerun pending)
 
 Corpus `rt-bench-corpus[release=v1]` @ `b45077fc`: 7,089 measured runs
 (train 4,167 / val 604 / test 1,144 / OOD 1,174). The OOD split is two
@@ -147,6 +147,8 @@ code rather than the input size (streaming / chunked / mmap / constants).
 | size-rule (power law in bytes) | 132.1% | 20.7% | 210.7% | 182.0% | 91.8% | 18.4% | 25.4% | 83% | | |
 | gbt (quantile trees) | 46.5% | 3.9% | 68.8% | 28.8% | 86.1% | 14.1% | 8.1% | 84% | | |
 | gbt-dist (19 quantiles -> expected cost) | 38.6% | 3.7% | 60.9% | 25.2% | 84.8% | 11.5% | 6.5% | 84% | 0.385 | 0.032 |
+| sft-greedy (autoregressive, +1-cell margin) | 58.7% | 3.3% | 76.8% | 40.7% | 88.5% | 9.2% | 10.1% | 98% | | |
+| sft-sampled (8 samples -> expected cost) | 54.9% | 3.1% | 92.8% | 54.4% | 83.3% | 10.2% | 7.7% | 97% | 0.417 | 0.008 |
 | jev-num-argmax | 148.9% | 28.8% | 172.0% | 80.6% | 359.0% | 53.4% | 27.9% | 95% | 0.553 | 0.049 |
 | jev-num (decision head + numeric features) | 89.0% | 8.7% | 112.7% | 51.3% | 337.0% | 46.9% | 13.9% | 95% | 0.553 | 0.010 |
 | jev-argmax | 94.4% | 20.9% | 151.8% | 74.3% | 117.6% | 24.8% | 21.0% | 95% | 0.433 | 0.032 |
@@ -174,6 +176,14 @@ What the table says, honestly:
   decoded by argmax are 23-35 points worse in-distribution and 28 points worse
   OOD; decoded by expected cost they are good. The pointer head is the best
   calibrated model in the bench (ECE 0.004).
+- **Head vs. generation, same torso, same data, same steps:** the pointer
+  head and autoregressive SFT land in the same place on quality (50.0% vs
+  58.7% greedy / 54.9% sampled in-distribution; 84.6% vs 88.5% / 83.3% OOD) --
+  but per decision on a T4 the head takes **129 ms and generates 0 tokens**;
+  greedy SFT takes 1,178 ms for ~14 tokens (9x), and the 8-sample decoding
+  that gives SFT a distribution takes 2,104 ms (16x). The decision model buys
+  the same answer, with a calibrated probability attached, for 1/9-1/16 of the
+  serving cost.
 - **The two fail differently, so they pool.** A log-linear pool of the GBT's
   and the pointer head's distributions (one weight, tuned on val) beats both
   everywhere: 35.6% test, **75.4% OOD (-9.4 points vs either member)**, 3.2%
@@ -183,6 +193,31 @@ What the table says, honestly:
   in-distribution -- the head is optimization-starved -- and an MLP over
   numbers extrapolates to new families far worse than trees. Numbers belong in
   the trees; the LLM's job is the code.
+
+
+### Live validation (v1): the simulator against the kernel
+
+[rsb-v1-live-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-live-1): 120 test/OOD runs (10 per family), each
+re-executed in a real pod under each of 5 arms' first-attempt request
+(`retries=0`; an OOM is the measurement).
+
+- **439 of 600 pods ran; 161 never scheduled** -- they hit a 15-minute
+  `max_queued_time` while the v2 measurement held the project's action slots.
+  Those are lost, unevenly across arms, so the per-arm requested-GiB totals
+  are not yet comparable; the queue limit is now 3 h and a re-run is queued
+  behind v2.
+- **The simulator is never optimistic.** Of 395 pods the simulator said would
+  fit, 395 fit; of 44 it said would OOM, 15 did and 29 fit. Agreement 93.4%,
+  and every disagreement is on the conservative side.
+- **Why conservative:** the label adds a flat 180 MiB of runtime overhead and
+  5% headroom to the workload's peak. The real task process holds ~158 MiB, and
+  shared-library pages are charged once to the pod cgroup, not per process, so
+  small workloads fit with less. Every real OOM had a request below the
+  measured peak (request/peak <= 0.99); every request at >= 1.05x fit.
+- **Labels reproduce.** Re-measured live, a workload's peak lands at
+  0.91x-1.06x its corpus label (5th-95th percentile; median 1.000; n=424).
+- Real first-attempt OOM rates on the pods that ran: gbt-dist 0.8%, jev-pointer
+  1.7%, sft-greedy 2.5%, size-rule 3.3%, static 4.2% -- the leaderboard's order.
 
 ## Findings
 
