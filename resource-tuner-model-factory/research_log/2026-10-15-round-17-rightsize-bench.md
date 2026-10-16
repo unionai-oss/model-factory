@@ -97,7 +97,24 @@ that fits; `regret` = cost / oracle cost - 1. The memory grid is the
 half-power-of-two ladder (512Mi, 768Mi, 1Gi, 1.5Gi, ...) people actually
 write, which halves the grid's own waste floor relative to round 16's.
 
-### Live validation
+### Results -- v2 (CPU arms; LLM arms running)
+
+Corpus `rt-bench-corpus[release=v2]` @ `f02c7caf`: 14,234 runs, train 8,457 /
+val 1,138 / test 2,316 / OOD 2,323 -- twice v1's training data.
+
+| arm | test | OOM | OOD | OOD OOM |
+|---|---|---|---|---|
+| static | 255.6% | 8.9% | 231.8% | 15.2% |
+| vpa | 165.5% | 12.0% | 163.7% | 15.3% |
+| size-rule | 118.7% | 23.0% | 81.3% | 21.3% |
+| gbt | 33.7% | 3.2% | 92.8% | 13.0% |
+| gbt-dist | 34.0% | 2.5% | 84.9% | 9.8% |
+
+Twice the data moved the trees in-distribution (38.6% -> 34.0%) and not at all
+on unseen families (84.8% -> 84.9%): more tabular data does not buy
+generalization to new code.
+
+## Live validation
 
 A stratified sample of test/ood runs re-executes in real pods sized by each
 arm's decision (retries=0, OOM is the measurement), and the simulator's
@@ -129,7 +146,9 @@ Base: `https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-
 | [rsb-v1-live-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-live-1) | live validation, 600 pods | 439 ran, 161 lost to a 15-min queue limit while v2 held the slots -> limit raised to 3 h |
 | [rsb-v1-live-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-live-2) | live validation re-run | **succeeded: all 600 pods ran** (582 fit, 18 OOM-killed) |
 | [rsb-v1-4b-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-4b-1) | `jev-pointer-4b` on v1: Qwen3-4B pointer head, 2 epochs, one T4 (fp16, micro-batch 4 x 4) | succeeded, 2h37m training; see the scaling note under Results |
-| [rsb-v2-corpus-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-corpus-1) | **v2 corpus**: 400 tasks/family (14,400 runs), seed 1, describe fix, thread caps of 3, 4 workloads per measurement pod | (running) |
+| [rsb-v2-corpus-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-corpus-1) | **v2 corpus**: 400 tasks/family (14,400 runs), seed 1, describe fix, thread caps of 3, 4 workloads per measurement pod | **ABORTED** at 79/240 shards: spot reclaims ("terminated in response to imminent node shutdown") left ~25 shard actions RUNNING for 40+ min with no failover. Fix: 1 h shard `max_runtime` so the timeout drives the retry |
+| [rsb-v2-corpus-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-corpus-2) | v2 relaunched (completed shards cache hits) | **succeeded**: 14,400 runs, **14,234 usable, 0 failed**, 166 censored above 20 GiB; 1,070 runs re-measured on 24Gi pods in pass 2 (the per-process guard is tighter at 4 per pod). 71.6 pod-hours |
+| [rsb-v2-board-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-board-1) | **all arms + ensemble on v2 in one materialization**, corpus pinned | (running) |
 
 ## Results -- v1
 
