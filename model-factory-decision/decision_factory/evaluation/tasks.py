@@ -44,6 +44,7 @@ from ..harness.scoring import (
     prior_probs,
     brier,
     score,
+    UNSAFE_ALLOW_TARGET,
 )
 from ..heads import modeling
 from ..shared import reporting
@@ -64,6 +65,15 @@ def split_inputs(df, split: str) -> dict[str, list]:
     }
 
 
+def call_text(obs: Observation) -> str:
+    """One line describing the proposed call (parquet NaNs already cleaned)."""
+    if obs.command is not None:
+        return obs.command
+    if obs.url is not None:
+        return f"{obs.tool} {obs.url}"
+    return f"{obs.tool} {obs.path} -> {obs.resolved_path}"
+
+
 def evaluate_readout(test: dict, test_out: list[dict], val: dict, val_out: list[dict]) -> dict[str, Any]:
     """Every metric for one readout. ``*_out`` are `DecisionModel` outputs."""
     probs = [o["probs"] for o in test_out]
@@ -78,6 +88,10 @@ def evaluate_readout(test: dict, test_out: list[dict], val: dict, val_out: list[
         "unsafe_allow_rate": g["unsafe_allow_rate"],
         "accuracy": g["accuracy"],
         "expected_cost": g["expected_cost"],
+        # A one-hot readout (JSON) cannot be gated: P(allow) is 0 or 1, so no
+        # threshold separates its allows. `reachable` says whether ANY
+        # threshold met the unsafe-allow budget on val.
+        "reachable": decision_metrics(val["labels"], gate(val_probs, t))["unsafe_allow_rate"] <= UNSAFE_ALLOW_TARGET,
     }
     m["frontier"] = frontier(test["labels"], probs)
     v = decision_metrics(val["labels"], [o["decision"] for o in val_out])
@@ -144,7 +158,7 @@ def build_scorecard(df, model_dir: str, *, slug: str, torso: str, head: str, bas
     reference["prior_brier"] = brier(test["labels"], [prior_probs(test["labels"])] * len(test["labels"]))
 
     errors = [
-        {"call": r.get("obs_command") or r.get("obs_url") or f"{r['obs_tool']} {r['obs_path']} -> {r['obs_resolved_path']}",
+        {"call": call_text(Observation.from_row(r)),
          "mode": r["obs_permission_mode"], "family": r["family"], "label": r["label"], "pred": o["decision"],
          "probs": [round(p, 3) for p in o["probs"]], "rationale": r["rationale"]}
         for r, o in zip(test["rows"], outs) if o["decision"] != r["label"]
@@ -210,7 +224,8 @@ def render_scorecard(card: dict) -> str:
         rows.append([name, reporting.pct(r["accuracy"]), f"{r['unsafe_allow_rate']:.2%}", reporting.pct(r["unnecessary_ask_rate"]),
                      f"{r['brier']:.3f}", f"{r['ece']:.3f}", f"{r['expected_cost']:.3f}",
                      reporting.pct(r.get("slices", {}).get("adversarial", {}).get("accuracy", 0)),
-                     f"{r['gate']['autonomy']:.1%} @ t={r['gate']['threshold']}" if "gate" in r else "—",
+                     (f"{r['gate']['autonomy']:.1%} @ t={r['gate']['threshold']}" if r["gate"].get("reachable")
+                      else "unreachable") if "gate" in r else "—",
                      f"{r['latency']['p50_ms']:.0f}" if "latency" in r else "—"])
     body += "<h3>Readouts (test split)</h3>" + reporting.table(
         ["readout", "accuracy", "unsafe-allow", "unneeded ask", "Brier", "ECE", "cost", "adversarial acc",

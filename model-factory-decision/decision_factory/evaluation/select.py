@@ -172,7 +172,8 @@ def render_selection(ranked: list[dict], board: list[dict], winner: dict) -> str
           f"{r['ece']:.3f}", f"{r['expected_cost']:.3f}",
           reporting.pct(r["adversarial_accuracy"]) if r["adversarial_accuracy"] is not None else "—",
           reporting.pct(r["unseen_accuracy"]) if r["unseen_accuracy"] is not None else "—",
-          f"{r['gate']['autonomy']:.1%} (t={r['gate']['threshold']}, {r['gate']['unsafe_allow_rate']:.2%})" if r.get("gate") else "—",
+          (f"{r['gate']['autonomy']:.1%} (t={r['gate']['threshold']}, {r['gate']['unsafe_allow_rate']:.2%})"
+           if r.get("gate", {}).get("reachable") else "unreachable") if r.get("gate") else "—",
           f"{r['latency']['p50_ms']:.0f}" if r.get("latency") else "—",
           f"{r['output_tokens']:.1f}" if r.get("output_tokens") is not None else "—"]
          for r in board])

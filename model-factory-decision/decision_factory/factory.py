@@ -154,9 +154,15 @@ def build_graph(profile_name: str = DEFAULT_PROFILE) -> factory.Factory:
             f"-> score -> serve the winner (suite: {', '.join(profile.models)})"
         ),
         triggers=[
-            # A fresh suite every morning. When nothing changed this is all
-            # cache hits and finishes in seconds, so it is cheap to leave on.
-            factory.on(flyte.Cron("0 5 * * *"), champion, endpoint, name="nightly-suite"),
+            # A fresh suite once a week. Two lessons from round 1's nightly
+            # trigger (see research_log/2026-10-15-round-2-*):
+            #  - a Cron on a `Daily`-partitioned graph builds a NEW day every
+            #    time it fires, so it is a full retrain, never "all cache hits";
+            #  - `factory.on(cron, champion, endpoint)` compiles to one trigger
+            #    PER TARGET, and both ran the same upstream fine-tunes
+            #    concurrently — every GPU job twice. The endpoint already
+            #    depends on the champion, so it is the only target needed.
+            factory.on(flyte.Cron("0 5 * * 1"), endpoint, name="weekly-suite"),
         ],
     )
 

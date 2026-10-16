@@ -97,12 +97,11 @@ def test_the_date_dimension_is_daily(graph):
     assert dims[contracts.PARTITION_DATE] is factory.Daily
 
 
-def test_nightly_trigger_targets_the_champion_and_the_endpoint(graph):
+def test_the_scheduled_trigger_targets_only_the_endpoint(graph):
+    # One target, not two: each target compiles to its own trigger, and two
+    # triggers on a shared upstream rebuild that upstream twice, concurrently.
     (trigger,) = graph.triggers
-    assert {t.name for t in trigger.targets} == {
-        contracts.ARTIFACT_CHAMPION,
-        contracts.ENDPOINT_APP,
-    }
+    assert [t.name for t in trigger.targets] == [contracts.ENDPOINT_APP]
 
 
 def test_materialize_args_names_the_profile_suite():
