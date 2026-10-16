@@ -530,8 +530,11 @@ def zeroshot_predict(rows: list[dict], teacher: str = "qwen35-397b", concurrency
                 stats["latency_ms"].append(ms)
             m, c = ans or (grid.mem_index_covering(4096), grid.cpu_index_covering(1))
             preds[rid] = {"mem_idx": m, "cpu_idx": c, "raw": (text or err)[-200:]}
-            if i % 100 == 0:
-                log(f"[zeroshot] {i}/{len(rows)}")
+            if i % 50 == 0:
+                # flush: this runs in a worker thread and stdout is block-buffered
+                # in a pod -- an unflushed progress line never reaches the logs
+                print(f"[zeroshot] {i}/{len(rows)} parse_failures={stats['parse_failures']} "
+                      f"errors={stats['errors']}", flush=True)
     for k in ("completion_tokens", "prompt_tokens"):
         v = stats.pop(k)
         stats[f"mean_{k}"] = float(np.mean(v)) if v else float("nan")
