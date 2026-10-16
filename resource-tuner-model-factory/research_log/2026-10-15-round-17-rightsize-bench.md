@@ -126,6 +126,8 @@ Base: `https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-
 | [rsb-v1-sft-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-sft-1) | `sft` alone | ABORTED (same bf16 issue) |
 | [rsb-v1-board-3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-board-3) | **all arms on v1**, fp16 on T4 | CPU arms + `jev` / `jev-pointer` / `jev-num` succeeded (~1h50 each on a T4); `zeroshot-27b` parsed only 813/2,318 answers (max_tokens=64 cut off its reasoning); `sft` (running) |
 | [rsb-v1-zs27-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-zs27-2) | `zeroshot-27b` rebuilt with 1,024 tokens to reason | succeeded after ~4.5 h: 2,318 decisions, 639 generated tokens each on average, p50 103 s per decision on the shared vLLM app; 1,207 still ran out of budget mid-reasoning |
+| [rsb-v1-live-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-live-1) | live validation, 600 pods | 439 ran, 161 lost to a 15-min queue limit while v2 held the slots -> limit raised to 3 h |
+| [rsb-v1-live-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-live-2) | live validation re-run | **succeeded: all 600 pods ran** (582 fit, 18 OOM-killed) |
 | [rsb-v1-4b-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-4b-1) | `jev-pointer-4b` on v1: Qwen3-4B pointer head, 2 epochs, one T4 (fp16, micro-batch 4 x 4) | succeeded, 2h37m training; see the scaling note under Results |
 | [rsb-v2-corpus-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-corpus-1) | **v2 corpus**: 400 tasks/family (14,400 runs), seed 1, describe fix, thread caps of 3, 4 workloads per measurement pod | (running) |
 
@@ -217,14 +219,25 @@ What the table says, honestly:
 re-executed in a real pod under each of 5 arms' first-attempt request
 (`retries=0`; an OOM is the measurement).
 
-- **439 of 600 pods ran; 161 never scheduled** -- they hit a 15-minute
-  `max_queued_time` while the v2 measurement held the project's action slots.
-  Those are lost, unevenly across arms, so the per-arm requested-GiB totals
-  are not yet comparable; the queue limit is now 3 h and a re-run is queued
-  behind v2.
-- **The simulator is never optimistic.** Of 395 pods the simulator said would
-  fit, 395 fit; of 44 it said would OOM, 15 did and 29 fit. Agreement 93.4%,
+- First attempt ([rsb-v1-live-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-live-1)) lost 161 pods to a
+  15-minute queue limit while v2 measurement held the project's slots; the
+  re-run ([rsb-v1-live-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-live-2), 3 h limit) ran **all 600**.
+- **The simulator is never optimistic.** Of 550 pods the simulator said would
+  fit, 550 fit; of 50 it said would OOM, 18 did and 32 fit. Agreement 94.7%,
   and every disagreement is on the conservative side.
+- **Same 120 runs, real pods, first-attempt request:**
+
+  | arm | memory requested | real OOM (1st try) |
+  |---|---|---|
+  | static | 480.0 GiB | 4.2% |
+  | size-rule | 318.4 GiB | 3.3% |
+  | sft-greedy | 237.0 GiB | 3.3% |
+  | gbt-dist | 219.0 GiB | 1.7% |
+  | **jev-pointer** | **208.5 GiB** | 2.5% |
+
+  The 1.7B decision model asks for 57% less memory than the static request,
+  and 4.8% less than the trees, at a lower real OOM rate than static, size-rule
+  or SFT.
 - **Why conservative:** the label adds a flat 180 MiB of runtime overhead and
   5% headroom to the workload's peak. The real task process holds ~158 MiB, and
   shared-library pages are charged once to the pod cgroup, not per process, so
@@ -232,8 +245,6 @@ re-executed in a real pod under each of 5 arms' first-attempt request
   measured peak (request/peak <= 0.99); every request at >= 1.05x fit.
 - **Labels reproduce.** Re-measured live, a workload's peak lands at
   0.91x-1.06x its corpus label (5th-95th percentile; median 1.000; n=424).
-- Real first-attempt OOM rates on the pods that ran: gbt-dist 0.8%, jev-pointer
-  1.7%, sft-greedy 2.5%, size-rule 3.3%, static 4.2% -- the leaderboard's order.
 
 ## Findings
 

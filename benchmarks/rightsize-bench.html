@@ -84,7 +84,7 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       <span><b>7,089</b> runs, labels from <span class="mono">ru_maxrss</span></span>
       <span><b>12</b> workload families, <b>2</b> never trained on</span>
       <span><b>40.5</b> pod-hours of measurement</span>
-      <span><b>600</b> live validation pods</span>
+      <span><b>600</b> live validation pods, all run</span>
     </div>
   </header>
 
@@ -142,10 +142,12 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     <h2>Checked against the kernel</h2>
     <p>We re-ran a stratified sample of test runs in real pods sized by each arm's decision, with no retries, so an OOM kill is the measurement.</p>
     <div class="cols">
-      <div class="stat"><span class="n">0 of 395</span><span class="l">pods the simulator said would fit were OOM-killed. Every disagreement was on the conservative side.</span></div>
+      <div class="stat"><span class="n">0 of 550</span><span class="l">pods the simulator said would fit were OOM-killed. Every disagreement was on the conservative side.</span></div>
       <div class="stat"><span class="n">0.91–1.06×</span><span class="l">re-measured peak against the label (5th to 95th percentile, median 1.00, 424 runs)</span></div>
-      <div class="stat"><span class="n">0.8% → 4.2%</span><span class="l">real first-attempt OOM rate, from the tree model to the static request, in leaderboard order</span></div>
+      <div class="stat"><span class="n">−57%</span><span class="l">memory the decision model requests versus the static request on the same 120 runs, at a lower real OOM rate (2.5% vs 4.2%)</span></div>
     </div>
+    <div class="figure"><svg id="live" viewBox="0 0 900 230" role="img" aria-label="Memory requested in real pods by arm on the same 120 runs"></svg>
+      <p class="caption">Total memory requested on the first attempt across the same 120 runs, in real pods, and the share that were OOM-killed.</p></div>
   </section>
 
   <section>
@@ -170,7 +172,6 @@ rt-bench-live                live_validate           arms' requests → real pod
       <li>Workloads are scaled-down kernels of real tasks: seconds, not hours, and peaks up to 20 GiB. Regret is a ratio, so it does not depend on run length, but absolute dollars would.</li>
       <li>The trees' code features were hand-picked by the person who wrote the workload generator, which makes them a generous baseline.</li>
       <li>CPU is held at the oracle in the headline because nearly every workload wants about one core. Each arm's own CPU calls are scored separately: decision models 97% exact, trees 84%.</li>
-      <li>The live sample lost 161 of 600 pods to a scheduling timeout while other measurement jobs held the project's slots. A re-run is queued.</li>
       <li>A second corpus (14,400 runs, twice the training data) is being measured; this page will update.</li>
     </ul>
   </section>
@@ -312,6 +313,22 @@ const ORDER = ["static", "vpa", "size-rule", "gbt", "gbt-dist", "sft-greedy", "s
   });
   el("text", { x: L + W + 16, y: T + 12 + show.length * 20 + 10, "font-size": 11, fill: "var(--muted)" }, svg, "dashed: margin knob");
   el("text", { x: L + W + 16, y: T + 12 + show.length * 20 + 26, "font-size": 11, fill: "var(--muted)" }, svg, "solid: expected-cost knob");
+})();
+
+// live
+(function () {
+  const LIVE = [["static", 480.0, 0.042, "rule"], ["size rule", 318.4, 0.033, "rule"], ["SFT 1.7B, greedy", 237.0, 0.033, "llm"], ["GBT, expected cost", 219.0, 0.017, "tree"], ["decision, pointer head", 208.5, 0.025, "dec"]];
+  const svg = document.getElementById("live"), L = 190, R = 150, T = 8, rowH = 40, W = 900 - L - R, max = 500, x = v => L + W * v / max;
+  [0, 100, 200, 300, 400, 500].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * LIVE.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * LIVE.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, svg, v + " GiB");
+  });
+  LIVE.forEach(([n, g, o, k], i) => {
+    const y = T + i * rowH;
+    el("text", { x: L - 10, y: y + 22, "text-anchor": "end", "font-size": 13, fill: "var(--ink)" }, svg, n);
+    el("rect", { x: L, y: y + 10, width: x(g) - L, height: 16, rx: 2, fill: COLOR[k] }, svg);
+    el("text", { x: x(g) + 8, y: y + 22, "font-size": 12, fill: "var(--ink)", "font-family": "IBM Plex Mono, monospace" }, svg, g.toFixed(0) + " GiB · " + (o * 100).toFixed(1) + "% OOM");
+  });
 })();
 
 // 5. pooled stats
