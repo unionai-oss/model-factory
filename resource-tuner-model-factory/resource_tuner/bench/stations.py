@@ -208,6 +208,24 @@ ALL_ARMS = CPU_ARMS + tuple(HOSTED_ARMS) + GPU_ARMS
 _EVAL_SPLITS = ("val", "test", "ood")
 
 
+#: Runs per split a hosted (zero-shot) arm is asked about.
+HOSTED_RUNS_PER_SPLIT = 300
+
+
+def hosted_subsample(splits: dict[str, list[dict]], n: int = HOSTED_RUNS_PER_SPLIT) -> list[dict]:
+    """Deterministic, family-stratified test+ood subsample."""
+    out = []
+    for split in ("test", "ood"):
+        by_fam: dict[str, list[dict]] = {}
+        for r in sorted(splits[split], key=lambda r: r["run_id"]):
+            by_fam.setdefault(r["family"], []).append(r)
+        rng = Random(17)
+        per = max(1, n // max(1, len(by_fam)))
+        for fam in sorted(by_fam):
+            out += rng.sample(by_fam[fam], min(per, len(by_fam[fam])))
+    return out
+
+
 def _usable_by_split(rows: list[dict]) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {s: [] for s in dataset.SPLITS}
     for r in rows:
@@ -263,7 +281,10 @@ async def fit_bench_arm(corpus: flyte.io.File, arm: str, llm_model: str = "Qwen/
     if arm in CPU_ARMS:
         pred_rows, meta = _fit_cpu_arm(arm, splits)
     elif arm in HOSTED_ARMS:
-        eval_rows = [r for s in ("test", "ood") for r in splits[s]]
+        # A stratified subsample: at ~1k reasoning tokens per decision, a
+        # frontier call on every run is hours (v1's 2,318 took >4 h). The
+        # leaderboard scores every arm on this same subset as well.
+        eval_rows = hosted_subsample(splits)
         preds, stats = await asyncio.to_thread(zeroshot_predict, eval_rows, HOSTED_ARMS[arm])
         pred_rows, meta = _pred_rows(arm, preds, eval_rows), {"stats": stats}
     elif arm in GPU_ARMS:
@@ -303,9 +324,11 @@ async def score_bench_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str
     rows = [r for r in await _read_rows(corpus) if dataset.usable(r)]
     preds, meta = await _read_arm(arm_dir)
     card = {"arm": arm, "meta": meta, "variants": {}}
+    subset_ids = {r["run_id"] for r in hosted_subsample(_usable_by_split(rows))}
     rep = Reporter(f"RightSize Bench: scorecard {arm}")
     for variant, p in _preds_by_variant(preds).items():
         card["variants"][variant] = scoring.score_slices(rows, p)
+        card["variants"][variant]["subset=hosted"] = scoring.score([r for r in rows if r["run_id"] in subset_ids], p)
         test_rows = [r for r in rows if r["split"] == "test" and r["run_id"] in p]
         card.setdefault("frontier", {})[variant] = scoring.frontier(test_rows, p, point_estimate=variant.endswith("-argmax"))
         test = card["variants"][variant].get("split=test", {})
@@ -366,6 +389,11 @@ async def bench_leaderboard(scorecards: list[flyte.io.File],
                              title=f"{split}: memory regret vs oracle (lower is better)"))
         rep.raw(charts.scatter([(v, s["oom_rate"], s["mem_regret"], charts.arm_color(v)) for v, s in rows],
                                "first-attempt OOM rate", "memory regret vs oracle"))
+    sub = {v: board[v].get("subset=hosted", {}) for v in order}
+    if any(x.get("n") for x in sub.values()):
+        rep.h("Same runs for everyone: the hosted arms' stratified subsample (test+ood)")
+        rep.table(["arm", "memory regret", "OOM (1st try)", "n"],
+                  [[v, f"{x['mem_regret']:.1%}", f"{x['oom_rate']:.1%}", str(x["n"])] for v, x in sub.items() if x.get("n")])
     if fronts:
         rep.h("test: risk frontier -- OOM rate vs cost as each arm's knob moves")
         rep.p("Distributional arms re-decode the same predictions under OOM penalties 0-16x (no retraining); "
