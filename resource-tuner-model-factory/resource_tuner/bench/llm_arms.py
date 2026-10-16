@@ -35,6 +35,9 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+# Module top, not inside zeroshot_predict: the code bundler only ships
+# statically-imported modules (pilot-board-3: "cannot import name 'llm_client'").
+from ..shared import llm_client
 from . import grid, prompting, scoring
 
 N_MEM, N_CPU = scoring.N_MEM, scoring.N_CPU
@@ -423,8 +426,6 @@ def measure_latency(fn, rows: list[dict], n: int = 32) -> dict:
 def zeroshot_predict(rows: list[dict], teacher: str = "qwen35-397b", concurrency: int = 12, log=print) -> tuple[dict, dict]:
     """Ask a hosted model. Unparseable answers fall back to the grid's
     middle -- recorded as a parse failure, never silently."""
-    from ..shared import llm_client
-
     url = llm_client.wait_until_ready(llm_client.resolve_teacher_candidates(teacher), deadline_s=1800)
     stats = {"teacher": teacher, "parse_failures": 0, "errors": 0, "latency_ms": []}
 

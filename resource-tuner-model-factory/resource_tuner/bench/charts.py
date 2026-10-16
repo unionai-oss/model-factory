@@ -94,7 +94,7 @@ def frontier_chart(series: list[tuple[str, str, list[tuple[float, float]]]], x_l
         parts.append(f'<line x1="{px(gx):.0f}" y1="{T}" x2="{px(gx):.0f}" y2="{height - B}" stroke="#1d1d23"/>')
         parts.append(f'<line x1="{L}" y1="{py(gy):.0f}" x2="{width - R}" y2="{py(gy):.0f}" stroke="#1d1d23"/>')
         parts.append(f'<text x="{px(gx):.0f}" y="{height - B + 14}" font-size="10" fill="{MUTED}" text-anchor="middle">{gx:.0%}</text>')
-        parts.append(f'<text x="{L - 6}" y="{py(gy) + 3:.0f}" font-size="10" fill="{MUTED}" text-anchor="end">${gy:.2f}</text>')
+        parts.append(f'<text x="{L - 6}" y="{py(gy) + 3:.0f}" font-size="10" fill="{MUTED}" text-anchor="end">{gy:.0%}</text>')
     parts.append(f'<text x="{(L + width - R) / 2:.0f}" y="{height - 8}" font-size="11" fill="{MUTED}" text-anchor="middle">{esc(x_label)}</text>')
     parts.append(f'<text x="14" y="{(T + height - B) / 2:.0f}" font-size="11" fill="{MUTED}" transform="rotate(-90 14 {(T + height - B) / 2:.0f})" text-anchor="middle">{esc(y_label)}</text>')
     for i, (label, color, ps) in enumerate(series):

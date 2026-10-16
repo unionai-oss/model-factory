@@ -1,7 +1,7 @@
 """Non-LLM arms: the bars an LLM has to clear.
 
 Every arm has exactly one risk knob and it is tuned the same way: on the
-validation split, against `scoring.score`'s cost. Nobody gets a hand-picked
+validation split, against `scoring.score`'s headline (`mem_regret`). Nobody gets a hand-picked
 margin. That is what makes the leaderboard a comparison of *information
 and model*, not of who guessed the best fudge factor.
 
@@ -50,7 +50,7 @@ def _tune(candidates, make_preds, val_rows):
     """The candidate whose predictions cost least on validation."""
     best = None
     for c in candidates:
-        cost = scoring.score(val_rows, make_preds(c))["cost_per_1k_task_hr"]
+        cost = scoring.score(val_rows, make_preds(c))["mem_regret"]
         if best is None or cost < best[1]:
             best = (c, cost)
     return best[0]

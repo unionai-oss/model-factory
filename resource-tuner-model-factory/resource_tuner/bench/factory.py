@@ -3,7 +3,7 @@
     flyte factory deploy bench_factory.py
     flyte factory materialize rightsize-bench rt-bench-leaderboard \
         --partition release=v1 \
-        --partition arm=static,vpa,size-rule,gbt,gbt-dist,zeroshot,sft,jev
+        --partition arm=static,vpa,size-rule,gbt,gbt-dist,zeroshot-27b,zeroshot,sft,jev,jev-pointer
 
     rt-bench-runs        [release]        generate_bench_runs   code + inputs
          │
@@ -54,7 +54,6 @@ PARTITION_ARM = "arm"
 #: Build constants. Override per materialization with
 #: `--param rt-bench-runs.tasks_per_family=40` etc.
 TASKS_PER_FAMILY = 200
-TEACHER = "qwen35-397b"
 
 
 def _task(name: str):
@@ -87,7 +86,7 @@ def build_graph() -> factory.Factory:
         partitions={PARTITION_RELEASE: str, PARTITION_ARM: str},
         kind="model",
         description="One right-sizing arm, fit on train (knob tuned on val), predictions for val/test/ood",
-    ).using(fit, corpus=corpus, arm=factory.partition(PARTITION_ARM), teacher=TEACHER)
+    ).using(fit, corpus=corpus, arm=factory.partition(PARTITION_ARM))
 
     scorecard = factory.build(
         ARTIFACT_SCORECARD,

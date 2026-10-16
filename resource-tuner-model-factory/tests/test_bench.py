@@ -168,7 +168,8 @@ def test_oracle_has_zero_regret(splits):
     rows = splits["test"]
     preds = {r["run_id"]: {"mem_idx": r["label_mem_idx"], "cpu_idx": r["label_cpu_idx"]} for r in rows}
     s = scoring.score(rows, preds)
-    assert s["regret"] == pytest.approx(0.0, abs=1e-12) and s["oom_rate"] == 0
+    assert s["mem_regret"] == pytest.approx(0.0, abs=1e-12) and s["oom_rate"] == 0
+    assert s["regret"] == pytest.approx(0.0, abs=1e-12) and s["cpu_exact"] == 1.0
 
 
 def test_underprovisioning_costs_retries():
@@ -178,6 +179,7 @@ def test_underprovisioning_costs_retries():
     over = scoring.simulate_run(grid.mem_index_covering(need) + 2, 1, need, 1.0, 0.5)
     assert under.oom_first and under.attempts >= 2 and not under.failed
     assert fit.cost < over.cost and fit.cost < under.cost
+    assert fit.gib_hours < over.gib_hours and fit.gib_hours < under.gib_hours
 
 
 def test_bayes_decode_of_a_certain_distribution_is_that_cell():
@@ -207,7 +209,7 @@ def test_every_cpu_arm_fits_and_predicts(arm, splits):
     preds = predict(state, splits["test"])
     assert set(preds) == {r["run_id"] for r in splits["test"]}
     s = scoring.score(splits["test"], preds)
-    assert s["n"] == len(splits["test"]) and s["regret"] >= -1e-9
+    assert s["n"] == len(splits["test"]) and s["mem_regret"] >= -1e-9
 
 
 def test_quantiles_to_probs_is_a_distribution():
@@ -289,3 +291,23 @@ def test_pointer_offsets_land_on_their_options(corpus):
             assert tok.decode([ids[n - 1 - off]]) in grid.format_memory(m)
         for off, c in zip(cpu, grid.CPU_GRID):
             assert tok.decode([ids[n - 1 - off]]) in f"{c:g}"
+
+
+def test_no_lazy_package_imports():
+    """The code bundler ships only statically-imported modules; a relative
+    import inside a function body imports fine locally and fails on the
+    cluster (pilot-board-3 lost both zero-shot arms to `llm_client`)."""
+    import ast
+    import pathlib
+
+    import resource_tuner.bench as pkg
+
+    offenders = []
+    for path in pathlib.Path(pkg.__file__).parent.glob("*.py"):
+        tree = ast.parse(path.read_text())
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for node in ast.walk(fn):
+                    if isinstance(node, ast.ImportFrom) and node.level > 0:
+                        offenders.append(f"{path.name}:{node.lineno} from {'.' * node.level}{node.module or ''}")
+    assert not offenders, offenders

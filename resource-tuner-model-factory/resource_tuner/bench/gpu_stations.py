@@ -58,8 +58,9 @@ def _pred_table(variant: str, preds: dict, split_of: dict) -> list[dict]:
 
 
 @bench_gpu_env.task(retries=1, timeout=flyte.Timeout(max_runtime=6 * 3600))
-async def train_llm_arm(corpus: flyte.io.File, arm: str, llm_config: str = "{}") -> flyte.io.Dir:
-    cfg = TrainConfig(**json.loads(llm_config or "{}"))
+async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen/Qwen3-1.7B", epochs: int = 3,
+                        max_train_rows: int = 0) -> flyte.io.Dir:
+    cfg = TrainConfig(model_name=model_name, epochs=epochs, max_train_rows=max_train_rows)
     if arm == "jev-pointer":
         cfg.head = "pointer"
     df = pd.read_parquet(await corpus.download())
@@ -119,7 +120,7 @@ async def train_llm_arm(corpus: flyte.io.File, arm: str, llm_config: str = "{}")
         val_ids = {r["run_id"] for r in splits["val"]}
         val_rows = splits["val"]
         best_k = min(range(0, 4), key=lambda k: scoring.score(
-            val_rows, {rid: p for rid, p in shift(greedy, k).items() if rid in val_ids})["cost_per_1k_task_hr"])
+            val_rows, {rid: p for rid, p in shift(greedy, k).items() if rid in val_ids})["mem_regret"])
         meta["greedy_margin_cells"] = best_k
         table += _pred_table("sft-greedy", shift(greedy, best_k), split_of)
         sampled_txt = sft_generate(tok, model, eval_rows, cfg, n=cfg.n_samples, batch_size=8)

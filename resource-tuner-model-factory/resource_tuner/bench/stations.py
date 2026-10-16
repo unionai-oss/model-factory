@@ -28,7 +28,7 @@ import pandas as pd
 from ..shared.reporting import Reporter
 from . import dataset
 from . import arms as cpu_arms
-from . import scoring
+from . import charts, grid, scoring
 from .envs import BIG_GUARD_MIB, MEASURE_GUARD_MIB, bench_env, live_env, measure_big_env, measure_env
 from .gpu_stations import train_llm_arm
 from .llm_arms import zeroshot_predict
@@ -176,8 +176,9 @@ async def bench_pilot(release: str = "pilot", tasks_per_family: int = 4, shard_s
 #: predictions table, possibly for several decoding *variants*.
 CPU_ARMS = ("static", "vpa", "size-rule", "gbt", "gbt-dist")
 GPU_ARMS = ("sft", "jev", "jev-pointer")
-HOSTED_ARMS = ("zeroshot",)
-ALL_ARMS = CPU_ARMS + HOSTED_ARMS + GPU_ARMS
+#: hosted zero-shot arms -> the llm-service app each one asks
+HOSTED_ARMS = {"zeroshot": "qwen35-397b", "zeroshot-27b": "qwen38-27b"}
+ALL_ARMS = CPU_ARMS + tuple(HOSTED_ARMS) + GPU_ARMS
 
 _EVAL_SPLITS = ("val", "test", "ood")
 
@@ -221,12 +222,14 @@ def _fit_cpu_arm(arm: str, splits: dict[str, list[dict]]) -> tuple[list[dict], d
 
 
 @bench_env.task(cache="auto")
-async def fit_bench_arm(corpus: flyte.io.File, arm: str, teacher: str = "qwen35-397b",
-                        llm_config: str = "{}") -> flyte.io.Dir:
+async def fit_bench_arm(corpus: flyte.io.File, arm: str, llm_model: str = "Qwen/Qwen3-1.7B", llm_epochs: int = 3,
+                        llm_max_train_rows: int = 0) -> flyte.io.Dir:
     """Fit one arm on train (knob tuned on val); predict val/test/ood.
 
     CPU arms run here; LLM arms train on the GPU env (this task only
     awaits them -- a GPU parent awaiting a GPU child deadlocks a small pool).
+    The llm_* knobs are typed (not a JSON string) so a materialization can
+    set them with `--param rt-bench-arm.llm_epochs=1`.
     """
     rows = await _read_rows(corpus)
     splits = _usable_by_split(rows)
@@ -234,12 +237,12 @@ async def fit_bench_arm(corpus: flyte.io.File, arm: str, teacher: str = "qwen35-
     await rep.flush()
     if arm in CPU_ARMS:
         pred_rows, meta = _fit_cpu_arm(arm, splits)
-    elif arm == "zeroshot":
+    elif arm in HOSTED_ARMS:
         eval_rows = [r for s in ("test", "ood") for r in splits[s]]
-        preds, stats = await asyncio.to_thread(zeroshot_predict, eval_rows, teacher)
-        pred_rows, meta = _pred_rows("zeroshot", preds, eval_rows), {"stats": stats}
+        preds, stats = await asyncio.to_thread(zeroshot_predict, eval_rows, HOSTED_ARMS[arm])
+        pred_rows, meta = _pred_rows(arm, preds, eval_rows), {"stats": stats}
     elif arm in GPU_ARMS:
-        return await train_llm_arm(corpus, arm, llm_config)
+        return await train_llm_arm(corpus, arm, llm_model, llm_epochs, llm_max_train_rows)
     else:
         raise ValueError(f"unknown arm {arm!r}; choose from {ALL_ARMS}")
     meta["arm"] = arm
@@ -281,8 +284,8 @@ async def score_bench_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str
         test_rows = [r for r in rows if r["split"] == "test" and r["run_id"] in p]
         card.setdefault("frontier", {})[variant] = scoring.frontier(test_rows, p)
         test = card["variants"][variant].get("split=test", {})
-        rep.kv({f"{variant} test": f"${test.get('cost_per_1k_task_hr', float('nan')):.2f}/1k task-hr, "
-                                   f"regret {test.get('regret', float('nan')):.1%}, OOM {test.get('oom_rate', float('nan')):.1%}"})
+        rep.kv({f"{variant} test": f"memory regret {test.get('mem_regret', float('nan')):.1%}, "
+                                   f"OOM {test.get('oom_rate', float('nan')):.1%}, $ regret {test.get('regret', float('nan')):.1%}"})
     await rep.flush()
     path = os.path.join(tempfile.mkdtemp(prefix="rsb-card-"), "scorecard.json")
     with open(path, "w") as f:
@@ -294,15 +297,13 @@ async def score_bench_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str
 
 #: Variants on the headline board, in order. Anything else an arm emits is
 #: still in the JSON, just not on the chart.
-HEADLINE = ("static", "vpa", "size-rule", "gbt", "gbt-dist", "zeroshot",
+HEADLINE = ("static", "vpa", "size-rule", "gbt", "gbt-dist", "zeroshot-27b", "zeroshot",
             "sft-greedy", "sft-sampled", "jev-argmax", "jev", "jev-pointer-argmax", "jev-pointer")
 
 
 @bench_env.task(cache="auto")
 async def bench_leaderboard(scorecards: list[flyte.io.File]) -> flyte.io.File:
     """Every arm side by side: the board, the frontier, and the slices."""
-    from . import charts
-
     cards = []
     for f in scorecards:
         with open(await f.download()) as fh:
@@ -322,37 +323,37 @@ async def bench_leaderboard(scorecards: list[flyte.io.File]) -> flyte.io.File:
         rows = [(v, board[v].get(key, {})) for v in order if board[v].get(key, {}).get("n")]
         if not rows:
             continue
-        static = board.get("static", {}).get(key, {}).get("cost_per_1k_task_hr")
-        rep.h(f"{split}: cost to get every run to SUCCEEDED")
+        static = board.get("static", {}).get(key, {}).get("gib_hours_per_run")
+        rep.h(f"{split}: memory reserved to get every run to SUCCEEDED (CPU held at oracle)")
         rep.table(
-            ["arm", "$ / 1k task-hr", "vs static", "regret vs oracle", "OOM (1st try)", "attempts",
-             "median over-prov.", "Brier", "ECE(P[OOM])"],
-            [[v, f"{s['cost_per_1k_task_hr']:.2f}",
-              f"{s['cost_per_1k_task_hr'] / static - 1:+.1%}" if static else "-",
-              f"{s['regret']:.1%}", f"{s['oom_rate']:.1%}", f"{s['mean_attempts']:.2f}",
-              f"{s['median_over_provision']:.0%}",
+            ["arm", "memory regret", "vs static", "OOM (1st try)", "attempts", "median over-prov.",
+             "$ regret (packed)", "$ regret (fargate)", "CPU exact", "Brier", "ECE(P[OOM])"],
+            [[v, f"{s['mem_regret']:.1%}",
+              f"{s['gib_hours_per_run'] / static - 1:+.1%}" if static else "-",
+              f"{s['oom_rate']:.1%}", f"{s['mean_attempts']:.2f}", f"{s['median_over_provision']:.0%}",
+              f"{s['regret']:.1%}", f"{s['fargate_regret']:.1%}", f"{s['cpu_exact']:.0%}",
               f"{s['brier']:.3f}" if "brier" in s else "-",
               f"{s['ece_oom']:.3f}" if "ece_oom" in s else "-"] for v, s in rows],
         )
-        rep.raw(charts.hbars([(v, s["regret"], charts.arm_color(v)) for v, s in rows],
-                             title=f"{split}: regret vs oracle (lower is better)"))
-        rep.raw(charts.scatter([(v, s["oom_rate"], s["regret"], charts.arm_color(v)) for v, s in rows],
-                               "first-attempt OOM rate", "regret vs oracle"))
+        rep.raw(charts.hbars([(v, s["mem_regret"], charts.arm_color(v)) for v, s in rows],
+                             title=f"{split}: memory regret vs oracle (lower is better)"))
+        rep.raw(charts.scatter([(v, s["oom_rate"], s["mem_regret"], charts.arm_color(v)) for v, s in rows],
+                               "first-attempt OOM rate", "memory regret vs oracle"))
     if fronts:
         rep.h("test: risk frontier -- OOM rate vs cost as each arm's knob moves")
         rep.p("Distributional arms re-decode the same predictions under OOM penalties 0-16x (no retraining); "
               "point-estimate arms can only add or remove margin.")
-        series = [(v, charts.PALETTE[i % len(charts.PALETTE)], [(p["oom_rate"], p["cost"]) for p in fronts[v]])
+        series = [(v, charts.PALETTE[i % len(charts.PALETTE)], [(p["oom_rate"], p["mem_regret"]) for p in fronts[v]])
                   for i, v in enumerate(o for o in order if o in fronts)]
-        rep.raw(charts.frontier_chart(series, "first-attempt OOM rate", "$ / 1k task-hr"))
-    rep.h("Where the wins come from (test regret by slice)")
+        rep.raw(charts.frontier_chart(series, "first-attempt OOM rate", "memory regret vs oracle"))
+    rep.h("Where the wins come from (test memory regret by slice)")
     slice_keys = sorted({k for v in order for k in board[v] if k.startswith(("driver=", "test/history="))})
     rep.table(["slice", *order],
-              [[k, *[f"{board[v].get(k, {}).get('regret', float('nan')):.1%}" for v in order]] for k in slice_keys])
+              [[k, *[f"{board[v].get(k, {}).get('mem_regret', float('nan')):.1%}" for v in order]] for k in slice_keys])
     fam_keys = sorted({k for v in order for k in board[v] if k.startswith("family=")})
-    rep.h("By family (regret, val+test+ood)")
+    rep.h("By family (memory regret, val+test+ood)")
     rep.table(["family", *order],
-              [[k[7:], *[f"{board[v].get(k, {}).get('regret', float('nan')):.1%}" for v in order]] for k in fam_keys])
+              [[k[7:], *[f"{board[v].get(k, {}).get('mem_regret', float('nan')):.1%}" for v in order]] for k in fam_keys])
     await rep.flush()
     path = os.path.join(tempfile.mkdtemp(prefix="rsb-board-"), "leaderboard.json")
     with open(path, "w") as f:
@@ -392,8 +393,6 @@ def _is_oom(e: BaseException) -> bool:
 
 
 async def _live_one(row: dict, variant: str, mem_idx: int, cpu_idx: int, sem: asyncio.Semaphore) -> dict:
-    from . import grid
-
     mem = min(grid.MEMORY_GRID_MIB[mem_idx], LIVE_MAX_MEMORY_MIB)
     cpu = grid.CPU_GRID[cpu_idx]
     task = live_run.override(resources=flyte.Resources(cpu=cpu if cpu % 1 else int(cpu), memory=f"{mem}Mi"))

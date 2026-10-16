@@ -38,12 +38,20 @@ N_CPU = len(grid.CPU_GRID)
 ATTEMPT_OVERHEAD = 0.02
 #: Attempts after which a run is declared failed (escalation reached the top).
 MAX_ATTEMPTS = 8
+#: What an OOM costs beyond the memory it burned, in multiples of the run's
+#: oracle GiB-hours: the delay (a late result, a blocked downstream task, a
+#: page). 1.0 = "an OOM costs one extra run". Without it, the cheapest
+#: policy under a pure reserved-memory objective tolerates ~37% OOMs (the
+#: size rule did, tuned on v1-partial), which no operator would accept.
+#: The risk frontier sweeps it from 0 to 16.
+OOM_PENALTY = 1.0
 
 
 @dataclass
 class RunOutcome:
     cost: float  # $ for this run, all attempts, nominal 1 task-hour of work
     attempts: int
+    gib_hours: float  # memory reserved, all attempts -- the price-free waste number
     oom_first: bool
     failed: bool
     hours: float  # wall-clock in nominal hours, all attempts
@@ -54,7 +62,7 @@ def simulate_run(mem_idx: int, cpu_idx: int, required_mib: float, avg_cores: flo
                  t_peak_frac: float, pricing: str = "packed") -> RunOutcome:
     cpu = grid.CPU_GRID[cpu_idx]
     stretch = max(1.0, max(avg_cores, 0.1) / cpu)
-    cost, hours, attempts = 0.0, 0.0, 0
+    cost, hours, attempts, gib_h = 0.0, 0.0, 0, 0.0
     m = mem_idx
     oom_first = False
     while attempts < MAX_ATTEMPTS:
@@ -63,17 +71,18 @@ def simulate_run(mem_idx: int, cpu_idx: int, required_mib: float, avg_cores: flo
         rate = grid.dollars_per_hr(mem, cpu, pricing)
         if mem >= required_mib:
             run_h = stretch + ATTEMPT_OVERHEAD
-            return RunOutcome(cost + rate * run_h, attempts, oom_first, False, hours + run_h,
-                              mem / required_mib - 1.0)
+            return RunOutcome(cost + rate * run_h, attempts, gib_h + mem / 1024 * run_h, oom_first, False,
+                              hours + run_h, mem / required_mib - 1.0)
         if attempts == 1:
             oom_first = True
         burned = stretch * max(t_peak_frac, 0.05) + ATTEMPT_OVERHEAD
         cost += rate * burned
         hours += burned
+        gib_h += mem / 1024 * burned
         if m == N_MEM - 1:
             break
         m = grid.mem_index_covering(mem * 2)
-    return RunOutcome(cost, attempts, oom_first, True, hours, float("nan"))
+    return RunOutcome(cost, attempts, gib_h, oom_first, True, hours, float("nan"))
 
 
 def oracle(row: dict) -> tuple[int, int]:
@@ -84,22 +93,23 @@ def oracle(row: dict) -> tuple[int, int]:
 
 
 def cost_matrix(t_peak_frac: float = 0.5, cpu_idx: int = 1, avg_cores: float = 1.0,
-                oom_penalty: float = 0.0) -> np.ndarray:
-    """C[m, j]: cost of requesting memory cell m when the run needs cell j.
+                oom_penalty: float = OOM_PENALTY) -> np.ndarray:
+    """C[m, j]: memory GiB-hours (the headline objective) spent getting a run
+    to SUCCEEDED when it requests cell m and needs cell j.
 
     The need is represented by its cell's interior -- the label is the
     cheapest cell that fits, so `needs cell j` means `fits in j, not j-1`.
     `oom_penalty` adds, per OOM, that many multiples of the run's oracle
     cost: the price of the delay (an SLA, a blocked downstream team) on
-    top of the compute an OOM burns. 0 = compute dollars only.
+    top of the memory an OOM burns (default: the headline's OOM_PENALTY).
     """
     C = np.zeros((N_MEM, N_MEM))
     for j in range(N_MEM):
         need = grid.MEMORY_GRID_MIB[j] * (0.85 if j else 0.5)  # interior of cell j
-        base = simulate_run(j, cpu_idx, need, avg_cores, t_peak_frac).cost
+        base = simulate_run(j, cpu_idx, need, avg_cores, t_peak_frac).gib_hours
         for m in range(N_MEM):
             o = simulate_run(m, cpu_idx, need, avg_cores, t_peak_frac)
-            C[m, j] = o.cost + oom_penalty * base * (o.attempts - 1)
+            C[m, j] = o.gib_hours + oom_penalty * base * (o.attempts - 1)
     return C
 
 
@@ -135,25 +145,41 @@ def score(rows: list[dict], preds: dict[str, dict]) -> dict:
     """Aggregate metrics for one arm over `rows` (which carry labels).
 
     `preds[run_id]` = {"mem_idx", "cpu_idx", optional "mem_probs"}.
+
+    **Headline: `mem_regret`** -- memory GiB-hours reserved to get every run
+    to SUCCEEDED (OOM-killed attempts included, plus OOM_PENALTY oracle-runs
+    of delay per OOM), over what the oracle reserves, minus 1. Price-free, and it is the decision the OOM cliff
+    sits on. CPU is held at the oracle's cell for every arm here so the
+    headline isolates memory (nearly every bench workload wants ~1 core; a
+    CPU coin-flip would otherwise dominate any dollar figure). Each arm's
+    own CPU calls are scored separately (`cpu_*`), and dollars are reported
+    under both price models as secondary columns.
     """
-    out = {"n": 0}
-    costs, ocosts, ooms, fails, atts, overs, hours, ohours = [], [], [], [], [], [], [], []
-    fcosts, focosts = [], []
-    briers, nlls, p_ooms, real_ooms = [], [], [], []
+    out: dict = {"n": 0}
+    acc = {k: [] for k in ("gibh", "raw_gibh", "ogibh", "cost", "ocost", "fcost", "focost", "own_cost",
+                           "oom", "fail", "att", "hours", "ohours", "cpu_exact", "cpu_under")}
+    overs, briers, nlls, p_ooms, real_ooms = [], [], [], [], []
     missing = 0
     for r in rows:
         p = preds.get(r["run_id"])
         if p is None:
             missing += 1
             continue
-        o = simulate_run(int(p["mem_idx"]), int(p["cpu_idx"]), r["required_mib"], r["avg_cores"], r["t_peak_frac"])
         om, oc = oracle(r)
-        orc = simulate_run(om, oc, r["required_mib"], r["avg_cores"], r["t_peak_frac"])
-        costs.append(o.cost), ocosts.append(orc.cost), ooms.append(o.oom_first), fails.append(o.failed)
-        fcosts.append(simulate_run(int(p["mem_idx"]), int(p["cpu_idx"]), r["required_mib"], r["avg_cores"],
-                                   r["t_peak_frac"], "fargate").cost)
-        focosts.append(simulate_run(om, oc, r["required_mib"], r["avg_cores"], r["t_peak_frac"], "fargate").cost)
-        atts.append(o.attempts), hours.append(o.hours), ohours.append(orc.hours)
+        args = (r["required_mib"], r["avg_cores"], r["t_peak_frac"])
+        m = int(p["mem_idx"])
+        o = simulate_run(m, oc, *args)
+        orc = simulate_run(om, oc, *args)
+        acc["gibh"].append(o.gib_hours + OOM_PENALTY * orc.gib_hours * (o.attempts - 1))
+        acc["ogibh"].append(orc.gib_hours)
+        acc["raw_gibh"].append(o.gib_hours)
+        acc["cost"].append(o.cost), acc["ocost"].append(orc.cost)
+        acc["fcost"].append(simulate_run(m, oc, *args, "fargate").cost)
+        acc["focost"].append(simulate_run(om, oc, *args, "fargate").cost)
+        acc["own_cost"].append(simulate_run(m, int(p["cpu_idx"]), *args).cost)
+        acc["oom"].append(o.oom_first), acc["fail"].append(o.failed), acc["att"].append(o.attempts)
+        acc["hours"].append(o.hours), acc["ohours"].append(orc.hours)
+        acc["cpu_exact"].append(int(p["cpu_idx"]) == oc), acc["cpu_under"].append(int(p["cpu_idx"]) < oc)
         if not o.oom_first:
             overs.append(o.over_provision)
         probs = p.get("mem_probs")
@@ -164,27 +190,33 @@ def score(rows: list[dict], preds: dict[str, dict]) -> dict:
             onehot[om] = 1
             briers.append(float(((pr - onehot) ** 2).sum()))
             nlls.append(float(-math.log(max(pr[om], 1e-9))))
-            p_ooms.append(p_oom(pr, int(p["mem_idx"])))
+            p_ooms.append(p_oom(pr, m))
             real_ooms.append(o.oom_first)
-    n = len(costs)
+    n = len(acc["gibh"])
     if not n:
         return {"n": 0, "missing": missing}
-    cost_k = 1000 * float(np.mean(costs))
-    ocost_k = 1000 * float(np.mean(ocosts))
+    mean = {k: float(np.mean(v)) for k, v in acc.items()}
     out.update({
         "n": n,
         "missing": missing,
-        "cost_per_1k_task_hr": cost_k,
-        "oracle_cost_per_1k_task_hr": ocost_k,
-        "regret": cost_k / ocost_k - 1.0,
-        "fargate_cost_per_1k_task_hr": 1000 * float(np.mean(fcosts)),
-        "fargate_regret": float(np.mean(fcosts) / np.mean(focosts) - 1.0),
-        "oom_rate": float(np.mean(ooms)),
-        "fail_rate": float(np.mean(fails)),
-        "mean_attempts": float(np.mean(atts)),
-        "latency_vs_oracle": float(np.mean(hours) / np.mean(ohours)),
+        "mem_regret": float(np.sum(acc["gibh"]) / np.sum(acc["ogibh"]) - 1.0),
+        "gib_hours_per_run": mean["gibh"],
+        # the same without the OOM delay penalty: memory actually reserved
+        "reserved_mem_regret": float(np.sum(acc["raw_gibh"]) / np.sum(acc["ogibh"]) - 1.0),
+        "oom_rate": mean["oom"],
+        "fail_rate": mean["fail"],
+        "mean_attempts": mean["att"],
+        "latency_vs_oracle": mean["hours"] / mean["ohours"],
         "median_over_provision": float(np.median(overs)) if overs else float("nan"),
         "p90_over_provision": float(np.quantile(overs, 0.9)) if overs else float("nan"),
+        "cost_per_1k_task_hr": 1000 * mean["cost"],
+        "oracle_cost_per_1k_task_hr": 1000 * mean["ocost"],
+        "regret": mean["cost"] / mean["ocost"] - 1.0,
+        "fargate_cost_per_1k_task_hr": 1000 * mean["fcost"],
+        "fargate_regret": mean["fcost"] / mean["focost"] - 1.0,
+        "own_cpu_regret": mean["own_cost"] / mean["ocost"] - 1.0,
+        "cpu_exact": mean["cpu_exact"],
+        "cpu_under": mean["cpu_under"],
     })
     if briers:
         out.update({
@@ -217,7 +249,7 @@ FRONTIER_SHIFTS = (-1, 0, 1, 2, 3, 4)
 
 
 def frontier(rows: list[dict], preds: dict[str, dict]) -> list[dict]:
-    """OOM rate vs compute cost as the arm's risk knob moves.
+    """OOM rate vs memory regret as the arm's risk knob moves.
 
     A distributional arm re-decodes the SAME predictions under a range of
     OOM penalties -- no retraining, one matrix product per decision. A
@@ -231,13 +263,13 @@ def frontier(rows: list[dict], preds: dict[str, dict]) -> list[dict]:
             dec = {rid: {**p, "mem_idx": bayes_mem_index(p["mem_probs"], C)} for rid, p in preds.items()}
             s = score(rows, dec)
             points.append({"knob": f"penalty={lam:g}", "oom_rate": s["oom_rate"],
-                           "cost": s["cost_per_1k_task_hr"], "regret": s["regret"]})
+                           "mem_regret": s["mem_regret"], "regret": s["regret"]})
     else:
         for k in FRONTIER_SHIFTS:
             dec = {rid: {**p, "mem_idx": int(min(N_MEM - 1, max(0, p["mem_idx"] + k)))} for rid, p in preds.items()}
             s = score(rows, dec)
             points.append({"knob": f"shift={k:+d}", "oom_rate": s["oom_rate"],
-                           "cost": s["cost_per_1k_task_hr"], "regret": s["regret"]})
+                           "mem_regret": s["mem_regret"], "regret": s["regret"]})
     return points
 
 

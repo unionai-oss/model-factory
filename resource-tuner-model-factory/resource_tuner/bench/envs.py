@@ -9,6 +9,8 @@ The same pins are the local dev deps, so a laptop reproduces the cluster.
 
 from __future__ import annotations
 
+import os
+
 import flyte
 
 from ..config import LLM_SERVICE_SECRET, cluster_env_vars
@@ -100,12 +102,17 @@ live_env = flyte.TaskEnvironment(
     env_vars=cluster_env_vars(),
 )
 
+#: The LLM arms' accelerator. A10G:1 (24 GB, bf16) is the pool with headroom
+#: here: the L40s:1 group sat at "max node group size reached" for all three
+#: arms of rsb-pilot-board-3. Override per deploy with RSB_GPU=L40s:1 (then
+#: mind g6e.2xlarge's 7.66 allocatable CPU -- cpu=8 never schedules).
+BENCH_GPU = os.environ.get("RSB_GPU", "A10G:1")
+
 bench_gpu_env = flyte.TaskEnvironment(
     name="rt-bench-gpu",
     image=bench_gpu_image,
-    # g6e.2xlarge allocatable: 7.66 CPU / 59.1 GiB -- cpu=8 would never schedule.
-    resources=flyte.Resources(cpu=6, memory="44Gi", gpu="L40s:1", disk="100Gi", shm="auto"),
-    env_vars={**cluster_env_vars(), "TOKENIZERS_PARALLELISM": "false",
+    resources=flyte.Resources(cpu=6, memory="24Gi", gpu=BENCH_GPU, disk="100Gi", shm="auto"),
+    env_vars={**cluster_env_vars(), "RSB_GPU": BENCH_GPU, "TOKENIZERS_PARALLELISM": "false",
               "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
 )
 
