@@ -70,10 +70,25 @@ def _device() -> str:
     return "mps" if torch.backends.mps.is_available() else "cpu"  # local smoke runs
 
 
+def _amp_dtype():
+    """bf16 where the hardware has it; fp16 (+ a GradScaler) on T4-class GPUs."""
+    import torch
+
+    if torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+        return torch.float16
+    return torch.bfloat16
+
+
 def _autocast():
     import torch
 
-    return torch.autocast(_device(), dtype=torch.bfloat16)
+    return torch.autocast(_device(), dtype=_amp_dtype())
+
+
+def _scaler():
+    import torch
+
+    return torch.amp.GradScaler("cuda", enabled=_amp_dtype() == torch.float16)
 
 
 def _sync() -> None:
@@ -141,7 +156,7 @@ def _load(cfg: TrainConfig, causal: bool):
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
     cls = AutoModelForCausalLM if causal else AutoModel
-    base = cls.from_pretrained(cfg.model_name, dtype=torch.bfloat16, attn_implementation="sdpa").to(_device())
+    base = cls.from_pretrained(cfg.model_name, dtype=_amp_dtype(), attn_implementation="sdpa").to(_device())
     base.config.use_cache = False
     base.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     base.enable_input_require_grads()
@@ -297,6 +312,7 @@ def train_jev(train: list[dict], val: list[dict], cfg: TrainConfig, log=print):
     steps_per_epoch = math.ceil(len(items) / cfg.batch_size / cfg.grad_accum)
     sched = _schedule(opt, steps_per_epoch * cfg.epochs, cfg.warmup_frac)
     rng = np.random.default_rng(cfg.seed)
+    scaler = _scaler()
     history = []
     model.train()
     step = 0
@@ -312,11 +328,12 @@ def train_jev(train: list[dict], val: list[dict], cfg: TrainConfig, log=print):
                 H, last = _answer_states(model, ids, mask)
             lm, lc = head(H, last, xb)
             loss = torch.nn.functional.cross_entropy(lm, ym) + cfg.cpu_loss_weight * torch.nn.functional.cross_entropy(lc, yc)
-            (loss / cfg.grad_accum).backward()
-            running.append(float(loss))
+            scaler.scale(loss / cfg.grad_accum).backward()
+            running.append(float(loss.detach()))
             if (i + 1) % cfg.grad_accum == 0:
+                scaler.unscale_(opt)
                 torch.nn.utils.clip_grad_norm_([p for g in params for p in g["params"]], 1.0)
-                opt.step(), sched.step(), opt.zero_grad(set_to_none=True)
+                scaler.step(opt), scaler.update(), sched.step(), opt.zero_grad(set_to_none=True)
                 step += 1
                 if step % 20 == 0:
                     log(f"[jev] epoch {epoch} step {step} loss {np.mean(running[-40:]):.4f}")
@@ -381,6 +398,7 @@ def train_sft(train: list[dict], cfg: TrainConfig, log=print):
     steps_per_epoch = math.ceil(len(items) / cfg.batch_size / cfg.grad_accum)
     sched = _schedule(opt, steps_per_epoch * cfg.epochs, cfg.warmup_frac)
     rng = np.random.default_rng(cfg.seed)
+    scaler = _scaler()
     history = []
     model.train()
     step = 0
@@ -395,11 +413,12 @@ def train_sft(train: list[dict], cfg: TrainConfig, log=print):
                 labels[j, : len(p)] = -100  # completion-only loss
             with _autocast():
                 loss = model(input_ids=ids.to(_device()), attention_mask=mask.to(_device()), labels=labels.to(_device())).loss
-            (loss / cfg.grad_accum).backward()
-            running.append(float(loss))
+            scaler.scale(loss / cfg.grad_accum).backward()
+            running.append(float(loss.detach()))
             if (i + 1) % cfg.grad_accum == 0:
+                scaler.unscale_(opt)
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
-                opt.step(), sched.step(), opt.zero_grad(set_to_none=True)
+                scaler.step(opt), scaler.update(), sched.step(), opt.zero_grad(set_to_none=True)
                 step += 1
                 if step % 20 == 0:
                     log(f"[sft] epoch {epoch} step {step} loss {np.mean(running[-40:]):.4f}")

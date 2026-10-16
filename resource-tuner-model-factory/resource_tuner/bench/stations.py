@@ -41,6 +41,7 @@ from .envs import (
 from .gpu_stations import train_llm_arm
 from .llm_arms import zeroshot_predict
 from .measure import measure_run
+from .versioning import arms_cache, corpus_cache
 
 
 def _write_parquet(rows: list[dict], name: str) -> str:
@@ -57,7 +58,7 @@ async def _read_rows(f: flyte.io.File) -> list[dict]:
 # ── 1. generate ─────────────────────────────────────────────────────────
 
 
-@bench_env.task(cache="auto")
+@bench_env.task(cache=corpus_cache())
 async def generate_bench_runs(release: str, tasks_per_family: int = 200, seed: int = 0) -> flyte.io.File:
     """Sample tasks from every family and expand each into its runs."""
     rows = dataset.generate_runs(tasks_per_family, seed=seed)
@@ -104,14 +105,14 @@ def _measure_rows(rows: list[dict], guard_mib: float, concurrency: int = 1) -> l
 
 # retries=3: pass 1 runs on interruptible capacity, so a spot reclaim is
 # an expected event, not a failure.
-@measure_env.task(retries=3, cache="auto", timeout=flyte.Timeout(max_runtime=4 * 3600))
+@measure_env.task(retries=3, cache=corpus_cache(), timeout=flyte.Timeout(max_runtime=4 * 3600))
 async def measure_shard(rows_json: str, guard_mib: float = MEASURE_GUARD_MIB,
                         concurrency: int = MEASURE_CONCURRENCY) -> str:
     """Pass 1: measure a shard of runs, `concurrency` at a time."""
     return json.dumps(_measure_rows(json.loads(rows_json), guard_mib, concurrency))
 
 
-@measure_big_env.task(retries=1, cache="auto", timeout=flyte.Timeout(max_runtime=4 * 3600))
+@measure_big_env.task(retries=1, cache=corpus_cache(), timeout=flyte.Timeout(max_runtime=4 * 3600))
 async def measure_shard_big(rows_json: str, guard_mib: float = BIG_GUARD_MIB) -> str:
     """Pass 2: re-measure the runs pass 1's guard censored, on a 24Gi pod."""
     return json.dumps(_measure_rows(json.loads(rows_json), guard_mib))
@@ -129,7 +130,7 @@ def _collect(results, measured: dict[str, dict]) -> int:
     return lost
 
 
-@bench_env.task(cache="auto")
+@bench_env.task(cache=corpus_cache())
 async def measure_bench(runs: flyte.io.File, shard_size: int = 60) -> flyte.io.File:
     """Measure every run, in parallel shards; return the labelled corpus."""
     rows = await _read_rows(runs)
@@ -244,7 +245,7 @@ def _fit_cpu_arm(arm: str, splits: dict[str, list[dict]]) -> tuple[list[dict], d
     return _pred_rows(arm, preds, rows), {"knobs": knobs, "ms_per_decision": ms}
 
 
-@bench_env.task(cache="auto")
+@bench_env.task(cache=arms_cache())
 async def fit_bench_arm(corpus: flyte.io.File, arm: str, llm_model: str = "Qwen/Qwen3-1.7B", llm_epochs: int = 3,
                         llm_max_train_rows: int = 0) -> flyte.io.Dir:
     """Fit one arm on train (knob tuned on val); predict val/test/ood.
@@ -295,7 +296,7 @@ def _preds_by_variant(preds: pd.DataFrame) -> dict[str, dict[str, dict]]:
     return out
 
 
-@bench_env.task(cache="auto")
+@bench_env.task(cache=arms_cache())
 async def score_bench_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str) -> flyte.io.File:
     """Score every decoding variant of one arm on every split and slice."""
     rows = [r for r in await _read_rows(corpus) if dataset.usable(r)]
@@ -325,7 +326,7 @@ HEADLINE = ("static", "vpa", "size-rule", "gbt", "gbt-dist", "zeroshot-27b", "ze
             "jev-num-argmax", "jev-num")
 
 
-@bench_env.task(cache="auto")
+@bench_env.task(cache=arms_cache())
 async def bench_leaderboard(scorecards: list[flyte.io.File]) -> flyte.io.File:
     """Every arm side by side: the board, the frontier, and the slices."""
     cards = []
@@ -434,7 +435,7 @@ async def _live_one(row: dict, variant: str, mem_idx: int, cpu_idx: int, sem: as
     return out
 
 
-@bench_env.task(cache="auto")
+@bench_env.task(cache=arms_cache())
 async def live_validate(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir], runs_per_family: int = 10,
                         concurrency: int = 150) -> flyte.io.File:
     """Re-run a stratified sample of test/ood runs for real, under each
