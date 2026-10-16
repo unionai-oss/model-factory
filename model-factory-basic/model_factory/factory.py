@@ -41,9 +41,12 @@ promoted model appears. Three things follow:
 
 - Day D is a pure function of `champion[D]`: re-materializing it is all cache
   hits, and a backfill of D1..D3 runs day by day as champions get crowned.
-- A day whose champion does not exist yet stops in seconds, before any GPU
-  work, with "source partition not in the registry". Start the loop with
-  `seed_champion --date <D0>` (the base model is champion zero).
+- A day whose champion does not exist yet never trains. Blocking is per
+  dependency, not per run: the planner still builds what does not read the
+  champion (that day's seed tasks; the fixed artifacts are cache hits), then
+  reports `mf-champion[D]` as "not in the registry" and blocks synthetic,
+  training, eval and release. Start the loop with `seed_champion --date <D0>`
+  (the base model is champion zero).
 - The release is champion/challenger: `promoted-model[D]` is the candidate
   only if it beats the champion; otherwise the champion carries forward. A bad
   day never moves the factory backwards and never breaks tomorrow's input.
@@ -199,9 +202,10 @@ def build_graph(profile: str = DEFAULT_PROFILE) -> factory.Factory:
         endpoint,
         description="Closed-loop model factory: curate -> curriculum -> GRPO -> eval vs champion -> release -> serve",
         triggers=[
-            # Nightly release of today's partition. It does GPU work only when
-            # today's champion exists (yesterday's release was crowned); when
-            # nothing changed it is all cache hits.
+            # Nightly release of today's partition. It trains only when today's
+            # champion exists (yesterday's release was crowned); without one it
+            # curates the day's seed tasks and stops. When nothing changed it is
+            # all cache hits.
             factory.on(flyte.Cron("0 6 * * *"), promoted, endpoint, name="nightly-release"),
         ],
     )

@@ -21,8 +21,8 @@ That is the point of a dark factory, but it is a standing GPU cost on a shared
 demo cluster: decide deliberately before seeding a champion for the current
 date. To pause, set `auto_activate=False` on `crown_on_promotion`
 (`model_factory/evaluation/tasks.py`) and redeploy `team_eval.py` — without
-crowns, the next night stops at "mf-champion[D] not in the registry" before any
-GPU work.
+crowns, the next night curates its seed tasks and then blocks at
+"mf-champion[D] not in the registry" — no training.
 
 ## Deferred integrations
 

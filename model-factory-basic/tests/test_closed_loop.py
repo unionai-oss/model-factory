@@ -105,6 +105,22 @@ def test_more_failures_than_seed_slots_takes_the_hardest():
     assert list(seeds["task_id"]) == ["h1", "h2"]
 
 
+def test_replay_takes_only_the_learnable_failures_most_solvable_first():
+    from model_factory.contracts import DATASET_COLUMNS
+    from model_factory.data_engineering.synthetic import frontier_replay
+
+    hard = pd.DataFrame(
+        [
+            {**{c: "" for c in DATASET_COLUMNS}, "task_id": t, "question": f"q-{t}", "difficulty": "easy", "rollout_pass_rate": r}
+            for t, r in [("never", 0.0), ("some", 0.25), ("half", 0.5)]
+        ]
+    )
+    out = frontier_replay(hard, 5)
+    assert list(out["task_id"]) == ["half", "some"]
+    assert set(out["source"]) == {"replay"} and list(out.columns) == DATASET_COLUMNS
+    assert frontier_replay(None, 5).empty
+
+
 # ── the comparison and the decision ─────────────────────────────────────
 
 

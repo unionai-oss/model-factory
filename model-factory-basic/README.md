@@ -90,10 +90,11 @@ What that buys:
 
 - **Day D is a pure function of `champion[D]`.** Re-materializing a day is all
   cache hits; a cache hit publishes no new version, so it does not re-crown.
-- **A day without a champion stops before any GPU work**, with
-  `source partition(s) not in the registry: mf-champion[D]`. That is also why
-  a backfill runs day by day: each day's champion appears when the previous
-  day is released.
+- **A day without a champion never trains.** Blocking is per dependency: the
+  day's seed tasks still get curated (they do not read the champion), then
+  everything downstream of `mf-champion[D]` is blocked with `source
+  partition(s) not in the registry`. That is also why a backfill runs day by
+  day: each day's champion appears when the previous day is released.
 - **Warm start and curriculum are both just inputs.** `train_grpo` and
   `generate_synthetic_tasks` take `champion=champion` like any other artifact,
   and the lineage of every checkpoint names the champion it grew from.
@@ -130,8 +131,9 @@ $F materialize model-factory mf-promoted-model --partition date=2026-10-15 --reb
 
 **Triggers.** A `flyte.Cron` on the factory materializes today's release
 every night at 06:00 UTC, and the `crown-champion` artifact trigger closes the
-loop. Both are live as soon as they are deployed. The nightly run only does
-GPU work if today's champion exists, i.e. if yesterday was released.
+loop. Both are live as soon as they are deployed. The nightly run only
+trains if today's champion exists, i.e. if yesterday was released; otherwise
+it curates the day's seed tasks and stops.
 
 **Human gates.** Both gates are `flyte` conditions inside station tasks, so
 `mf-promoted-model` cannot exist without them. They default open

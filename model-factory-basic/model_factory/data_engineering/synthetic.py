@@ -3,7 +3,8 @@
 What gets mutated is the closed-loop part. ``champion[D]`` (the model day D
 starts from) carries ``hard_tasks.parquet``: the training tasks its own GRPO
 rollouts kept failing. Day D mutates THOSE first, and only tops up with random
-seed tasks — so yesterday's weaknesses become today's practice. On the first
+seed tasks — so yesterday's weaknesses become today's practice. The failures it
+sometimes solved (the learnable frontier) are also replayed as-is. On the first
 day the champion is the base model, has no failures on record, and the seeds
 are random.
 
@@ -181,6 +182,22 @@ def pick_seeds(hard: pd.DataFrame | None, pool: pd.DataFrame, n: int, seed: int 
     return pd.concat(picked, ignore_index=True)
 
 
+def frontier_replay(hard: pd.DataFrame | None, n: int) -> pd.DataFrame:
+    """The champion's *learnable* failures, replayed as-is: rollout pass rate in (0, 0.5].
+
+    A task the policy never solved gives GRPO no passing rollout to learn from;
+    one it sometimes solves is exactly where the update has signal. They are
+    train tasks from an earlier day, never held-out ones.
+    """
+    if hard is None or "rollout_pass_rate" not in hard or not len(hard):
+        return pd.DataFrame(columns=DATASET_COLUMNS)
+    f = hard[hard["rollout_pass_rate"] > 0].sort_values("rollout_pass_rate", ascending=False, kind="stable")
+    f = f.head(n)[DATASET_COLUMNS].copy()
+    f["source"] = "replay"
+    f["difficulty"] = "replay:" + f["difficulty"].astype(str)
+    return f.reset_index(drop=True)
+
+
 @de_gpu_env.task(report=True)
 async def generate_synthetic_tasks(
     dataset: flyte.io.File,
@@ -252,7 +269,9 @@ async def generate_synthetic_tasks(
     leaked = set(find_leaks([k["question"] for k in kept], held["question"]))
     kept = [k for i, k in enumerate(kept) if i not in leaked]
 
-    out_df = pd.DataFrame(kept, columns=DATASET_COLUMNS)
+    replay = frontier_replay(hard, profile.synthetic_seeds)
+    replay = replay.drop(index=find_leaks(replay["question"], held["question"])).reset_index(drop=True)
+    out_df = pd.concat([pd.DataFrame(kept, columns=DATASET_COLUMNS), replay], ignore_index=True)
     out = "/tmp/synthetic_tasks.parquet"
     out_df.to_parquet(out, index=False)
 
@@ -265,6 +284,7 @@ async def generate_synthetic_tasks(
             "parsed + oracle-verified": len(kept) + len(leaked),
             "dropped (held-out match)": len(leaked),
             "kept": len(kept),
+            "replayed frontier tasks": len(replay),
             "yield": f"{len(kept) / max(len(attempts), 1):.0%}",
             "teacher": profile.synthetic_model.split("/")[-1],
         }

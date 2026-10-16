@@ -61,7 +61,7 @@ ARTIFACT_PROMOTED = "mf-promoted-model"
 #: day). So the edge that crosses days is a separate artifact the factory
 #: only reads. Keeping it partitioned makes day D a pure function of
 #: `champion[D]`: re-materializing a day is a cache hit, and a missing champion
-#: stops the day before any GPU work instead of training from the wrong model.
+#: blocks training instead of training from the wrong model.
 ARTIFACT_CHAMPION = "mf-champion"
 
 #: The factory's `serve` node: a running app, not an artifact.
