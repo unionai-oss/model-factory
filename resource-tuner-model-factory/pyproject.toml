@@ -3,10 +3,10 @@ name = "resource-tuner-model-factory"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "flyte>=2.7.0,<2.8.0",
-    # Public as of 0.10.0 (previously the private niels/get-metrics
-    # branch) — ships the Metrics interface (flyteplugins.union.remote).
-    "flyteplugins-union>=0.10.0",
+    "flyte>=2.10.0",
+    # 0.12.0+ ships factories (flyteplugins.union.factory) alongside the
+    # Metrics interface (flyteplugins.union.remote).
+    "flyteplugins-union>=0.12.0",
     "pandas>=2.2",
     "pyarrow>=17",
     "pytest>=8",
@@ -34,10 +34,6 @@ dev = [
 
 [tool.uv]
 package = false
-# flyteplugins-union 0.10.0 still declares flyte<2.7.0 on PyPI; per the
-# 2026-09-03 release both are meant to pair, so relax the stale cap here.
-# Drop this override once a plugins release declares flyte 2.7 support.
-override-dependencies = ["flyte>=2.7.0,<2.8.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

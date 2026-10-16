@@ -1,11 +1,14 @@
 """Container images for the resource-tuner factory.
 
-Three images because the workloads differ by an order of magnitude:
+Four images because the workloads differ by an order of magnitude:
 - harness: CPU-only, must import everything the CORPUS templates import
   (numpy/pandas/sklearn/torch-cpu). Kept lean — episode pods are the
   experiment, and image pull time pads every episode.
 - gpu: the trainer stack (TRL/peft/bitsandbytes) + the metrics plugin.
 - driver: CPU orchestration + the metrics plugin.
+- decision: CPU torch, for the multi-head decision-model arm. A separate
+  image from `driver` because torch roughly triples the pull, and the
+  orchestration env pulls on every single action.
 
 `with_pip_packages` everywhere; `.with_requirements()` stores a relative
 path that breaks under the remote builder.
@@ -19,12 +22,14 @@ from ..config import HF_TOKEN_SECRET, USE_SECRETS, WANDB_SECRET
 
 PYTHON = (3, 12)
 
-# flyteplugins-union is public as of 0.10.0 (Metrics interface). Its PyPI
-# metadata still caps flyte<2.7.0, so pip may downgrade flyte when it
-# installs; the re-pin layer after it restores flyte 2.7.x deterministically.
-# Collapse to one plain layer once a plugins release declares 2.7 support.
-_METRICS_LAYER = ("flyteplugins-union>=0.10.0",)
-_FLYTE_REPIN_LAYER = ("flyte>=2.7.0,<2.8.0",)
+# flyteplugins-union carries both the Metrics interface and (as of 0.12.0)
+# factories. Its PyPI metadata has historically capped the flyte version, so
+# pip can downgrade flyte while installing it; the re-pin layer after it
+# restores the SDK line deterministically. The floor MUST track the version
+# the project deploys with — an image pinned a minor behind the deploying SDK
+# runs tasks on a runtime that cannot read the factory task spec.
+_METRICS_LAYER = ("flyteplugins-union>=0.12.0",)
+_FLYTE_REPIN_LAYER = ("flyte>=2.10.0",)
 
 
 def secrets() -> list[flyte.Secret]:
@@ -92,6 +97,20 @@ driver_image = (
     # scikit-learn: the classical ML baseline (quantile GBTs) trains inside
     # eval_tuner on this env.
     .with_pip_packages("pandas>=2.2", "pyarrow>=17", "scikit-learn>=1.5")
+    .with_pip_packages(*_METRICS_LAYER)
+    .with_pip_packages(*_FLYTE_REPIN_LAYER)
+)
+
+
+# The decision-model arm (training/decision_model.py) is a small MLP: torch,
+# but strictly CPU — a 256x128 trunk over 43 features trains in seconds, and
+# putting it on the GPU image would queue it behind the LLM trainer for an
+# accelerator it never uses.
+decision_image = (
+    flyte.Image.from_debian_base(name="rt-decision", python_version=PYTHON)
+    .with_pip_packages("pandas>=2.2", "pyarrow>=17")
+    # CPU wheel: the CUDA build is ~5GB of dead weight here.
+    .with_pip_packages("torch>=2.4", index_url="https://download.pytorch.org/whl/cpu")
     .with_pip_packages(*_METRICS_LAYER)
     .with_pip_packages(*_FLYTE_REPIN_LAYER)
 )

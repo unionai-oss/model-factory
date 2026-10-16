@@ -38,23 +38,28 @@ from .config import (
 from .contracts import (
     ARTIFACT_CHECKPOINT,
     ARTIFACT_EVAL_REPORT,
-    ARTIFACT_INFERENCE_ENDPOINT,
     ARTIFACT_PROMOTED,
     ARTIFACT_RL_DATASET,
+    ARTIFACT_SEED_TASKS,
     ARTIFACT_SYNTHETIC,
+    ENDPOINT_APP,
 )
 from .shared import assets
 from .shared.images import cpu_image
 
-# Factory stations → graph nodes. Each artifact is one team's published
-# contract (contracts.py), so the station's owner is part of its identity.
+# Factory stations → graph nodes, mirroring the factory graph declared in
+# model_factory/factory.py. Each artifact is one team's contract
+# (contracts.py), so the station's owner is part of its identity.
 STATIONS: list[dict[str, str]] = [
+    {"artifact": ARTIFACT_SEED_TASKS, "label": "Seed tasks", "team": "data-eng"},
     {"artifact": ARTIFACT_SYNTHETIC, "label": "Synthetic tasks", "team": "data-eng"},
     {"artifact": ARTIFACT_RL_DATASET, "label": "RL task dataset", "team": "data-eng"},
     {"artifact": ARTIFACT_CHECKPOINT, "label": "Policy checkpoint", "team": "training"},
     {"artifact": ARTIFACT_EVAL_REPORT, "label": "Eval report", "team": "eval"},
     {"artifact": ARTIFACT_PROMOTED, "label": "Promoted model", "team": "eval"},
-    {"artifact": ARTIFACT_INFERENCE_ENDPOINT, "label": "Inference endpoint", "team": "inference"},
+    # Not an artifact: the factory's `serve` node. It has no registry versions,
+    # so it renders as an empty station whose state lives in the app itself.
+    {"artifact": ENDPOINT_APP, "label": "Inference endpoint (app)", "team": "inference"},
 ]
 
 TEAMS: dict[str, str] = {
@@ -64,14 +69,19 @@ TEAMS: dict[str, str] = {
     "inference": "Inference",
 }
 
-# The consumes/publishes table from contracts.py, as a DAG. Note this is not
-# a straight line: `policy-checkpoint` fans out to eval and inference.
+# The factory graph as a DAG (model_factory/factory.py). Not a straight line:
+# the day's seed tasks feed both the synthetic batch and the release, and
+# `policy-checkpoint` feeds both the eval report and the promotion.
 CONTRACT_EDGES: list[tuple[str, str]] = [
+    (ARTIFACT_SEED_TASKS, ARTIFACT_SYNTHETIC),
+    (ARTIFACT_SEED_TASKS, ARTIFACT_RL_DATASET),
     (ARTIFACT_SYNTHETIC, ARTIFACT_RL_DATASET),
     (ARTIFACT_RL_DATASET, ARTIFACT_CHECKPOINT),
+    (ARTIFACT_RL_DATASET, ARTIFACT_EVAL_REPORT),
     (ARTIFACT_CHECKPOINT, ARTIFACT_EVAL_REPORT),
+    (ARTIFACT_CHECKPOINT, ARTIFACT_PROMOTED),
     (ARTIFACT_EVAL_REPORT, ARTIFACT_PROMOTED),
-    (ARTIFACT_CHECKPOINT, ARTIFACT_INFERENCE_ENDPOINT),
+    (ARTIFACT_PROMOTED, ENDPOINT_APP),
 ]
 
 REFRESH_INTERVAL_S = 20
@@ -178,7 +188,7 @@ async def _collect() -> dict:
                 {
                     "version": f"{v.run_name}/{v.action_name}" if v.action_name else v.path.rsplit("/", 2)[-2],
                     "url": v.path,
-                    "kind": v.via,
+                    "kind": ",".join(f"{k}={x}" for k, x in sorted((v.partitions or {}).items())) or "artifact",
                     "source": v.run_name,
                     "run_url": _run_url(project, domain, v.run_name),
                 }

@@ -1,8 +1,10 @@
 """Model training team deploy unit.
 
     flyte --config ~/.flyte/config-model-factory.yaml deploy team_training.py trainer_env
-    # manual (or dark-mode via the train-on-new-dataset OnArtifact trigger):
-    flyte run team_training.py train_grpo --dataset <file> --profile_name smoke
+
+`train_grpo` is the factory's `policy-checkpoint` build; it reads whatever
+`rl-tasks-dataset` version the materialization resolved. See
+`model_factory/factory.py`.
 """
 
 from model_factory.training.envs import trainer_env  # noqa: F401

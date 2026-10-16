@@ -31,7 +31,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [basic-model-factory, resource-tuner-model-factory]
+        project:
+          - basic-model-factory
+          - decision-model-factory
+          - resource-tuner-model-factory
     defaults:
       run:
         working-directory: ${{ matrix.project }}
@@ -81,22 +84,48 @@ jobs:
             directory: basic-model-factory
             file: team_training.py
             env: trainer_env
+          # eval_cpu_env, not eval_gpu_env: it depends_on the GPU env, so one
+          # deploy registers both, and promote_checkpoint lives on the CPU one.
           - unit: eval
             directory: basic-model-factory
             file: team_eval.py
-            env: eval_gpu_env
+            env: eval_cpu_env
+          # Deploying the app env is also what BUILDS its image, which
+          # `flyte factory deploy` does not do. On a cold registry the app
+          # deploy itself fails resolving the artifact its parameter is bound
+          # to; the image is built by then, so `continue-on-error` below keeps
+          # that from failing the pipeline.
           - unit: inference-app
             directory: basic-model-factory
             file: team_inference.py
             env: inference_app_env
-          - unit: inference-ops
-            directory: basic-model-factory
-            file: team_inference.py
-            env: inference_ops_env
+            allow-failure: true
           - unit: lineage-app
             directory: basic-model-factory
             file: app.py
             env: lineage_app_env
+          # decision-model-factory: four station envs + the serving app.
+          - unit: decision-data
+            directory: decision-model-factory
+            file: stations.py
+            env: df_data_env
+          - unit: decision-trainer
+            directory: decision-model-factory
+            file: stations.py
+            env: trainer_env
+          - unit: decision-scorer
+            directory: decision-model-factory
+            file: stations.py
+            env: scorer_env
+          - unit: decision-selector
+            directory: decision-model-factory
+            file: stations.py
+            env: selector_env
+          - unit: decision-app
+            directory: decision-model-factory
+            file: app.py
+            env: decision_app_env
+            allow-failure: true
           # resource-tuner: one deploy unit (driver_env depends_on the
           # trainer + harness envs, so the whole factory ships together).
           # Deployed without RT_USE_SECRETS until HUGGINGFACE_TOKEN /
@@ -107,6 +136,12 @@ jobs:
             directory: resource-tuner-model-factory
             file: main.py
             env: driver_env
+          # The decision arm's stations are a separate deploy unit: its env is
+          # outside driver_env's dependency closure on purpose (CPU torch).
+          - unit: resource-tuner-decision
+            directory: resource-tuner-model-factory
+            file: decision.py
+            env: decision_env
     concurrency:
       group: deploy-${{ matrix.unit }}
       cancel-in-progress: false
@@ -153,4 +188,58 @@ jobs:
         # flyteplugins-union is public as of 0.10.0 and installed as a
         # normal dependency (pyproject + task images) — RT_GH_TOKEN is no
         # longer needed and the repo secret can be deleted.
+        continue-on-error: ${{ matrix.allow-failure == true }}
         run: uv run flyte --config .flyte/config.yaml deploy ${{ matrix.file }} ${{ matrix.env }}
+
+  # Factories reference their stations with `Task.get(..., auto_version="latest")`,
+  # which is resolved at factory-deploy time — so this MUST run after the
+  # station deploys, not alongside them.
+  deploy-factories:
+    name: Deploy factory (${{ matrix.factory }})
+    needs: deploy
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - factory: basic-model-factory
+            directory: basic-model-factory
+          - factory: decision-factory
+            directory: decision-model-factory
+          - factory: resource-tuner
+            directory: resource-tuner-model-factory
+    concurrency:
+      group: deploy-factory-${{ matrix.factory }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: ${{ matrix.directory }}
+    env:
+      FLYTE_API_KEY: ${{ secrets.DEMO_HOSTED_FLYTE_API_KEY }}
+      MF_CLUSTER: demo
+      MF_USE_SECRETS: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ matrix.directory }}/uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen || uv sync
+
+      # Deploy only: a materialization is an experiment and belongs in a
+      # research-log round, not in CI.
+      - name: Deploy factory ${{ matrix.factory }}
+        run: uv run flyte --config .flyte/config.yaml factory deploy factory.py

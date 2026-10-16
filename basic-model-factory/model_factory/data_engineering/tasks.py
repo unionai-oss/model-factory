@@ -1,4 +1,4 @@
-"""Data station: ingest seed tasks, curate, oracle-verify, publish artifact.
+"""Data station: ingest seed tasks, curate, oracle-verify, assemble a release.
 
 Canonical task schema (parquet columns):
 
@@ -12,9 +12,11 @@ Canonical task schema (parquet columns):
 - ``source``               seed dataset name or "synthetic"
 - ``split``                "train" | "heldout"
 
-Curation gates (all automated — the human gate is the approval condition in
-the pipeline): schema mapping, dedup, min test count, reference solution
-passes its own tests in the sandbox (execution as the oracle).
+Curation gates (all automated): schema mapping, dedup, min test count,
+reference solution passes its own tests in the sandbox (execution as the
+oracle). The one HUMAN gate lives in ``assemble_dataset`` — the station that
+the factory publishes `rl-tasks-dataset` from, so nothing downstream is built
+from data a person has not signed off on.
 """
 
 from __future__ import annotations
@@ -22,14 +24,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from datetime import datetime
 
 import flyte
 import flyte.io
 import flyte.report
 
 from ..config import SEED_DATASET, get_profile
-from ..contracts import ARTIFACT_RL_DATASET, publish
 from ..shared import reporting
+from ..shared.gates import gate
 from ..shared.rewards import count_test_functions
 from ..shared.sandbox import run_solution_against_tests
 from .envs import de_cpu_env
@@ -65,12 +68,14 @@ async def _oracle_verify(rows: list[dict]) -> list[bool]:
 
 
 @de_cpu_env.task(report=True, cache="auto")
-async def ingest_and_curate(profile_name: str = "smoke") -> flyte.io.File:
-    """Pull the seed dataset, curate it, and emit a *candidate* dataset file.
+async def ingest_and_curate(
+    profile_name: str = "smoke", date: datetime | None = None
+) -> flyte.io.File:
+    """Pull the seed dataset, curate it, and emit the curated seed-task file.
 
-    The output is deliberately NOT an artifact: only after the human data
-    validation gate approves does `publish_dataset` mint the artifact version
-    that triggers training.
+    ``date`` is the release partition being built. A factory injects it
+    automatically because the parameter is named like the ``Daily``
+    dimension — and it arrives as a ``datetime``, not a string.
     """
     import pandas as pd
     from datasets import load_dataset
@@ -168,34 +173,58 @@ async def ingest_and_curate(profile_name: str = "smoke") -> flyte.io.File:
     return await flyte.io.File.from_local(out)
 
 
-@de_cpu_env.task(produces_artifacts=True)
-async def publish_dataset(dataset: flyte.io.File, note: str = "") -> flyte.io.File:
-    """Mint an approved dataset as a versioned `rl-tasks-dataset` artifact.
+@de_cpu_env.task(report=True)
+async def assemble_dataset(
+    seed: flyte.io.File, synthetic: flyte.io.File, auto_approve: bool = False
+) -> flyte.io.File:
+    """Merge seed + synthetic tasks, then hold the HUMAN data-validation gate.
 
-    New versions of this artifact are what kick training off via the
-    OnArtifact trigger (see pipeline.py).
+    This is the station the factory publishes `rl-tasks-dataset` from, so the
+    gate here is what keeps unreviewed data from reaching training: the build
+    does not finish — and therefore no dataset version exists — until a person
+    approves. ``auto_approve=True`` switches the light off for smoke runs.
     """
-    local = await dataset.download()
-    f = await flyte.io.File.from_local(local)
-    return publish(
-        f,
-        ARTIFACT_RL_DATASET,
-        description=f"Curated + human-approved RL coding tasks. {note}".strip(),
-    )
-
-
-@de_cpu_env.task
-async def merge_datasets(base: flyte.io.File, extra: flyte.io.File) -> flyte.io.File:
-    """Merge synthetic tasks into the current dataset (dedup by question)."""
     import pandas as pd
 
-    df_a = pd.read_parquet(await base.download())
-    df_b = pd.read_parquet(await extra.download())
+    df_seed = pd.read_parquet(await seed.download())
+    df_syn = pd.read_parquet(await synthetic.download())
     merged = (
-        pd.concat([df_a, df_b], ignore_index=True)
+        pd.concat([df_seed, df_syn], ignore_index=True)
         .drop_duplicates(subset=["question"], keep="first")
         .reset_index(drop=True)
     )
-    out = "/tmp/rl_tasks_merged.parquet"
+    out = "/tmp/rl_tasks_release.parquet"
     merged.to_parquet(out, index=False)
+
+    n_syn = int((merged["source"] == "synthetic").sum())
+    body = reporting.stats_row(
+        {
+            "release tasks": len(merged),
+            "from seed": len(merged) - n_syn,
+            "synthetic": n_syn,
+            "train": int((merged["split"] == "train").sum()),
+            "heldout": int((merged["split"] == "heldout").sum()),
+        }
+    )
+    body += "<h3>Random samples (inspect before approving)</h3>" + reporting.table(
+        ["task_id", "source", "difficulty", "n_tests", "question"],
+        [
+            [r.task_id, r.source, r.difficulty, r.n_tests, r.question[:300]]
+            for r in merged.sample(min(8, len(merged)), random_state=7).itertuples()
+        ],
+    )
+    await flyte.report.replace.aio(reporting.page("Dataset release candidate", body))
+    await flyte.report.flush.aio()
+
+    approved = await gate(
+        "approve-dataset",
+        "## Data validation gate\n\n"
+        f"Release candidate: **{len(merged)}** tasks ({n_syn} synthetic). "
+        "Inspect the data card on this action and on `ingest_and_curate` "
+        "(curation stats, difficulty mix, samples).\n\n"
+        "**Approve this dataset for release?**",
+        auto_approve,
+    )
+    if not approved:
+        raise flyte.errors.NonRecoverableError("dataset rejected at data-validation gate")
     return await flyte.io.File.from_local(out)

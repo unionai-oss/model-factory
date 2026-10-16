@@ -33,8 +33,9 @@ Conventions:
 | 2026-09-06 | [round-11-format-capacity-composition](2026-09-06-round-11-format-capacity-composition.md) | Graded JSON reward -> 100% validity on every arm; **FIRST GATE PASS** (Qwen3.5-4B, +\$40.52/1k task-hrs); GBT-hint hits 93% fit but copies the anchor's padding; full FT > LoRA on fit |
 | 2026-09-09 | [round-12-14-corpus-at-scale](2026-09-09-round-12-14-corpus-at-scale.md) | Corpus quality gates (2 gate bugs, recovered via `flyte fork`) + stack axis + teacher tiers; **the 1M release shipped 31,704 rows and reported success** — post-mortem: deadline unenforceable inside a wave, retries feeding dead endpoints, 7 pods to reject broken code, ~17 min/pod at 1/10 the available fan-out |
 | 2026-09-16 | [round-15-fullft-1day](2026-09-16-round-15-fullft-1day.md) | Artifact cards on every published artifact; **the 1M corpus target is met** (1,016,896 rows); 1-day Qwen3-4B FULL fine-tune launched after 3 dead runs that each fixed something real — `flyte run` re-registers trainer resources, 10⁶ rows can't be read with pandas, preflight was blind to full-FT optimizer state |
+| 2026-10-02 | [round-16-decision-arm-and-factory](2026-10-02-round-16-decision-arm-and-factory.md) | Third arm: a multi-head **decision model** that picks a grid cell directly, trained with a cost-asymmetry loss; the arm suite is a Union **factory** fanning out over an `under_penalty` partition with the corpus as a `factory.source` (LLM path untouched). The knob is monotone across all 3 arms (fit 54%→71%→89%) but only the paranoid arm beats the rule baseline on fit, and at +5% cost — 3 dead runs first (1M rows OOM the station, `Reporter` API, `baseline_proposal` arity) |
 
-## Standing results (as of 2026-09-03)
+## Standing results — LLM arm (as of 2026-09-03)
 
 Eval reports across checkpoints (policy vs rule-based baseline, held-out split):
 
@@ -54,6 +55,28 @@ Reading: the reward curriculum moved each metric in order — validity
 baseline (47% vs 25%); closing that gap is a training-scale problem
 (next: longer runs / larger corpus / stage-B weight tuning), not a
 machinery problem.
+
+## Standing results — decision arm (as of 2026-10-02)
+
+Heldout split, 512 workloads, corpus `uhrmbq9th9pw` (1,016,896 rows; 60,000
+sampled for training). Rule baseline = per-family median, fitted on the same
+train rows. From [rt-decision-r4](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-decision-r4).
+
+| arm | `under_penalty` | fit | OOM | median waste | grid floor | $/task-hr | $ saved / 1k task-hr |
+|---|---|---|---|---|---|---|---|
+| **oom-paranoid** (champion) | 40 | **89.1%** | 10.9% | 69.1% | 36.1% | 0.1558 | **-7.68** |
+| oom-averse | 12 | 70.9% | 29.1% | 61.8% | 36.1% | 0.1495 | -1.34 |
+| balanced | 2 | 54.3% | 45.7% | 38.4% | 36.1% | 0.1418 | +6.34 |
+| *rule baseline* | - | *76.0%* | *24.0%* | *54.1%* | - | *0.1481* | - |
+
+Reading: the `under_penalty` knob is **monotone on every metric** across all
+three arms, which is what the arm was built to demonstrate. But only the
+paranoid arm beats the rule baseline on fit rate, and it costs ~5% more per
+task-hour — so like the LLM arm in round 10, the decision arm has not yet
+earned its place on cost. The grid itself forces 36.1% median
+over-provisioning, so roughly half the champion's waste is the action space
+rather than the model; the unrun `fine` action space is the next experiment
+and is one extra partition value.
 
 ## Key links
 

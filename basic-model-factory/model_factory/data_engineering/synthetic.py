@@ -24,7 +24,6 @@ import flyte.report
 from flyte.extras import DynamicBatcher
 
 from ..config import get_profile
-from ..contracts import ARTIFACT_SYNTHETIC, publish
 from ..shared import reporting
 from ..shared.rewards import count_test_functions
 from ..shared.sandbox import run_solution_against_tests
@@ -109,11 +108,15 @@ async def _generate_batch(model_name: str, prompts: list[str], max_new_tokens: i
     return _TOK.batch_decode(gen, skip_special_tokens=True)
 
 
-@de_gpu_env.task(report=True, produces_artifacts=True)
+@de_gpu_env.task(report=True)
 async def generate_synthetic_tasks(
     dataset: flyte.io.File, profile_name: str = "smoke"
 ) -> flyte.io.File:
-    """Generate oracle-verified synthetic tasks; emit `synthetic-tasks` artifact."""
+    """Generate oracle-verified synthetic tasks.
+
+    Returns a plain File: the factory build that wraps this task declares and
+    publishes the `synthetic-tasks` artifact (see model_factory/factory.py).
+    """
     import pandas as pd
 
     profile = get_profile(profile_name)
@@ -197,9 +200,4 @@ async def generate_synthetic_tasks(
     )
     await flyte.report.flush.aio()
 
-    f = await flyte.io.File.from_local(out)
-    return publish(
-        f,
-        ARTIFACT_SYNTHETIC,
-        description=f"Oracle-verified synthetic tasks ({len(kept)} kept from {len(seeds)} seeds)",
-    )
+    return await flyte.io.File.from_local(out)

@@ -1,4 +1,8 @@
-"""Eval team tasks: candidate-vs-base pass@1, gates, promotion.
+"""Eval team tasks: candidate-vs-base pass@1, the promotion gate, promotion.
+
+Both tasks return plain values; the factory declares them as the
+`eval-report` and `promoted-model` builds and publishes what they return
+(see model_factory/factory.py).
 
 Generation goes through the inference team's serving app (the same weights
 service both variants: adapter on = candidate, adapter off = base), falling
@@ -16,14 +20,7 @@ import flyte.io
 import flyte.report
 
 from ..config import get_profile
-from ..contracts import (
-    ARTIFACT_CHECKPOINT,
-    ARTIFACT_EVAL_REPORT,
-    ARTIFACT_PROMOTED,
-    ARTIFACT_RL_DATASET,
-    publish,
-)
-from ..shared import assets, inference_client, reporting
+from ..shared import inference_client, reporting
 from ..shared.gates import gate
 from ..shared.rewards import build_prompt, score_completion
 from .envs import eval_cpu_env, eval_gpu_env
@@ -99,14 +96,14 @@ async def _score_all(completions: list[str], tests: list[str]) -> list[dict]:
     return list(await asyncio.gather(*(one(c, t) for c, t in zip(completions, tests))))
 
 
-@eval_gpu_env.task(report=True, timeout=flyte.Timeout(max_runtime=3600), produces_artifacts=True)
+@eval_gpu_env.task(report=True, timeout=flyte.Timeout(max_runtime=3600))
 async def evaluate_checkpoint(
     checkpoint: flyte.io.Dir,
     dataset: flyte.io.File,
     profile_name: str = "smoke",
     use_service: bool = True,
 ) -> flyte.io.File:
-    """Compare candidate vs base on the held-out split; emit `eval-report`."""
+    """Compare candidate vs base on the held-out split; return the report file."""
     import pandas as pd
 
     profile = get_profile(profile_name)
@@ -204,69 +201,41 @@ async def evaluate_checkpoint(
     await flyte.report.replace.aio(reporting.page("Evaluation: candidate vs base", body))
     await flyte.report.flush.aio()
 
-    f = await flyte.io.File.from_local(out)
-    return publish(
-        f,
-        ARTIFACT_EVAL_REPORT,
-        description=(
-            f"pass@1 candidate {result['candidate_pass_at_1']:.2%} vs base "
-            f"{result['base_pass_at_1']:.2%} on {len(heldout)} held-out tasks ({backend})"
-        ),
-    )
+    return await flyte.io.File.from_local(out)
 
 
-@eval_cpu_env.task(produces_artifacts=True)
-async def promote_checkpoint(checkpoint: flyte.io.Dir, eval_report: flyte.io.File) -> flyte.io.Dir:
-    """Re-publish an approved checkpoint as the `promoted-model` artifact."""
+@eval_cpu_env.task(report=True)
+async def promote_checkpoint(
+    checkpoint: flyte.io.Dir, eval_report: flyte.io.File, auto_approve: bool = False
+) -> flyte.io.Dir:
+    """Gate a checkpoint, then return it for publication as `promoted-model`.
+
+    Both gates that used to live in the `eval_and_promote` orchestrator are
+    here, because this is the build the factory publishes `promoted-model`
+    from: failing either one fails the build, so no promoted version exists
+    and the serving app keeps whatever it already had.
+    """
     local = await checkpoint.download()
     with open(f"{local}/manifest.json") as f:
         manifest = json.load(f)
     ev = json.loads(open(await eval_report.download()).read())
-    d = await flyte.io.Dir.from_local(local)
-    return publish(
-        d,
-        ARTIFACT_PROMOTED,
-        description=(
-            f"Promoted {manifest['base_model']} adapter — candidate pass@1 "
-            f"{ev['candidate_pass_at_1']:.2%} (Δ {ev['delta']:+.2%}), human-approved"
-        ),
-        kind="model",
+
+    body = reporting.stats_row(
+        {
+            "candidate pass@1": f"{ev['candidate_pass_at_1']:.2%}",
+            "base pass@1": f"{ev['base_pass_at_1']:.2%}",
+            "delta": f"{ev['delta']:+.2%}",
+            "margin": f"{ev['promotion_margin']:+.2%}",
+            "auto gate": "PASS" if ev["auto_gate_passed"] else "FAIL",
+        }
     )
+    await flyte.report.replace.aio(reporting.page("Promotion decision", body))
+    await flyte.report.flush.aio()
 
-
-# ── dark-mode trigger: new checkpoint → eval + gates + maybe promote ────
-
-_eval_trigger = flyte.Trigger(
-    name="eval-on-new-checkpoint",
-    automation=flyte.OnArtifact(name=ARTIFACT_CHECKPOINT),
-    inputs={"checkpoint": flyte.TriggeredArtifact, "profile_name": "smoke"},
-    description="New checkpoint version → evaluation + gates",
-    auto_activate=False,
-)
-
-
-@eval_cpu_env.task(triggers=[_eval_trigger], report=True)
-async def eval_and_promote(
-    checkpoint: flyte.io.Dir,
-    profile_name: str = "smoke",
-    auto_approve: bool = False,
-    dataset: flyte.io.File | None = None,
-) -> str:
-    """The eval team's public entrypoint (also the trigger target).
-
-    ``dataset`` defaults to the latest published `rl-tasks-dataset` so the
-    trigger needs nothing beyond the checkpoint artifact.
-    """
-    if dataset is None:
-        latest_dataset = await assets.latest(ARTIFACT_RL_DATASET)
-        dataset = flyte.io.File.from_existing_remote(latest_dataset.path)
-
-    eval_report = await evaluate_checkpoint(
-        checkpoint=checkpoint, dataset=dataset, profile_name=profile_name
-    )
-    ev = json.loads(open(await eval_report.download()).read())
     if not ev["auto_gate_passed"]:
-        return f"not promoted: delta {ev['delta']:+.2%} below margin"
+        raise flyte.errors.NonRecoverableError(
+            f"not promoted: delta {ev['delta']:+.2%} below margin {ev['promotion_margin']:+.2%}"
+        )
 
     approved = await gate(
         "approve-promotion",
@@ -279,9 +248,9 @@ async def eval_and_promote(
         auto_approve,
     )
     if not approved:
-        return "not promoted: human gate"
-    await promote_checkpoint(checkpoint=checkpoint, eval_report=eval_report)
-    return (
-        f"promoted: candidate {ev['candidate_pass_at_1']:.2%} vs base "
-        f"{ev['base_pass_at_1']:.2%} on {ev['n_heldout']} held-out tasks"
+        raise flyte.errors.NonRecoverableError("not promoted: human gate")
+    print(
+        f"promoting {manifest['base_model']} adapter — candidate pass@1 "
+        f"{ev['candidate_pass_at_1']:.2%} (delta {ev['delta']:+.2%})"
     )
+    return await flyte.io.Dir.from_local(local)

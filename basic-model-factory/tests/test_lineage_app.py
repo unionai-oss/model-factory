@@ -45,6 +45,8 @@ def test_run_url_swallows_a_missing_client():
 
 
 def test_station_for_task_maps_producers_to_artifacts():
+    assert _station_for_task("de-cpu.assemble_dataset") == ARTIFACT_RL_DATASET
+    # Pre-factory runs still map, so old lineage does not go blank.
     assert _station_for_task("mf-cpu.publish_dataset") == ARTIFACT_RL_DATASET
     assert _station_for_task("trainer.train_grpo") == ARTIFACT_CHECKPOINT
     assert _station_for_task("some-unrelated.task") == ""

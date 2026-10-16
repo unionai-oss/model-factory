@@ -1,35 +1,65 @@
-"""The inter-team contract: artifacts are the ONLY interface between teams.
+"""The inter-team contract: artifact names, payload schemas, partitioning.
 
-Four teams own the factory (see docs/SPEC.md §6):
+Four teams own the factory (see docs/SPEC.md §6). They are wired by the
+*factory graph* (`model_factory/factory.py`), not by calls between their
+modules — a team's task takes `File`/`Dir` arguments and returns `File`/`Dir`,
+and the factory decides which artifact each return value becomes:
 
-| team             | consumes (OnArtifact)     | publishes                          |
-|------------------|---------------------------|------------------------------------|
-| data engineering | `synthetic-tasks` (own)   | `rl-tasks-dataset`, `synthetic-tasks` |
-| model training   | `rl-tasks-dataset`        | `policy-checkpoint`                |
-| model eval       | `policy-checkpoint`       | `eval-report`, `promoted-model`    |
-| inference        | `policy-checkpoint`       | `inference-endpoint`               |
+| team             | builds                                  | from                     |
+|------------------|-----------------------------------------|--------------------------|
+| data engineering | `seed-tasks`, `synthetic-tasks`, `rl-tasks-dataset` | the seed dataset |
+| model training   | `policy-checkpoint`                     | `rl-tasks-dataset`       |
+| model eval       | `eval-report`, `promoted-model`         | `policy-checkpoint`      |
+| inference        | the `mf-inference` endpoint             | `promoted-model`         |
 
 Teams may import THIS module and `model_factory.shared.*` (platform
-libraries), but never each other's task modules. Downstream work starts via
-OnArtifact triggers on these names; on backends without artifact events the
-integration driver (integration.py) plays the event bus.
+libraries), but never each other's task modules.
+
+Nothing here publishes anything. Artifact creation is the factory's job: its
+driver calls each build's task with `produces_artifacts=True` inside a
+`flyte.artifacts.produces(...)` block, declaring the name, kind, partition
+values and parent versions itself. A station task that wrapped its own output
+in `flyte.artifacts.new()` would be fighting that, so none of them do.
 """
 
 from __future__ import annotations
 
-import json
-from dataclasses import asdict, dataclass
-
 # ── artifact registry ───────────────────────────────────────────────────
-ARTIFACT_RL_DATASET = "rl-tasks-dataset"
-ARTIFACT_SYNTHETIC = "synthetic-tasks"
-ARTIFACT_CHECKPOINT = "policy-checkpoint"
-ARTIFACT_EVAL_REPORT = "eval-report"
-ARTIFACT_PROMOTED = "promoted-model"
-ARTIFACT_INFERENCE_ENDPOINT = "inference-endpoint"
+# One release day of the factory produces one version of each of these,
+# partitioned by `date` (a `factory.Daily` dimension).
+#
+# The `mf-` prefix is not decoration. An artifact's partition schema is fixed
+# in the registry by its first version and cannot change afterwards, and the
+# pre-factory trigger chain had already published `synthetic-tasks`,
+# `rl-tasks-dataset`, `policy-checkpoint`, `eval-report` and `promoted-model`
+# with NO partitions. Declaring them `{date: Daily}` is rejected at
+# `factory deploy` with "the registry already fixes this artifact's partitions
+# ... Match the registry or publish under a new artifact name".
+#
+# So: partitioned names under a new prefix, which keeps the daily dimension
+# (and with it per-day reuse and backfill) and leaves the old unpartitioned
+# versions in place as history. Reusing the original names would mean deleting
+# those artifacts — recoverable via `flyte undelete`, but it throws away the
+# lineage earlier research rounds refer to, so it is not done here.
+ARTIFACT_SEED_TASKS = "mf-seed-tasks"
+ARTIFACT_SYNTHETIC = "mf-synthetic-tasks"
+ARTIFACT_RL_DATASET = "mf-rl-tasks-dataset"
+ARTIFACT_CHECKPOINT = "mf-policy-checkpoint"
+ARTIFACT_EVAL_REPORT = "mf-eval-report"
+ARTIFACT_PROMOTED = "mf-promoted-model"
+
+#: The factory's `serve` node: a running app, not an artifact. It is a node in
+#: the graph like the others, but it is never published to or read from the
+#: artifact registry — materializing it deploys the app with the
+#: `promoted-model` version the same materialization resolved.
+ENDPOINT_APP = "mf-inference"
+
+#: The partition dimension every artifact above carries: one release per day.
+PARTITION_DATE = "date"
 
 # ── payload schemas ─────────────────────────────────────────────────────
-# rl-tasks-dataset / synthetic-tasks: parquet File with exactly these columns.
+# seed-tasks / synthetic-tasks / rl-tasks-dataset: parquet File with exactly
+# these columns.
 DATASET_COLUMNS = [
     "task_id",
     "question",
@@ -55,32 +85,3 @@ EVAL_REPORT_KEYS = [
     "delta",
     "auto_gate_passed",
 ]
-
-
-@dataclass(frozen=True)
-class InferenceEndpoint:
-    """Payload of the `inference-endpoint` artifact (JSON File)."""
-
-    url: str  # public base URL of the serving app
-    base_model: str
-    checkpoint_path: str  # object-store path of the loaded policy-checkpoint
-    checkpoint_run: str  # run that produced the checkpoint ("" if unknown)
-
-    def to_json(self) -> str:
-        return json.dumps(asdict(self), indent=2)
-
-    @classmethod
-    def from_json(cls, raw: str) -> "InferenceEndpoint":
-        return cls(**json.loads(raw))
-
-
-def publish(obj, name: str, description: str = "", kind: str = "data"):
-    """Publish an offloaded asset (File/Dir/DataFrame) as a versioned artifact.
-
-    This is the hand-off point between teams: returning the wrapped value from
-    a task creates a new artifact version, which fires downstream OnArtifact
-    triggers (where the backend supports artifact events).
-    """
-    import flyte.artifacts as artifacts
-
-    return artifacts.new(obj, artifacts.Metadata(name=name, description=description, kind=kind))

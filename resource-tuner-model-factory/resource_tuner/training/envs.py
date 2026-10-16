@@ -8,7 +8,7 @@ import flyte as _flyte
 
 from ..config import LLM_SERVICE_SECRET, cluster_env_vars, cpu_resources, train_resources
 from ..environment.harness import harness_env
-from ..shared.images import driver_image, gpu_image, secrets
+from ..shared.images import decision_image, driver_image, gpu_image, secrets
 from .generator import generator_env
 
 # Tiny CPU env for artifact-checkpoint publishing. Its own env (not
@@ -51,4 +51,20 @@ driver_env = flyte.TaskEnvironment(
     # generation moved to the reusable GPU generator) awaits GPU children;
     # a GPU parent awaiting GPU children deadlocks a small pool.
     depends_on=[trainer_env, harness_env, generator_env],
+)
+
+
+# The decision-model arm: a multi-head classifier over the discretized action
+# space (policy/action_space.py). CPU-only and deliberately NOT on
+# `driver_env` — it needs torch, and putting torch on the orchestration image
+# would pad every driver action's pull with a multi-GB layer it never uses.
+decision_env = flyte.TaskEnvironment(
+    name="rt-decision",
+    image=decision_image,
+    # Explicit, not `cpu_resources()`: the corpus reader streams but still
+    # holds `max_train_rows` records plus their feature tensor, and torch's
+    # allocator wants headroom above that. The default CPU sizing OOMKilled
+    # all three arms (run rt-decision-r1).
+    resources=flyte.Resources(cpu=2, memory="12Gi"),
+    env_vars={**cluster_env_vars(), "TOKENIZERS_PARALLELISM": "false"},
 )
