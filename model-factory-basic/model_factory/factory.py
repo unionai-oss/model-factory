@@ -86,7 +86,7 @@ from .inference.service import inference_app_env
 #: (and therefore part of every build's cache key). `MF_PROFILE=smoke` at
 #: deploy time gives a minutes-long machinery check; one build can be
 #: overridden per run with `--param <artifact>.profile_name=...`.
-DEFAULT_PROFILE = os.environ.get("MF_PROFILE", "daily")
+DEFAULT_PROFILE = os.environ.get("MF_PROFILE", "daily-r3")
 
 #: Both human gates default to open so an unattended materialization (a cron
 #: trigger, CI) completes. See the module docstring.

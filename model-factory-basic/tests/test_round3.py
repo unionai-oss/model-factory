@@ -56,11 +56,11 @@ def test_reasoning_before_the_answer_is_stripped():
 
 
 def test_daily_uses_vllm_a_7b_teacher_and_the_big_heldout_split():
-    p = get_profile("daily")
+    p = get_profile("daily-r3")
     assert p.use_vllm and p.teacher_app is None
     assert "7B" in p.synthetic_model
     assert p.eval_tasks >= 500
-    assert get_profile("daily-r2").eval_tasks == 200  # round 2 stays reproducible
+    assert get_profile("daily").eval_tasks == 200  # round 2's name keeps round 2's meaning
 
 
 def test_the_factory_picks_the_curriculum_task_from_the_profile(monkeypatch):
@@ -70,7 +70,7 @@ def test_the_factory_picks_the_curriculum_task_from_the_profile(monkeypatch):
     from model_factory import contracts as c
     from model_factory.factory import build_graph
 
-    local = build_graph("daily")._nodes[c.ARTIFACT_SYNTHETIC].producer.task.name
+    local = build_graph("daily-r3")._nodes[c.ARTIFACT_SYNTHETIC].producer.task.name
     assert local == "de-gpu.generate_synthetic_tasks"
 
     served_profile = replace(config.DAILY, name="served", teacher_app="qwen38-27b-vllm@llm-service")

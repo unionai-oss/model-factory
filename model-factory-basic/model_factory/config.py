@@ -278,10 +278,15 @@ SMOKE = FactoryProfile(
     use_vllm=True,
 )
 
-#: Round 2's day, kept so its numbers stay reproducible: 200 held-out tasks,
-#: HF-generate rollouts, one LoRA continued across days.
+#: Round 2's day: 200 held-out tasks, HF-generate rollouts, one LoRA continued
+#: across days.
+#:
+#: A profile NAME is part of every build's cache key; its contents are not
+#: (the factory passes `profile_name="daily"` as a constant). So a profile is
+#: immutable once a day has been built with it: new settings get a new name,
+#: or the factory silently reuses artifacts built under the old ones.
 DAILY_R2 = FactoryProfile(
-    name="daily-r2",
+    name="daily",
     base_model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
     eval_tasks=200,
     heldout_pool=600,
@@ -304,7 +309,7 @@ DAILY_R2 = FactoryProfile(
 #: day-over-day delta down to roughly +/-3 points; vLLM rollouts buy ~3x the
 #: GRPO steps of round 2 in the same hour; a 27B teacher writes the curriculum.
 DAILY = FactoryProfile(
-    name="daily",
+    name="daily-r3",
     base_model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
     eval_tasks=500,
     heldout_pool=2000,
@@ -326,7 +331,7 @@ DAILY = FactoryProfile(
 
 #: `daily`'s batch shape for a handful of steps: measures step time (and that
 #: vLLM rollouts work at all) without spending a day. Run train_grpo directly.
-PROBE = replace(DAILY, name="probe", max_steps=6)
+PROBE = replace(DAILY, name="probe-r3", max_steps=6)
 
 PROFILES: dict[str, FactoryProfile] = {p.name: p for p in (SMOKE, DAILY_R2, DAILY, PROBE)}
 
