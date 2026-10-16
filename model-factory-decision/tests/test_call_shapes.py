@@ -46,7 +46,7 @@ def tiny_base(tmp_path_factory):
     from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
     from transformers import PreTrainedTokenizerFast, Qwen2Config, Qwen2ForCausalLM
 
-    rows = build_rows(48, 16, 24, seed=1)
+    rows = build_rows(48, 16, 24, seed=1, heldout_n=12)
     texts = [render_prompt_text(Observation.from_row(r)) for r in rows] + ['{"decision": "ask_user"}']
     tk = Tokenizer(models.BPE())
     tk.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
@@ -112,7 +112,8 @@ def test_scorecard_selection_and_serving_shapes(trained, tmp_path):
         assert card["primary"] in card["readouts"]
         assert set(card["readouts"]) == ({"pointer"} if head == "pointer" else {"json", "logprob"})
         for r in card["readouts"].values():
-            assert {"accuracy", "unsafe_allow_rate", "brier", "ece", "gate", "frontier", "latency"} <= set(r)
+            assert {"accuracy", "unsafe_allow_rate", "brier", "ece", "gate", "frontier", "latency", "heldout"} <= set(r)
+            assert r["heldout"]["n"] == 12 and "per_family" in r["heldout"]
         json.dumps(card)  # the scorecard File must serialize
         assert "<svg" in render_scorecard(card)
         cards[slug] = json.loads(json.dumps(card))  # what the selector reads back

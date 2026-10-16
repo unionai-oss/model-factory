@@ -25,7 +25,7 @@ import flyte.io
 import flyte.report
 
 from ..config import get_profile
-from ..harness.observations import sample_episodes
+from ..harness.observations import HELDOUT_FAMILIES, sample_episodes, sample_heldout
 from ..harness.policy import DECISIONS
 from ..harness.scoring import majority_baseline
 from ..shared import reporting
@@ -44,7 +44,7 @@ def _action_key(row: dict) -> str:
     return f"{row['obs_tool']}|{row['obs_command'] or ''}|{row['obs_path'] or ''}|{row['obs_url'] or ''}"
 
 
-def build_rows(train_n: int, val_n: int, test_n: int, seed: int) -> list[dict]:
+def build_rows(train_n: int, val_n: int, test_n: int, seed: int, heldout_n: int = 0) -> list[dict]:
     """All three splits as parquet-ready rows, with ``seen_in_train`` set.
 
     The sampler's templates recur, so many test *commands* also occur in
@@ -52,8 +52,11 @@ def build_rows(train_n: int, val_n: int, test_n: int, seed: int) -> list[dict]:
     the scorecard report accuracy on calls the model has never seen verbatim.
     """
     rows: list[dict] = []
-    for split, n, s in (("train", train_n, seed), ("val", val_n, seed + 1), ("test", test_n, seed + 2)):
-        for i, ep in enumerate(sample_episodes(n, seed=s)):
+    parts = [("train", sample_episodes(train_n, seed=seed)), ("val", sample_episodes(val_n, seed=seed + 1)),
+             # test = in-distribution calls + the held-out families (slice "heldout")
+             ("test", sample_episodes(test_n, seed=seed + 2) + sample_heldout(heldout_n, seed=seed + 3))]
+    for split, eps in parts:
+        for i, ep in enumerate(eps):
             row = ep.to_row()
             row["split"] = split
             row["episode_id"] = f"{split}-{i:05d}-{row['episode_id']}"
@@ -78,7 +81,8 @@ async def generate_episodes(
 
     profile = get_profile(profile_name)
     seed = seed_for(date)
-    rows = build_rows(profile.train_episodes, profile.val_episodes, profile.test_episodes, seed)
+    rows = build_rows(profile.train_episodes, profile.val_episodes, profile.test_episodes, seed,
+                      heldout_n=profile.heldout_episodes)
     if not rows:
         raise flyte.errors.NonRecoverableError("episode generation produced zero rows")
     df = pd.DataFrame(rows)
@@ -91,13 +95,15 @@ async def generate_episodes(
         {
             "train": int((df["split"] == "train").sum()),
             "val": int((df["split"] == "val").sum()),
-            "test": len(test),
+            "test (in-distribution)": int((test["slice"] != "heldout").sum()),
+            "test (held-out families)": int((test["slice"] == "heldout").sum()),
             "adversarial (test)": f"{(test['slice'] == 'adversarial').mean():.0%}",
             "test calls unseen in train": f"{(~test['seen_in_train']).mean():.0%}",
             "seed": seed,
             "majority baseline": f"{baseline['accuracy']:.1%} ({baseline['decision']})",
         }
     )
+    body += ("<p>Held-out families (never in train/val): " + ", ".join(HELDOUT_FAMILIES) + "</p>")
     body += "<h3>Label mix by slice (train)</h3>"
     tr = df[df["split"] == "train"]
     body += reporting.table(

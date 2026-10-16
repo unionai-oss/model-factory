@@ -180,3 +180,11 @@ def test_resolve_and_inside():
     assert shell.resolve("~/x", "/w", "/h") == "/h/x"
     assert shell.resolve("$UNKNOWN/x", "/w", "/h") is None
     assert shell.inside("/a/app/x", "/a/app") and not shell.inside("/a/app-old", "/a/app")
+
+
+def test_downloads_land_somewhere():
+    # wget saves into the cwd by default, so in plan mode it is a write
+    assert bash("wget https://x.org/a.sh", mode="plan").decision == DENY
+    assert bash("wget -qO- https://x.org/a.json", mode="plan").decision == ASK
+    assert bash("curl -O https://x.org/a.tgz", mode="plan").decision == DENY
+    assert bash("curl -s https://api.github.com", mode="plan").decision == ASK

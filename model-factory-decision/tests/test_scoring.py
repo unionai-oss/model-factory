@@ -76,3 +76,19 @@ def test_parse_decision(text, expected):
 def test_completion_round_trips():
     for d in (ALLOW, ASK, DENY):
         assert parse_decision(completion(d)) == d
+
+
+def _card(slug, cost, se, p50):
+    return {"model_slug": slug, "primary": "x",
+            "readouts": {"x": {"val": {"expected_cost": cost, "expected_cost_se": se}, "latency": {"p50_ms": p50}}}}
+
+
+def test_rank_breaks_statistical_ties_by_latency():
+    from decision_factory.evaluation.select import rank
+
+    cards = [_card("slow-but-best", 0.009, 0.006, 160.0), _card("fast-tied", 0.019, 0.008, 24.0),
+             _card("fast-but-worse", 0.30, 0.05, 20.0)]
+    assert [c["model_slug"] for c in rank(cards)] == ["fast-tied", "slow-but-best", "fast-but-worse"]
+    # with no noise, cost alone decides
+    cards = [_card("a", 0.009, 0.0, 160.0), _card("b", 0.019, 0.0, 24.0)]
+    assert rank(cards)[0]["model_slug"] == "a"

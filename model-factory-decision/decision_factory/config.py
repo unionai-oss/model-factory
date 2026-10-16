@@ -235,6 +235,8 @@ class Profile:
     #: to the test numbers it is reported on.
     val_episodes: int
     test_episodes: int
+    #: Extra test calls from families never seen in train/val (OOD slice).
+    heldout_episodes: int
     epochs: float
     batch_size: int
     grad_accum: int
@@ -263,6 +265,7 @@ SMOKE = Profile(
     train_episodes=1500,
     val_episodes=300,
     test_episodes=400,
+    heldout_episodes=100,
     epochs=1.0,
     batch_size=8,
     grad_accum=1,
@@ -281,6 +284,7 @@ DEV = Profile(
     train_episodes=8000,
     val_episodes=800,
     test_episodes=1600,
+    heldout_episodes=600,
     epochs=1.0,
     batch_size=8,
     grad_accum=2,
@@ -297,6 +301,7 @@ FULL = Profile(
     train_episodes=20000,
     val_episodes=1000,
     test_episodes=2000,
+    heldout_episodes=800,
     epochs=2.0,
     batch_size=8,
     grad_accum=2,

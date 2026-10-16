@@ -703,11 +703,28 @@ class _Analyzer:
             if args:
                 hosts.append(args[0].split("@")[-1])
         if head in ("curl", "wget"):
+            # where the download lands: curl -o FILE / -O (remote name, in the
+            # cwd); wget -O FILE, and by DEFAULT into the cwd unless -O -.
+            out_flags = {"curl": ("-o", "--output"), "wget": ("-O", "--output-document")}[head]
+            wrote = False
             for i, a in enumerate(rest):
-                if a in ("-o", "-O", "--output", "--output-document") and i + 1 < len(rest):
-                    effects.append(Effect(WRITE, self.r(rest[i + 1]), detail=f"{head} {a}"))
+                if a in out_flags and i + 1 < len(rest):
+                    wrote = True
+                    if rest[i + 1] != "-":
+                        effects.append(Effect(WRITE, self.r(rest[i + 1]), detail=f"{head} {a}"))
+                elif head == "wget" and a.startswith("-") and not a.startswith("--") and a.endswith("O") and i + 1 < len(rest):
+                    wrote = True  # combined short flags, e.g. -qO-
+                    if rest[i + 1] != "-":
+                        effects.append(Effect(WRITE, self.r(rest[i + 1]), detail=f"{head} {a}"))
+                elif head == "wget" and a.startswith("-") and not a.startswith("--") and "O-" in a:
+                    wrote = True  # -qO- : to stdout
+                elif head == "curl" and a in ("-O", "--remote-name"):
+                    wrote = True
+                    effects.append(Effect(WRITE, self.cwd, detail="curl -O"))
                 if a in ("-T", "--upload-file") and i + 1 < len(rest):
                     effects.append(Effect(READ, self.r(rest[i + 1])))
+            if head == "wget" and not wrote:
+                effects.append(Effect(WRITE, self.cwd, detail="wget (saves into the cwd)"))
         for h in hosts or [""]:
             if h in METADATA_HOSTS:
                 effects.append(Effect(METADATA, "", detail=h))

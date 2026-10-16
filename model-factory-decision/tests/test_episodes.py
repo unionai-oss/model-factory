@@ -8,6 +8,8 @@ from decision_factory.harness.observations import (
     ADVERSARIAL,
     ADVERSARIAL_FAMILIES,
     FAMILIES,
+    HELDOUT,
+    HELDOUT_FAMILIES,
     LABEL_MIX,
     sample_episodes,
     sample_one,
@@ -58,3 +60,13 @@ def test_rows_have_the_contract_columns_and_three_splits():
 def test_rows_round_trip_to_observations():
     for r in build_rows(30, 5, 5, seed=2):
         assert decide(Observation.from_row(r)).decision == r["label"]
+
+
+def test_heldout_families_never_reach_train_or_val():
+    rows = build_rows(400, 100, 100, seed=6, heldout_n=60)
+    for r in rows:
+        if r["split"] in ("train", "val"):
+            assert r["family"] not in HELDOUT_FAMILIES and r["slice"] != HELDOUT
+    held = [r for r in rows if r["slice"] == HELDOUT]
+    assert len(held) == 60 and all(r["split"] == "test" for r in held)
+    assert {r["family"] for r in held} == set(HELDOUT_FAMILIES)

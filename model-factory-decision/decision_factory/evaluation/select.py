@@ -64,18 +64,36 @@ def _summary(r: dict) -> dict:
         "adversarial_unsafe_allow": r.get("slices", {}).get("adversarial", {}).get("unsafe_allow_rate"),
         "unseen_accuracy": r.get("unseen_command", {}).get("accuracy"),
         "gate": r.get("gate"), "val": r.get("val"), "latency": r.get("latency"),
+        "heldout": {k: v for k, v in (r.get("heldout") or {}).items() if k not in ("frontier", "confusion")} or None,
         "input_tokens": r.get("input_tokens"), "output_tokens": r.get("output_tokens"),
         "parse_rate": r.get("parse_rate"),
     }
 
 
+#: How many standard errors of the best val cost count as a tie.
+TIE_SE = 2.0
+
+
 def rank(cards: list[dict]) -> list[dict]:
-    """Suite members by val expected cost of their primary readout, then
-    test-free tie-breaks (val accuracy)."""
-    def key(c):
-        v = c["readouts"][c["primary"]]["val"]
-        return (v["expected_cost"], -v["accuracy"])
-    return sorted(cards, key=key)
+    """Suite members, champion first.
+
+    1. Val expected cost of the primary readout (lower is better).
+    2. But a val split of ~800 calls cannot separate 0.009 from 0.019 — that
+       is one mistake. Every model within ``TIE_SE`` standard errors of the
+       best is a statistical tie, and among ties the **cheapest to run** (p50
+       latency) wins. Don't let noise pick a model that is 6x slower.
+    """
+    def cost(c):
+        return c["readouts"][c["primary"]]["val"]["expected_cost"]
+
+    def latency(c):
+        return (c["readouts"][c["primary"]].get("latency") or {}).get("p50_ms", float("inf"))
+
+    by_cost = sorted(cards, key=lambda c: (cost(c), latency(c)))
+    best = by_cost[0]["readouts"][by_cost[0]["primary"]]["val"]
+    band = cost(by_cost[0]) + TIE_SE * best.get("expected_cost_se", 0.0)
+    tied = sorted([c for c in by_cost if cost(c) <= band], key=lambda c: (latency(c), cost(c)))
+    return tied + [c for c in by_cost if cost(c) > band]
 
 
 @selector_env.task(report=True)
@@ -141,7 +159,7 @@ def choose(cards: dict[str, dict], dirs: dict[str, str], min_accuracy: float, ou
     manifest.pop("history", None)
     manifest.update({
         "selected_from": [c["model_slug"] for c in ranked],
-        "selection_metric": "val expected_cost of the primary readout",
+        "selection_metric": f"val expected_cost of the primary readout; ties within {TIE_SE} SE go to the lowest p50 latency",
         "primary_readout": winner["primary"],
         "gate_threshold": w["gate"]["threshold"],
         "test_metrics": _summary(w),
@@ -165,7 +183,8 @@ def render_selection(ranked: list[dict], board: list[dict], winner: dict) -> str
     body += "<h3>Leaderboard (test split; primary readouts ranked by val expected cost)</h3>"
     body += reporting.table(
         ["", "model", "readout", "acc", "unsafe-allow", "severe", "unneeded ask", "Brier", "ECE", "cost",
-         "adv. acc", "unseen acc", "gate autonomy @≤1%", "p50 ms", "out tok"],
+         "adv. acc", "unseen acc", "gate autonomy @≤1%", "held-out acc", "held-out unsafe", "held-out ECE",
+         "p50 ms", "out tok"],
         [[reporting.win_pill() if r["model"] == winner["model_slug"] and r["primary"] else "",
           r["model"], r["readout"], reporting.pct(r["accuracy"]), f"{r['unsafe_allow_rate']:.2%}",
           f"{r['severe_unsafe_rate']:.2%}", reporting.pct(r["unnecessary_ask_rate"]), f"{r['brier']:.3f}",
@@ -174,6 +193,9 @@ def render_selection(ranked: list[dict], board: list[dict], winner: dict) -> str
           reporting.pct(r["unseen_accuracy"]) if r["unseen_accuracy"] is not None else "—",
           (f"{r['gate']['autonomy']:.1%} (t={r['gate']['threshold']}, {r['gate']['unsafe_allow_rate']:.2%})"
            if r.get("gate", {}).get("reachable") else "unreachable") if r.get("gate") else "—",
+          reporting.pct(r["heldout"]["accuracy"]) if r.get("heldout") else "—",
+          f"{r['heldout']['unsafe_allow_rate']:.2%}" if r.get("heldout") else "—",
+          f"{r['heldout']['ece']:.3f}" if r.get("heldout") else "—",
           f"{r['latency']['p50_ms']:.0f}" if r.get("latency") else "—",
           f"{r['output_tokens']:.1f}" if r.get("output_tokens") is not None else "—"]
          for r in board])
@@ -182,5 +204,12 @@ def render_selection(ranked: list[dict], board: list[dict], winner: dict) -> str
         for name, r in c["readouts"].items():
             series.append({"name": f"{c['model_slug']} · {name}", "color_key": c["torso"], "readout": name,
                            "points": r["frontier"], "operating": r["gate"]})
-    body += "<h3>The money chart: autonomy vs safety</h3>" + reporting.frontier_svg(series)
+    body += "<h3>The money chart: autonomy vs safety (in-distribution test)</h3>" + reporting.frontier_svg(series)
+    ood = [{"name": f"{c['model_slug']} · {n}", "color_key": c["torso"], "readout": n,
+            "points": r["heldout"]["frontier"], "operating": r["heldout"]["gate"]}
+           for c in ranked for n, r in c["readouts"].items() if r.get("heldout")]
+    if ood:
+        body += ("<h3>The same chart on held-out families</h3><p>Same val-tuned thresholds (filled dots). "
+                 "If a model's confidence does not drop on unfamiliar calls, its dot slides right.</p>"
+                 + reporting.frontier_svg(ood))
     return body
