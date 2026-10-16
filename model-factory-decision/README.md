@@ -119,13 +119,39 @@ Every scorecard and the champion page carry the money chart:
 A gate with probabilities has a knob: *auto-allow only if P(allow) ≥ t, else
 ask*. Sweeping t traces a curve; up and to the left is better. The filled dot
 is the threshold tuned on val for ≤1% unsafe-allow, and that is the threshold
-the served app uses (`gated` in `/decide`). A generative model that emits
+the served app uses (`gated` in `/decide`). For the strong models that tuned
+threshold is 0 — in distribution, argmax already meets the budget — which is
+exactly why the champion page draws the same chart again on the **held-out
+families**: there the dots slide right, and you can see how much of your
+safety budget survives calls the model has never seen. A generative model that emits
 `{"decision": "allow"}` is a **single hollow dot**: there is no knob to turn,
 so if its one operating point is unsafer than you can accept, your only
 option is to retrain. (You *can* recover a curve from an SFT model by scoring
 each option's likelihood — the `logprob` readout — but that is three forward
 passes over a candidate set you had to enumerate up front, i.e. a pointer
 head's inputs without its efficiency.)
+
+## Results (round 2, three days of data)
+
+Full scorecards and the run ledger: [research_log](research_log/README.md).
+
+- **The decision is learnable, and either head learns it at ≥0.5B.**
+  98.3–99.4% test accuracy, 0–1.2% unsafe-allow, ECE ≤ 0.017, against a 37%
+  majority baseline and 36–45% for the untuned torso.
+- **The pointer head wins where the torso is small.** On SmolLM2-360M:
+  95.8–98.4% vs 82.0–83.3% for SFT, unsafe-allow 0.4–1.6% vs 7.2–8.9%.
+- **The pointer head is 6.5× cheaper per decision at every size.** 25–36 ms vs
+  163–237 ms on an A10G, zero output tokens vs ~7.4, a ~1M-param head vs a
+  47–156M-param LM head.
+- **Honest caveat: calibration is an in-distribution property.** On 600 calls
+  from four attack families never seen in training, every model falls to
+  55–80% accuracy with 13–32% unsafe-allow, at ~95% confidence. A gate
+  threshold tuned in-distribution does not protect you there. The worst miss
+  is an edit whose `resolved_path` is `~/.ssh/authorized_keys`, allowed at
+  P=0.997, because training never made `resolved_path` the decisive field.
+- **Serving.** The champion (`qwen2.5-0.5b-pointer`) runs on a 2-vCPU app at
+  1.7–2.0 s per decision after prefix KV caching, down from 4.3 s; only 85 of
+  ~420 tokens are computed per request.
 
 ## Metrics
 
@@ -214,6 +240,12 @@ See `research_log/` for the runs behind each.
   fires** (a new day is a new partition), and `factory.on(cron, a, b)` makes one
   trigger *per target* that each rebuild the shared upstream concurrently. The
   trigger here is weekly and targets the endpoint only.
+- **Flyte 2 task caching is off by default, and a factory depends on it.**
+  Without `cache=` on the station envs, `factory plan` reports instances as
+  existing while `materialize` re-runs every one of them. All envs here set
+  `cache="auto"`; a code change to a station is then a cache miss for it alone.
+- **A cache-hit GPU task still waits for GPU admission** on a busy pool
+  (~5 min per wave observed), so an all-cache-hit GPU graph is not instant.
 - **An implicitly-injected time partition arrives as a `datetime`.**
 - **`flyte factory deploy` does not build app images**; deploy the app env first.
 - **`Parameter(mount=...)` outside the app's working dir crash-loops it**; use
