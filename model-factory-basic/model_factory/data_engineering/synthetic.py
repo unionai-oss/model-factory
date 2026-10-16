@@ -65,21 +65,60 @@ from solution import <function_name>
 ```
 """
 
+#: Mutations sampled per seed. A 1.5B teacher passes its own tests ~1 time in 8,
+#: so two draws per seed roughly doubles the day's curriculum for ~2 min of GPU.
+SAMPLES_PER_SEED = 2
+
 _CODE_BLOCKS = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
-_QUESTION = re.compile(r"QUESTION:\s*\n(.*?)(?:\n\s*SOLUTION:)", re.DOTALL)
+#: A section header as small models actually write it: `QUESTION:`, `### QUESTION:`,
+#: `**Tests:**` ... — any case, optional markdown, colon required.
+_HEADER = re.compile(r"(?im)^[#>*\s]*(question|solution|tests)[*\s]*:[*]*[ \t]*")
 
 
 def parse_generation(text: str) -> dict | None:
-    """Extract {question, solution, tests} from the fixed response format."""
-    qm = _QUESTION.search(text)
-    blocks = _CODE_BLOCKS.findall(text)
-    if not qm or len(blocks) < 2:
+    """Extract {question, solution, tests} from the requested response format.
+
+    Section-based, and tolerant of the ways a 1.5B teacher drifts from the
+    format (markdown headers, prose after a block). Tests that call the
+    function without importing it get ``from solution import *`` prepended —
+    the sandbox runs them as `test_solution.py` next to `solution.py`.
+    Anything else wrong (a bad solution, failing tests) is left for the
+    execution oracle to reject.
+    """
+    heads = list(_HEADER.finditer(text))
+    sections: dict[str, str] = {}
+    for i, m in enumerate(heads):
+        name = m.group(1).lower()
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        sections.setdefault(name, text[m.end() : end])
+    if not {"question", "solution", "tests"} <= set(sections):
         return None
-    question = qm.group(1).strip()
-    solution, tests = blocks[0].strip(), blocks[1].strip()
-    if not (question and solution and tests):
+    question = sections["question"].strip()
+    sol_blocks = _CODE_BLOCKS.findall(sections["solution"])
+    test_blocks = _CODE_BLOCKS.findall(sections["tests"])
+    if not (question and sol_blocks and test_blocks):
         return None
-    return {"question": question, "solution": solution, "tests": tests}
+    solution, tests = sol_blocks[0].strip(), test_blocks[0].strip()
+    if not (solution and tests):
+        return None
+    return {"question": question, "solution": solution, "tests": normalize_tests(tests)}
+
+
+def normalize_tests(tests: str) -> str:
+    """Make a generated test block runnable by pytest without changing what it checks.
+
+    - no import of the solution -> ``from solution import *``
+    - bare module-level asserts and no ``test_*`` function -> wrapped in one
+    """
+    if count_test_functions(tests) == 0 and re.search(r"(?m)^assert\b", tests):
+        imports = [ln for ln in tests.splitlines() if re.match(r"(from|import)\s", ln)]
+        body = [ln for ln in tests.splitlines() if not re.match(r"(from|import)\s", ln)]
+        tests = "\n".join(imports) + "\n\n\ndef test_generated():\n" + "\n".join(
+            ("    " + ln) if ln.strip() else "" for ln in body
+        )
+    if "from solution import" not in tests and "import solution" not in tests:
+        tests = "from solution import *\n\n" + tests
+    return tests
 
 
 @flyte.trace
@@ -204,9 +243,10 @@ async def generate_synthetic_tasks(
             "split": "train",
         }
 
-    results = await asyncio.gather(*(one(s) for s in seeds.itertuples()))
+    attempts = [s for s in seeds.itertuples() for _ in range(SAMPLES_PER_SEED)]
+    results = await asyncio.gather(*(one(s) for s in attempts))
     await batcher.stop()
-    kept = [r for r in results if r]
+    kept = list({r["task_id"]: r for r in results if r}.values())  # dedup identical mutations
     # A mutation that reproduces a held-out problem verbatim is dropped here;
     # assemble_dataset re-checks the whole release.
     leaked = set(find_leaks([k["question"] for k in kept], held["question"]))
@@ -219,13 +259,13 @@ async def generate_synthetic_tasks(
     n_fail = int((seeds["origin"] == "champion-failure").sum()) if len(seeds) else 0
     body = reporting.stats_row(
         {
-            "seeds mutated": len(seeds),
+            "seeds mutated": f"{len(seeds)} x {SAMPLES_PER_SEED}",
             "from champion failures": n_fail,
             "random seeds": len(seeds) - n_fail,
             "parsed + oracle-verified": len(kept) + len(leaked),
             "dropped (held-out match)": len(leaked),
             "kept": len(kept),
-            "yield": f"{len(kept) / max(len(seeds), 1):.0%}",
+            "yield": f"{len(kept) / max(len(attempts), 1):.0%}",
             "teacher": profile.synthetic_model.split("/")[-1],
         }
     )
