@@ -300,7 +300,8 @@ class DecisionModel:
     """
 
     def __init__(self, model_dir: str | None = None, *, base_model: str | None = None,
-                 head: str | None = None, model=None, tok=None, pointer: PointerHead | None = None):
+                 head: str | None = None, model=None, tok=None, pointer: PointerHead | None = None,
+                 merge: bool = True):
         self.device, dtype = device_and_dtype()
         manifest = {}
         if model_dir and os.path.exists(os.path.join(model_dir, MANIFEST)):
@@ -315,7 +316,9 @@ class DecisionModel:
             if model_dir:
                 from peft import PeftModel
 
-                base = PeftModel.from_pretrained(base, model_dir).merge_and_unload()
+                base = PeftModel.from_pretrained(base, model_dir)
+                # Merged is faster; unmerged keeps LoRA's dropout for MC-dropout.
+                base = base.merge_and_unload() if merge else base
             model = base
         self.model = model.to(self.device).eval()
         self.pointer = pointer
@@ -330,13 +333,36 @@ class DecisionModel:
         out = []
         for i in range(0, len(chats), batch_size):
             exs = [encode_pointer(self.tok, c, options) for c in chats[i : i + batch_size]]
-            scores = pointer_scores(self.model, self.pointer, exs, self.tok.pad_token_id, self.device)
-            probs = torch.softmax(scores.float(), dim=-1).cpu().tolist()
-            for e, p in zip(exs, probs):
-                by_opt = dict(zip(options, p))
+            scores = pointer_scores(self.model, self.pointer, exs, self.tok.pad_token_id, self.device).float()
+            probs = torch.softmax(scores, dim=-1).cpu().tolist()
+            for e, p, sc in zip(exs, probs, scores.cpu().tolist()):
+                by_opt, by_sc = dict(zip(options, p)), dict(zip(options, sc))
                 vec = [by_opt[d] for d in DECISIONS]
-                out.append({"probs": vec, "decision": DECISIONS[max(range(3), key=vec.__getitem__)],
+                out.append({"probs": vec, "logits": [by_sc[d] for d in DECISIONS],
+                            "decision": DECISIONS[max(range(3), key=vec.__getitem__)],
                             "input_tokens": len(e.input_ids), "output_tokens": 0, "parsed": True})
+        return out
+
+    @torch.no_grad()
+    def pointer_probs_mc(self, chats, k: int = 8, options: Sequence[str] = DECISIONS) -> list[dict]:
+        """MC-dropout: average ``k`` pointer passes with dropout left ON (the
+        LoRA adapters' trained p=0.05; needs ``merge=False``). The spread
+        across passes is an uncertainty estimate a single pass hides."""
+        drops = [m for m in self.model.modules() if isinstance(m, nn.Dropout) and m.p > 0]
+        for m in drops:
+            m.train()
+        try:
+            runs = [self.pointer_probs(chats, options) for _ in range(k)]
+        finally:
+            for m in drops:
+                m.eval()
+        out = []
+        for i in range(len(chats)):
+            vec = [sum(r[i]["probs"][j] for r in runs) / k for j in range(len(DECISIONS))]
+            lg = [sum(r[i]["logits"][j] for r in runs) / k for j in range(len(DECISIONS))]
+            spread = max(max(r[i]["probs"][0] for r in runs) - min(r[i]["probs"][0] for r in runs), 0.0)
+            out.append({**runs[0][i], "probs": vec, "logits": lg, "decision": DECISIONS[max(range(3), key=vec.__getitem__)],
+                        "mc_passes": k, "dropout_modules": len(drops), "p_allow_spread": spread})
         return out
 
     @torch.no_grad()
@@ -398,10 +424,11 @@ class DecisionModel:
                 totals.append(logp[r, k - n :].gather(1, tgt.unsqueeze(1)).sum().item())
             for j, p in enumerate(prompts):
                 sc = totals[j * len(options) : (j + 1) * len(options)]
-                probs = torch.softmax(torch.tensor(sc), dim=0).tolist()
-                by_opt = dict(zip(options, probs))
+                probs = torch.softmax(torch.tensor(sc, dtype=torch.float64), dim=0).tolist()
+                by_opt, by_sc = dict(zip(options, probs)), dict(zip(options, sc))
                 vec = [by_opt[d] for d in DECISIONS]
-                out.append({"probs": vec, "decision": DECISIONS[max(range(3), key=vec.__getitem__)],
+                out.append({"probs": vec, "logits": [by_sc[d] for d in DECISIONS],
+                            "decision": DECISIONS[max(range(3), key=vec.__getitem__)],
                             "input_tokens": len(p), "output_tokens": 0, "parsed": True})
         return out
 
@@ -448,10 +475,12 @@ class DecisionModel:
         h = (out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0])[0]  # [T-n, H]
         h_ans = h[ex.answer_pos - n].unsqueeze(0)
         h_opt = h[torch.tensor([p - n for p in ex.option_pos], device=self.device)].unsqueeze(0)
-        p = torch.softmax(self.pointer(h_ans, h_opt).float(), dim=-1)[0].cpu().tolist()
-        by_opt = dict(zip(options, p))
+        sc = self.pointer(h_ans, h_opt).float()
+        p = torch.softmax(sc, dim=-1)[0].cpu().tolist()
+        by_opt, by_sc = dict(zip(options, p)), dict(zip(options, sc[0].cpu().tolist()))
         vec = [by_opt[d] for d in DECISIONS]
-        return {"probs": vec, "decision": DECISIONS[max(range(3), key=vec.__getitem__)],
+        return {"probs": vec, "logits": [by_sc[d] for d in DECISIONS],
+                "decision": DECISIONS[max(range(3), key=vec.__getitem__)],
                 "input_tokens": len(ex.input_ids), "computed_tokens": len(ex.input_ids) - n,
                 "output_tokens": 0, "parsed": True}
 

@@ -32,7 +32,7 @@ from typing import Any, Callable
 
 from .policy import ALLOW, ASK, DECISIONS, DENY, Observation, decide
 
-STANDARD, ADVERSARIAL, HELDOUT = "standard", "adversarial", "heldout"
+STANDARD, ADVERSARIAL, HELDOUT, HELDOUT_VAL = "standard", "adversarial", "heldout", "heldout_val"
 
 #: Target mix. Roughly balanced so the majority baseline is ~37%, not 80%.
 LABEL_MIX = {ALLOW: 0.33, ASK: 0.37, DENY: 0.30}
@@ -553,6 +553,16 @@ FAMILIES = {**STANDARD_FAMILIES, **ADVERSARIAL_FAMILIES}
 #: calls if the model's confidence drops when it should.
 HELDOUT_FAMILIES: tuple[str, ...] = ("a_symlink", "a_url_trick", "a_xargs", "a_wrapper")
 
+#: Round 3: a SECOND, disjoint group of held-out families, used only for
+#: *validation under shift* — tuning the gate threshold and temperature, and
+#: the out-of-distribution term of champion selection. Leave-families-out:
+#: nothing tuned on these can have seen the test families above, so the
+#: held-out test numbers stay honest.
+HELDOUT_VAL_FAMILIES: tuple[str, ...] = ("a_dotdot", "a_redirect")
+
+#: Families that never appear in train or in-distribution val/test.
+NOT_IN_TRAINING: tuple[str, ...] = HELDOUT_FAMILIES + HELDOUT_VAL_FAMILIES
+
 
 def sample_one(rng: random.Random, family: str) -> Episode:
     ws = _workspace(rng)
@@ -562,7 +572,8 @@ def sample_one(rng: random.Random, family: str) -> Episode:
         permission_mode=ws.mode, user_task=ws.task, **fields,
     )
     v = decide(obs)
-    sl = HELDOUT if family in HELDOUT_FAMILIES else ADVERSARIAL if family in ADVERSARIAL_FAMILIES else STANDARD
+    sl = (HELDOUT if family in HELDOUT_FAMILIES else HELDOUT_VAL if family in HELDOUT_VAL_FAMILIES
+          else ADVERSARIAL if family in ADVERSARIAL_FAMILIES else STANDARD)
     key = f"{family}|{obs.to_dict()}"
     eid = hashlib.sha1(key.encode()).hexdigest()[:12]
     return Episode(eid, obs, v.decision, v.rule, v.reason, family, sl)
@@ -581,7 +592,7 @@ def _quotas(n: int, adversarial_fraction: float) -> dict[tuple[str, str], int]:
 
 def sample_episodes(
     n: int, seed: int = 0, adversarial_fraction: float = ADVERSARIAL_FRACTION,
-    exclude: tuple[str, ...] = HELDOUT_FAMILIES,
+    exclude: tuple[str, ...] | None = None,
 ) -> list[Episode]:
     """``n`` labelled episodes, stratified on (slice x label).
 
@@ -590,6 +601,7 @@ def sample_episodes(
     cannot happen with these families, but a future edit could cause it) is
     topped up from the other slice rather than looping forever.
     """
+    exclude = NOT_IN_TRAINING if exclude is None else exclude
     rng = random.Random(seed)
     quotas = _quotas(n, adversarial_fraction)
     out: list[Episode] = []
@@ -608,8 +620,8 @@ def sample_episodes(
     return out
 
 
-def sample_heldout(n: int, seed: int = 0) -> list[Episode]:
-    """``n`` episodes from the held-out families only (uniform over families;
-    not label-stratified — these are reported, never trained on)."""
+def sample_heldout(n: int, seed: int = 0, families: tuple[str, ...] = HELDOUT_FAMILIES) -> list[Episode]:
+    """``n`` episodes from held-out families only (uniform over families;
+    not label-stratified — these are evaluated or tuned on, never trained on)."""
     rng = random.Random(seed)
-    return [sample_one(rng, rng.choice(HELDOUT_FAMILIES)) for _ in range(n)]
+    return [sample_one(rng, rng.choice(families)) for _ in range(n)]

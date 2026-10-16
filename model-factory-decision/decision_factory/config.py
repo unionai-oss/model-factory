@@ -237,6 +237,9 @@ class Profile:
     test_episodes: int
     #: Extra test calls from families never seen in train/val (OOD slice).
     heldout_episodes: int
+    #: Extra VAL calls from a disjoint set of held-out families, for tuning
+    #: the gate under shift (leave-families-out).
+    heldout_val_episodes: int
     epochs: float
     batch_size: int
     grad_accum: int
@@ -266,6 +269,7 @@ SMOKE = Profile(
     val_episodes=300,
     test_episodes=400,
     heldout_episodes=100,
+    heldout_val_episodes=100,
     epochs=1.0,
     batch_size=8,
     grad_accum=1,
@@ -285,6 +289,7 @@ DEV = Profile(
     val_episodes=800,
     test_episodes=1600,
     heldout_episodes=600,
+    heldout_val_episodes=400,
     epochs=1.0,
     batch_size=8,
     grad_accum=2,
@@ -302,6 +307,7 @@ FULL = Profile(
     val_episodes=1000,
     test_episodes=2000,
     heldout_episodes=800,
+    heldout_val_episodes=600,
     epochs=2.0,
     batch_size=8,
     grad_accum=2,
@@ -312,7 +318,27 @@ FULL = Profile(
     min_accuracy=0.90,
 )
 
-PROFILES: dict[str, Profile] = {p.name: p for p in (SMOKE, DEV, FULL)}
+#: Round 3's seed study: the two strongest torsos, both heads, dev sizing.
+#: Run once per date (the date seeds both the data and the training init).
+OOD = Profile(
+    name="ood",
+    models=_suite("qwen2.5-0.5b", "qwen3-0.6b"),
+    train_episodes=8000,
+    val_episodes=800,
+    test_episodes=1600,
+    heldout_episodes=600,
+    heldout_val_episodes=400,
+    epochs=1.0,
+    batch_size=8,
+    grad_accum=2,
+    learning_rate=2e-4,
+    head_learning_rate=1e-3,
+    lora_r=16,
+    max_seq_length=1024,
+    min_accuracy=0.80,
+)
+
+PROFILES: dict[str, Profile] = {p.name: p for p in (SMOKE, DEV, FULL, OOD)}
 
 #: Which profile the factory graph is declared at. The suite a factory trains
 #: is part of its *structure* (one build instance per model partition value),

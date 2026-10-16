@@ -51,6 +51,8 @@ override per materialization.
 
 from __future__ import annotations
 
+import os
+
 import flyte
 from flyte.remote import Task
 from flyteplugins.union import factory
@@ -67,6 +69,9 @@ from .contracts import (
 )
 
 FACTORY_NAME = "decision-factory"
+
+#: Opt-in weekly retrain of the suite (6 A10G fine-tunes for `dev`). Off by default.
+WEEKLY_TRIGGER = os.environ.get("DF_WEEKLY_TRIGGER", "0") == "1"
 
 
 def _task(name: str):
@@ -153,17 +158,18 @@ def build_graph(profile_name: str = DEFAULT_PROFILE) -> factory.Factory:
             "Coding-agent permission gate: oracle-labelled tool calls -> fine-tune torso x head "
             f"-> score -> serve the winner (suite: {', '.join(profile.models)})"
         ),
-        triggers=[
-            # A fresh suite once a week. Two lessons from round 1's nightly
-            # trigger (see research_log/2026-10-15-round-2-*):
-            #  - a Cron on a `Daily`-partitioned graph builds a NEW day every
-            #    time it fires, so it is a full retrain, never "all cache hits";
-            #  - `factory.on(cron, champion, endpoint)` compiles to one trigger
-            #    PER TARGET, and both ran the same upstream fine-tunes
-            #    concurrently — every GPU job twice. The endpoint already
-            #    depends on the champion, so it is the only target needed.
-            factory.on(flyte.Cron("0 5 * * 1"), endpoint, name="weekly-suite"),
-        ],
+        # Recurring GPU spend is the user's call, so the schedule is OFF unless
+        # opted into with DF_WEEKLY_TRIGGER=1 at deploy time (factory triggers
+        # have no `auto_activate` knob; not declaring one is the off switch).
+        # When on: weekly, endpoint-only. Lessons from round 1's nightly cron
+        # (research_log/2026-10-15-round-2-*): a Cron on a `Daily` graph builds
+        # a NEW day each time — a full 6-model retrain, never cache hits — and
+        # `factory.on(cron, a, b)` compiles to one trigger per target that each
+        # rebuild the shared upstream concurrently.
+        triggers=(
+            [factory.on(flyte.Cron("0 5 * * 1"), endpoint, name="weekly-suite")]
+            if WEEKLY_TRIGGER else []
+        ),
     )
 
 

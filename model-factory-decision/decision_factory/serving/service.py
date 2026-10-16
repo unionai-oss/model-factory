@@ -37,7 +37,8 @@ from ..config import APP_DOMAIN, APP_PROJECT, REQUIRE_APP_AUTH, env_vars, servin
 from ..contracts import ARTIFACT_CHAMPION, ENDPOINT_APP
 from ..harness.policy import DECISIONS, Observation, decide
 from ..harness.prompt import build_chat
-from ..harness.scoring import gate
+from ..harness.guard import evidence_disagrees
+from ..harness.scoring import apply_temperature, gate, temper
 from ..heads import modeling
 from ..shared.images import serving_image
 
@@ -90,17 +91,30 @@ def observation_from_body(body: dict) -> Observation:
     return Observation.from_dict(body.get("observation", body))
 
 
-def decide_with(dm: "modeling.DecisionModel", obs: Observation, threshold: float | None) -> dict:
+def decide_with(dm: "modeling.DecisionModel", obs: Observation, threshold: float | None,
+                temperature: float = 1.0, guard: bool = True) -> dict:
     """The model's answer for one observation, plus the gated answer.
-    Pure (no app state), so a local test can pin its shape."""
+
+    ``gated`` is how you would wire the model into an agent: temper the
+    probabilities, auto-allow only above the threshold (both tuned on held-out
+    validation families), and never auto-allow when the call's evidence
+    fields disagree (`harness/guard.py`). Pure, so a local test pins it."""
     t0 = time.perf_counter()
     out = dm.decide([build_chat(obs)], prefix_cache=True)[0]
     latency_ms = (time.perf_counter() - t0) * 1000
     t = 0.5 if threshold is None else float(threshold)
+    tempered = (temper([out["logits"]], float(temperature)) if "logits" in out
+                else apply_temperature([out["probs"]], float(temperature)))[0]
+    why = evidence_disagrees(obs) if guard else None
+    gated = gate([tempered], t)[0]
+    if why and gated == "allow":
+        gated = "ask_user"
     return {
         "decision": out["decision"],
         "probabilities": dict(zip(DECISIONS, [round(p, 4) for p in out["probs"]])),
-        "gated": {"decision": gate([out["probs"]], t)[0], "threshold": t},
+        "gated": {"decision": gated, "threshold": t, "temperature": float(temperature),
+                  "tempered_probabilities": dict(zip(DECISIONS, [round(p, 4) for p in tempered])),
+                  "evidence_disagreement": why},
         "parsed": out.get("parsed", True),
         "raw": out.get("raw"),
         "latency_ms": round(latency_ms, 1),
@@ -118,6 +132,7 @@ async def health() -> JSONResponse:
         "loaded": _state["dm"] is not None, "loading": _state["loading"], "load_error": _state["load_error"],
         "bound_model": bound_model_path(), "champion": m.get("model_slug"), "head": m.get("head"),
         "base_model": m.get("base_model"), "gate_threshold": m.get("gate_threshold"),
+        "serving_gate": m.get("serving_gate"),
         "test_accuracy": (m.get("test_metrics") or {}).get("accuracy"),
     })
 
@@ -141,8 +156,11 @@ async def decide_endpoint(body: dict) -> JSONResponse:
         await _ensure_loaded()
         obs = observation_from_body(body)
         manifest = _state["manifest"] or {}
-        threshold = body.get("threshold", manifest.get("gate_threshold"))
-        result = await asyncio.to_thread(decide_with, _state["dm"], obs, threshold)
+        sg = manifest.get("serving_gate") or {}
+        threshold = body.get("threshold", sg.get("threshold", manifest.get("gate_threshold")))
+        temperature = body.get("temperature", sg.get("temperature", 1.0))
+        result = await asyncio.to_thread(decide_with, _state["dm"], obs, threshold, temperature,
+                                         bool(body.get("guard", sg.get("guard", True))))
         verdict = decide(obs)
         result.update({
             "oracle": {"decision": verdict.decision, "rule": verdict.rule, "reason": verdict.reason},

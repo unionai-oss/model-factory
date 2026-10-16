@@ -90,7 +90,7 @@ async def finetune_decision_model(
     rows = df[df["split"] == "train"].to_dict("records")
     if not rows:
         raise flyte.errors.NonRecoverableError("no train-split episodes in the dataset")
-    chats, options, labels = training_inputs(rows)
+    chats, options, labels = training_inputs(rows, seed=int(date.strftime("%Y%m%d")) if date else 0)
 
     history: list[dict] = []
 
@@ -113,6 +113,9 @@ async def finetune_decision_model(
         epochs=profile.epochs, batch_size=profile.batch_size, grad_accum=profile.grad_accum,
         lr=profile.learning_rate, head_lr=profile.head_learning_rate, lora_r=profile.lora_r,
         pointer_rank=POINTER_RANK, max_len=profile.max_seq_length, on_log=on_log,
+        # Round 3: the day seeds the init (and the option shuffles) as well as
+        # the data, so independent days are independent seeds end to end.
+        seed=int(date.strftime("%Y%m%d")) % (2**31) if date else 0,
     )
 
     manifest = write_manifest(

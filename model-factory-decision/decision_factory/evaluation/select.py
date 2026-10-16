@@ -64,7 +64,9 @@ def _summary(r: dict) -> dict:
         "adversarial_unsafe_allow": r.get("slices", {}).get("adversarial", {}).get("unsafe_allow_rate"),
         "unseen_accuracy": r.get("unseen_command", {}).get("accuracy"),
         "gate": r.get("gate"), "val": r.get("val"), "latency": r.get("latency"),
-        "heldout": {k: v for k, v in (r.get("heldout") or {}).items() if k not in ("frontier", "confusion")} or None,
+        "heldout": {k: v for k, v in (r.get("heldout") or {}).items()
+                    if k not in ("frontier", "frontier_guarded", "confusion")} or None,
+        "shift": {k: v for k, v in (r.get("shift") or {}).items() if not k.startswith("ood_frontier")} or None,
         "input_tokens": r.get("input_tokens"), "output_tokens": r.get("output_tokens"),
         "parse_rate": r.get("parse_rate"),
     }
@@ -73,25 +75,47 @@ def _summary(r: dict) -> dict:
 #: How many standard errors of the best val cost count as a tie.
 TIE_SE = 2.0
 
+#: Weight of the held-out-VALIDATION-family cost in selection. 1.0 = an
+#: unfamiliar call matters as much as a familiar one.
+OOD_WEIGHT = 1.0
+
+
+def selection_cost(card: dict) -> tuple[float, float]:
+    """(cost, standard error) a suite member is ranked on.
+
+    In-distribution val expected cost, plus — when the val split carries the
+    held-out *validation* families (round 3) — ``OOD_WEIGHT`` times their
+    expected cost. Those families are disjoint from the held-out TEST
+    families, so selecting on them is not selecting on test. Without that
+    term, selection is blind to shift by construction: in round 2c the
+    latency tie-break picked the member that was 2.5x worse held-out.
+    """
+    r = card["readouts"][card["primary"]]
+    cost, se = r["val"]["expected_cost"], r["val"].get("expected_cost_se", 0.0)
+    shift = (r.get("shift") or {}).get("val_ood")
+    if shift:
+        cost += OOD_WEIGHT * shift["expected_cost"]
+        se = (se ** 2 + (OOD_WEIGHT * shift.get("expected_cost_se", 0.0)) ** 2) ** 0.5
+    return cost, se
+
 
 def rank(cards: list[dict]) -> list[dict]:
     """Suite members, champion first.
 
-    1. Val expected cost of the primary readout (lower is better).
-    2. But a val split of ~800 calls cannot separate 0.009 from 0.019 — that
-       is one mistake. Every model within ``TIE_SE`` standard errors of the
-       best is a statistical tie, and among ties the **cheapest to run** (p50
-       latency) wins. Don't let noise pick a model that is 6x slower.
+    1. Selection cost (`selection_cost`): val expected cost, held-out-aware
+       when the data allows.
+    2. Every member within ``TIE_SE`` standard errors of the best is a
+       statistical tie, and among ties the **cheapest to run** (p50 latency)
+       wins. Don't let noise pick a model that is 6x slower.
     """
     def cost(c):
-        return c["readouts"][c["primary"]]["val"]["expected_cost"]
+        return selection_cost(c)[0]
 
     def latency(c):
         return (c["readouts"][c["primary"]].get("latency") or {}).get("p50_ms", float("inf"))
 
     by_cost = sorted(cards, key=lambda c: (cost(c), latency(c)))
-    best = by_cost[0]["readouts"][by_cost[0]["primary"]]["val"]
-    band = cost(by_cost[0]) + TIE_SE * best.get("expected_cost_se", 0.0)
+    band = cost(by_cost[0]) + TIE_SE * selection_cost(by_cost[0])[1]
     tied = sorted([c for c in by_cost if cost(c) <= band], key=lambda c: (latency(c), cost(c)))
     return tied + [c for c in by_cost if cost(c) > band]
 
@@ -159,9 +183,18 @@ def choose(cards: dict[str, dict], dirs: dict[str, str], min_accuracy: float, ou
     manifest.pop("history", None)
     manifest.update({
         "selected_from": [c["model_slug"] for c in ranked],
-        "selection_metric": f"val expected_cost of the primary readout; ties within {TIE_SE} SE go to the lowest p50 latency",
+        "selection_metric": (f"val expected_cost + {OOD_WEIGHT} x held-out-validation-family expected_cost "
+                             f"of the primary readout; ties within {TIE_SE} SE go to the lowest p50 latency"),
         "primary_readout": winner["primary"],
         "gate_threshold": w["gate"]["threshold"],
+        # Round 3: the operating point the app uses, tuned under shift on the
+        # held-out VALIDATION families (temperature, then threshold, with the
+        # evidence guard on). Falls back to the in-distribution threshold.
+        "serving_gate": ({"temperature": w["shift"]["temperature"], "threshold": w["shift"]["threshold_guarded"],
+                          "guard": True, "tuned_on": "held-out validation families"}
+                         if w.get("shift") else
+                         {"temperature": 1.0, "threshold": w["gate"]["threshold"], "guard": True,
+                          "tuned_on": "in-distribution val"}),
         "test_metrics": _summary(w),
         "runner_up": ranked[1]["model_slug"] if len(ranked) > 1 else None,
         "leaderboard": leaderboard(ranked),

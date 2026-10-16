@@ -97,10 +97,19 @@ def test_the_date_dimension_is_daily(graph):
     assert dims[contracts.PARTITION_DATE] is factory.Daily
 
 
-def test_the_scheduled_trigger_targets_only_the_endpoint(graph):
+def test_no_recurring_gpu_spend_by_default(graph):
+    # The weekly retrain is opt-in (DF_WEEKLY_TRIGGER=1); recurring GPU spend
+    # is the user's decision, not a side effect of `factory deploy`.
+    assert graph.triggers == [] or list(graph.triggers) == []
+
+
+def test_the_opt_in_trigger_targets_only_the_endpoint(monkeypatch):
     # One target, not two: each target compiles to its own trigger, and two
     # triggers on a shared upstream rebuild that upstream twice, concurrently.
-    (trigger,) = graph.triggers
+    from decision_factory import factory as f
+
+    monkeypatch.setattr(f, "WEEKLY_TRIGGER", True)
+    (trigger,) = f.build_graph("smoke").triggers
     assert [t.name for t in trigger.targets] == [contracts.ENDPOINT_APP]
 
 

@@ -46,7 +46,7 @@ def tiny_base(tmp_path_factory):
     from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
     from transformers import PreTrainedTokenizerFast, Qwen2Config, Qwen2ForCausalLM
 
-    rows = build_rows(48, 16, 24, seed=1, heldout_n=12)
+    rows = build_rows(48, 16, 24, seed=1, heldout_n=12, heldout_val_n=10)
     texts = [render_prompt_text(Observation.from_row(r)) for r in rows] + ['{"decision": "ask_user"}']
     tk = Tokenizer(models.BPE())
     tk.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
@@ -107,12 +107,20 @@ def test_scorecard_selection_and_serving_shapes(trained, tmp_path):
     for slug, d in dirs.items():
         head = slug.split("-", 1)[1]
         card = build_scorecard(df, d, slug=slug, torso="tiny", head=head, base_model=base_dir, params_m=0,
-                               profile_name="smoke", latency_samples=2)
+                               profile_name="smoke", latency_samples=2, mc_passes=2)
         assert set(SCORECARD_KEYS) <= set(card)
         assert card["primary"] in card["readouts"]
-        assert set(card["readouts"]) == ({"pointer"} if head == "pointer" else {"json", "logprob"})
+        assert set(card["readouts"]) == ({"pointer", "pointer_mc"} if head == "pointer" else {"json", "logprob"})
         for r in card["readouts"].values():
-            assert {"accuracy", "unsafe_allow_rate", "brier", "ece", "gate", "frontier", "latency", "heldout"} <= set(r)
+            sh = r["shift"]
+            assert sh["val_ood"]["n"] == 10 and sh["temperature"] > 0
+            assert {"test_ind", "test_ood", "test_ood_guarded", "ood_frontier_tempered_guarded"} <= set(sh)
+            assert "guarded" in r and "frontier_guarded" in r["heldout"]
+        if head == "pointer":
+            assert card["readouts"]["pointer_mc"]["dropout_modules"] > 0
+        for name, r in card["readouts"].items():
+            want = {"accuracy", "unsafe_allow_rate", "brier", "ece", "gate", "frontier", "heldout"}
+            assert want | ({"latency"} if name != "pointer_mc" else set()) <= set(r), name
             assert r["heldout"]["n"] == 12 and "per_family" in r["heldout"]
         json.dumps(card)  # the scorecard File must serialize
         assert "<svg" in render_scorecard(card)
@@ -129,7 +137,10 @@ def test_scorecard_selection_and_serving_shapes(trained, tmp_path):
 
     dm = modeling.DecisionModel(out)
     obs = Observation.from_row(df.iloc[0].to_dict())
-    res = decide_with(dm, obs, manifest["gate_threshold"])
+    sg = manifest["serving_gate"]
+    assert sg["tuned_on"] == "held-out validation families"
+    res = decide_with(dm, obs, sg["threshold"], sg["temperature"])
+    assert "evidence_disagreement" in res["gated"]
     assert res["decision"] in DECISIONS and res["gated"]["decision"] in DECISIONS
     assert set(res["probabilities"]) == set(DECISIONS)
     assert abs(sum(res["probabilities"].values()) - 1) < 1e-3

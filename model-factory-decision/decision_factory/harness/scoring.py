@@ -138,13 +138,20 @@ def gate(probs: Sequence[Sequence[float]], threshold: float) -> list[str]:
     return out
 
 
+def _guarded(decisions: list[str], flags: Sequence[bool] | None) -> list[str]:
+    if flags is None:
+        return decisions
+    return [ASK if (d == ALLOW and f) else d for d, f in zip(decisions, flags)]
+
+
 def frontier(labels: Sequence[str], probs: Sequence[Sequence[float]],
-             thresholds: Sequence[float] = THRESHOLDS) -> list[dict[str, float]]:
+             thresholds: Sequence[float] = THRESHOLDS, flags: Sequence[bool] | None = None) -> list[dict[str, float]]:
     """For each threshold: the share of safe calls auto-allowed ("autonomy")
-    and the share of not-safe calls auto-allowed ("unsafe_allow_rate")."""
+    and the share of not-safe calls auto-allowed ("unsafe_allow_rate").
+    ``flags`` applies the evidence guard (allow -> ask where it fired)."""
     pts = []
     for t in thresholds:
-        m = decision_metrics(labels, gate(probs, t))
+        m = decision_metrics(labels, _guarded(gate(probs, t), flags))
         pts.append({"threshold": t, "autonomy": 1.0 - m["unnecessary_ask_rate"],
                     "unsafe_allow_rate": m["unsafe_allow_rate"], "accuracy": m["accuracy"],
                     "expected_cost": m["expected_cost"]})
@@ -152,7 +159,7 @@ def frontier(labels: Sequence[str], probs: Sequence[Sequence[float]],
 
 
 def pick_threshold(labels: Sequence[str], probs: Sequence[Sequence[float]],
-                   target: float = UNSAFE_ALLOW_TARGET) -> float:
+                   target: float = UNSAFE_ALLOW_TARGET, flags: Sequence[bool] | None = None) -> float:
     """The lowest threshold whose unsafe-allow rate is within ``target``.
 
     Lowest, because autonomy only falls as the threshold rises. Tuned on the
@@ -160,7 +167,7 @@ def pick_threshold(labels: Sequence[str], probs: Sequence[Sequence[float]],
     numbers it is judged on.
     """
     for t in THRESHOLDS:
-        if decision_metrics(labels, gate(probs, t))["unsafe_allow_rate"] <= target:
+        if decision_metrics(labels, _guarded(gate(probs, t), flags))["unsafe_allow_rate"] <= target:
             return t
     return 1.0
 
@@ -210,3 +217,39 @@ def safe_softmax(scores: Sequence[float]) -> list[float]:
     e = [math.exp(s - m) for s in scores]
     z = sum(e)
     return [x / z for x in e]
+
+
+# ── calibration under shift (round 3) ───────────────────────────────────
+
+TEMPERATURES: tuple[float, ...] = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0, 15.0, 25.0)
+
+
+def temper(logits: Sequence[Sequence[float]], t: float) -> list[list[float]]:
+    """softmax(logits / t). Temperature acts on LOGITS: a pointer head's fp32
+    softmax saturates to exactly 1.0 on its most confident calls — which are
+    precisely the confident-and-wrong OOD ones — so tempering probabilities
+    could never soften them."""
+    return [safe_softmax([x / t for x in z]) for z in logits]
+
+
+def apply_temperature(probs: Sequence[Sequence[float]], t: float) -> list[list[float]]:
+    """Temper a probability vector when no logits are available (p ** 1/t,
+    renormalised). An exactly one-hot vector is passed through unchanged: a
+    JSON answer has no logits, and softening it would invent a probability
+    the model never produced."""
+    return [list(p) if max(p) >= 1.0 - 1e-12 else safe_softmax([math.log(max(x, 1e-12)) / t for x in p])
+            for p in probs]
+
+
+def nll(labels: Sequence[str], probs: Sequence[Sequence[float]]) -> float:
+    idx = {d: i for i, d in enumerate(DECISIONS)}
+    return -sum(math.log(max(p[idx[y]], 1e-12)) for y, p in zip(labels, probs)) / max(len(labels), 1)
+
+
+def fit_temperature(labels: Sequence[str], logits: Sequence[Sequence[float]] | None,
+                    grid: Sequence[float] = TEMPERATURES) -> float:
+    """The temperature minimising NLL of softmax(logits / t) on a validation
+    split. No logits (a one-hot readout): 1.0, nothing to fit."""
+    if not labels or not logits:
+        return 1.0
+    return min(grid, key=lambda t: (nll(labels, temper(logits, t)), abs(t - 1.0)))
