@@ -38,7 +38,7 @@ import numpy as np
 # Module top, not inside zeroshot_predict: the code bundler only ships
 # statically-imported modules (pilot-board-3: "cannot import name 'llm_client'").
 from ..shared import llm_client
-from . import grid, prompting, scoring
+from . import features, grid, prompting, scoring
 
 N_MEM, N_CPU = scoring.N_MEM, scoring.N_CPU
 
@@ -57,7 +57,7 @@ class TrainConfig:
     warmup_frac: float = 0.05
     cpu_loss_weight: float = 0.3
     n_samples: int = 8
-    head: str = "classify"  # decision head: "classify" or "pointer"
+    head: str = "classify"  # decision head: "classify", "pointer" or "classify+num"
     max_train_rows: int = 0  # 0 = all
     seed: int = 0
 
@@ -196,7 +196,7 @@ def option_offsets(tok) -> tuple[list[int], list[int]]:
     return mem, cpu
 
 
-def _head_module(hidden: int, kind: str = "classify", offsets=None):
+def _head_module(hidden: int, kind: str = "classify", offsets=None, num_stats=None):
     import torch
 
     class Classify(torch.nn.Module):
@@ -209,9 +209,34 @@ def _head_module(hidden: int, kind: str = "classify", offsets=None):
             self.mem_head = torch.nn.Linear(hidden, N_MEM)
             self.cpu_head = torch.nn.Linear(hidden, N_CPU)
 
-        def forward(self, H, last):
+        def forward(self, H, last, num=None):
             h = self.norm(H[torch.arange(H.size(0), device=H.device), last].float())
             return self.mem_head(h), self.cpu_head(h)
+
+    class NumClassify(torch.nn.Module):
+        """The answer-slot state AND the scheduler-visible numeric features.
+
+        The LM reads the code; the numbers (log input bytes, rows, history
+        peaks -- exactly what the GBT arm sees) enter as numbers instead of
+        as digit tokens a small LM has to parse. Standardized with the
+        training split's statistics, which travel with the head.
+        """
+
+        def __init__(self, mean, std):
+            super().__init__()
+            self.register_buffer("mean", torch.tensor(mean, dtype=torch.float32))
+            self.register_buffer("std", torch.tensor(std, dtype=torch.float32))
+            self.norm = torch.nn.LayerNorm(hidden)
+            self.num = torch.nn.Sequential(torch.nn.Linear(len(mean), 128), torch.nn.GELU())
+            self.trunk = torch.nn.Sequential(torch.nn.Linear(hidden + 128, 512), torch.nn.GELU())
+            self.mem_head = torch.nn.Linear(512, N_MEM)
+            self.cpu_head = torch.nn.Linear(512, N_CPU)
+
+        def forward(self, H, last, num=None):
+            h = self.norm(H[torch.arange(H.size(0), device=H.device), last].float())
+            x = self.num((num.float() - self.mean) / self.std)
+            z = self.trunk(torch.cat([h, x], dim=-1))
+            return self.mem_head(z), self.cpu_head(z)
 
     class Pointer(torch.nn.Module):
         """q(answer slot) . k(option token), per decision."""
@@ -233,12 +258,20 @@ def _head_module(hidden: int, kind: str = "classify", offsets=None):
             opts = self.norm(H[b[:, None], last[:, None] - off[None, :]].float())  # (B, K, D)
             return (self.q[key](a)[:, None, :] * self.k[key](opts)).sum(-1) * self.scale
 
-        def forward(self, H, last):
+        def forward(self, H, last, num=None):
             return self._score(H, last, self.mem_off, "memory"), self._score(H, last, self.cpu_off, "cores")
 
     if kind == "pointer":
         return Pointer(*offsets)
+    if kind == "classify+num":
+        return NumClassify(*num_stats)
     return Classify()
+
+
+def numeric_matrix(rows: list[dict]) -> np.ndarray:
+    """The GBT arm's feature vector for each row (scheduler-visible only)."""
+    names = features.feature_names()
+    return np.array([[features.row_features(r).get(n, 0.0) for n in names] for r in rows], dtype=np.float32)
 
 
 def _answer_states(model, ids, mask):
@@ -253,8 +286,11 @@ def train_jev(train: list[dict], val: list[dict], cfg: TrainConfig, log=print):
     torch.manual_seed(cfg.seed)
     tok, model = _load(cfg, causal=False)
     offsets = option_offsets(tok) if cfg.head == "pointer" else None
-    head = _head_module(model.config.hidden_size, cfg.head, offsets).to(_device())
-    items = [(_prompt_ids(tok, r, cfg.max_len), r["label_mem_idx"], r["label_cpu_idx"]) for r in train]
+    num = numeric_matrix(train)
+    stats = (num.mean(0).tolist(), (num.std(0) + 1e-3).tolist())
+    head = _head_module(model.config.hidden_size, cfg.head, offsets, stats).to(_device())
+    items = [(_prompt_ids(tok, r, cfg.max_len), r["label_mem_idx"], r["label_cpu_idx"], num[i])
+             for i, r in enumerate(train)]
     params = [{"params": [p for p in model.parameters() if p.requires_grad], "lr": cfg.lr_lora},
               {"params": head.parameters(), "lr": cfg.lr_head}]
     opt = torch.optim.AdamW(params, weight_decay=0.0)
@@ -271,9 +307,10 @@ def train_jev(train: list[dict], val: list[dict], cfg: TrainConfig, log=print):
             ids, mask = ids.to(_device()), mask.to(_device())
             ym = torch.tensor([b[1] for b in batch], device=_device())
             yc = torch.tensor([b[2] for b in batch], device=_device())
+            xb = torch.tensor(np.stack([b[3] for b in batch]), device=_device())
             with _autocast():
                 H, last = _answer_states(model, ids, mask)
-            lm, lc = head(H, last)
+            lm, lc = head(H, last, xb)
             loss = torch.nn.functional.cross_entropy(lm, ym) + cfg.cpu_loss_weight * torch.nn.functional.cross_entropy(lc, yc)
             (loss / cfg.grad_accum).backward()
             running.append(float(loss))
@@ -292,6 +329,7 @@ def jev_logits(tok, model, head, rows: list[dict], cfg: TrainConfig, batch_size:
     import torch
 
     ids_all = [_prompt_ids(tok, r, cfg.max_len) for r in rows]
+    num = numeric_matrix(rows)
     mem = np.zeros((len(rows), N_MEM), dtype=np.float32)
     cpu = np.zeros((len(rows), N_CPU), dtype=np.float32)
     order = sorted(range(len(rows)), key=lambda k: len(ids_all[k]))
@@ -301,7 +339,7 @@ def jev_logits(tok, model, head, rows: list[dict], cfg: TrainConfig, batch_size:
             ids, mask = _pad([ids_all[k] for k in idx], tok.pad_token_id)
             with _autocast():
                 H, last = _answer_states(model, ids.to(_device()), mask.to(_device()))
-            lm, lc = head(H, last)
+            lm, lc = head(H, last, torch.tensor(num[idx], device=_device()))
             mem[idx], cpu[idx] = lm.float().cpu().numpy(), lc.float().cpu().numpy()
     return mem, cpu
 

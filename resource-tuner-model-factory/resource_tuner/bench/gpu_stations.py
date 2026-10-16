@@ -61,8 +61,7 @@ def _pred_table(variant: str, preds: dict, split_of: dict) -> list[dict]:
 async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen/Qwen3-1.7B", epochs: int = 3,
                         max_train_rows: int = 0) -> flyte.io.Dir:
     cfg = TrainConfig(model_name=model_name, epochs=epochs, max_train_rows=max_train_rows)
-    if arm == "jev-pointer":
-        cfg.head = "pointer"
+    cfg.head = {"jev-pointer": "pointer", "jev-num": "classify+num"}.get(arm, "classify")
     df = pd.read_parquet(await corpus.download())
     splits = _rows_by_split(df)
     train = splits["train"]
@@ -82,7 +81,7 @@ async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen
     t0 = time.time()
     table: list[dict] = []
     meta: dict = {"arm": arm, "config": config_dict(cfg), "n_train": len(train)}
-    if arm in ("jev", "jev-pointer"):
+    if arm in ("jev", "jev-pointer", "jev-num"):
         tok, model, head, hist = train_jev(train, splits["val"], cfg, log=log)
         meta["train_s"], meta["loss"] = time.time() - t0, hist
         mem_l, cpu_l = jev_logits(tok, model, head, eval_rows, cfg)

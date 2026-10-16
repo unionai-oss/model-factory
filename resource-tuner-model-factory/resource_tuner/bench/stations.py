@@ -196,7 +196,7 @@ async def bench_pilot(release: str = "pilot", tasks_per_family: int = 4, shard_s
 #: arm (partition value) -> where it runs. Every arm writes the same
 #: predictions table, possibly for several decoding *variants*.
 CPU_ARMS = ("static", "vpa", "size-rule", "gbt", "gbt-dist")
-GPU_ARMS = ("sft", "jev", "jev-pointer")
+GPU_ARMS = ("sft", "jev", "jev-pointer", "jev-num")
 #: hosted zero-shot arms -> the llm-service app each one asks
 # (the llama.cpp qwen38-27b could not get an L40S on 2026-10-16; its vLLM
 # build was up -- same weights, so the arm points there)
@@ -321,7 +321,8 @@ async def score_bench_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str
 #: Variants on the headline board, in order. Anything else an arm emits is
 #: still in the JSON, just not on the chart.
 HEADLINE = ("static", "vpa", "size-rule", "gbt", "gbt-dist", "zeroshot-27b", "zeroshot",
-            "sft-greedy", "sft-sampled", "jev-argmax", "jev", "jev-pointer-argmax", "jev-pointer")
+            "sft-greedy", "sft-sampled", "jev-argmax", "jev", "jev-pointer-argmax", "jev-pointer",
+            "jev-num-argmax", "jev-num")
 
 
 @bench_env.task(cache="auto")
