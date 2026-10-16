@@ -397,7 +397,10 @@ LIVE_VARIANTS = ("static", "size-rule", "gbt-dist", "sft-greedy", "jev-pointer")
 LIVE_MAX_MEMORY_MIB = 24 * 1024
 
 
-@live_env.task(retries=0, timeout=flyte.Timeout(max_runtime=1800, max_queued_time=900))
+# max_queued_time: long enough to wait out the project's action cap (rsb-v1-live-1 lost
+# 161 of 600 pods to a 15 min queue limit while v2 measurement held the slots),
+# short enough that a request no node can hold still fails rather than hangs.
+@live_env.task(retries=0, timeout=flyte.Timeout(max_runtime=1800, max_queued_time=3 * 3600))
 async def live_run(harness_code: str, inputs_json: str, seed: int) -> str:
     """One workload, in a pod sized by an arm's decision. An OOM never
     returns: the kernel kills the pod and the caller sees a failed action."""
