@@ -119,15 +119,118 @@ Base: `https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-
 | [rsb-pilot-board-3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-pilot-board-3) | relaunch, pilot corpus pinned with `--version` | 5 CPU arms succeeded; both zero-shot arms **FAILED** (`cannot import name 'llm_client'` -- a function-level import the code bundler never shipped; `charts`/`grid` had the same latent bug); 3 GPU arms stuck: L40s group at "max node group size reached". ABORTED. Fix: static imports + an AST guard test; GPU arms on A10G:1 |
 | [rsb-pilot-board-4](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-pilot-board-4) | relaunch | CPU arms succeeded; zero-shot arms **FAILED**: the llama.cpp `qwen38-27b`/`qwen35-397b` apps never became ready (no L40S); GPU arms QUEUED behind v1's shards (project cap of ~30 concurrent actions). ABORTED; zero-shot moved to the running vLLM 27B |
 | [rsb-gpu-probe-1](https://demo.hosted.unionai.cloud/v2/domain/staging/project/resource-tuner-model-factory/runs/rsb-gpu-probe-1) | `train_llm_arm` in the staging domain, to dodge the queue | QUEUED there too; ABORTED |
-| [rsb-v1-corpus-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-corpus-2) | **v1 corpus**, 288 pass-1 shards of 25 + 38 pass-2 shards | (running) |
+| [rsb-v1-corpus-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-corpus-2) | **v1 corpus**, 288 pass-1 shards of 25 runs + 38 pass-2 shards of 8 | **succeeded**: 7,200 runs, 7,089 usable (98.5%), 87 censored above 20 GiB, 24 failed (a `describe(include="all")` -> `to_parquet` workload bug, fixed for v2). 40.5 pod-hours of measurement. Generate cache-hit the aborted run's output -- see finding 4 |
+| [rsb-v1-board-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-board-1) | all arms on v1 (corpus pinned with `--version`) | 5 CPU arms succeeded; GPU arms QUEUED >1 h on A10G behind other projects; `zeroshot-27b` **FAILED** (vLLM's empty-200 `/health` read as an auth redirect). ABORTED |
+| [rsb-t4-probe-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-t4-probe-1) | `train_llm_arm` on T4 via `.override`, 64 rows | succeeded -- T4 admits work immediately; fp16 path green |
+| [rsb-v1-board-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-board-2) | arms on T4 | `sft` **OOMed** the 16 GB T4 on full-vocabulary logits (fix: `logits_to_keep`); decision heads ran at 20 steps/35 min -- `is_bf16_supported()` counts emulation, so the T4 ran emulated bf16. ABORTED |
+| [rsb-v1-sft-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-sft-1) | `sft` alone | ABORTED (same bf16 issue) |
+| [rsb-v1-board-3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-board-3) | **all arms on v1**, fp16 on T4 | CPU arms + `jev` / `jev-pointer` / `jev-num` succeeded (~1h50 each on a T4); `zeroshot-27b` parsed only 813/2,318 answers (max_tokens=64 cut off its reasoning); `sft` (running) |
+| [rsb-v1-zs27-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-zs27-2) | `zeroshot-27b` rebuilt with 1,024 tokens to reason | (running) |
+| [rsb-v2-corpus-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-corpus-1) | **v2 corpus**: 400 tasks/family (14,400 runs), seed 1, describe fix, thread caps of 3, 4 workloads per measurement pod | (running) |
 
-## Results
+## Results -- v1 (interim: `sft` and `zeroshot-27b` pending)
 
-(pending)
+Corpus `rt-bench-corpus[release=v1]` @ `b45077fc`: 7,089 measured runs
+(train 4,167 / val 604 / test 1,144 / OOD 1,174). The OOD split is two
+whole workload families no arm trained on (`duckdb_sql`, `image_batch`).
+
+**Headline: memory regret** -- GiB-hours reserved to get every run to
+SUCCEEDED, OOM-killed attempts and the delay penalty included, over the
+oracle's, minus 1 (lower is better; 0 = the oracle). CPU held at oracle.
+`cold` = runs with no history; `code` = families whose peak is set by the
+code rather than the input size (streaming / chunked / mmap / constants).
+
+| arm | test | OOM | cold | code-driven | **OOD** | OOD OOM | $ regret (packed) | CPU exact | Brier | ECE |
+|---|---|---|---|---|---|---|---|---|---|---|
+| static (safe single request) | 242.9% | 10.8% | 247.9% | 425.0% | 223.5% | 16.2% | 12.8% | 28% | | |
+| vpa (history max x margin) | 146.6% | 14.2% | 247.9% | 196.6% | 163.4% | 17.3% | 18.0% | 69% | | |
+| size-rule (power law in bytes) | 132.1% | 20.7% | 210.7% | 182.0% | 91.8% | 18.4% | 25.4% | 83% | | |
+| gbt (quantile trees) | 46.5% | 3.9% | 68.8% | 28.8% | 86.1% | 14.1% | 8.1% | 84% | | |
+| gbt-dist (19 quantiles -> expected cost) | 38.6% | 3.7% | 60.9% | 25.2% | 84.8% | 11.5% | 6.5% | 84% | 0.385 | 0.032 |
+| jev-num-argmax | 148.9% | 28.8% | 172.0% | 80.6% | 359.0% | 53.4% | 27.9% | 95% | 0.553 | 0.049 |
+| jev-num (decision head + numeric features) | 89.0% | 8.7% | 112.7% | 51.3% | 337.0% | 46.9% | 13.9% | 95% | 0.553 | 0.010 |
+| jev-argmax | 94.4% | 20.9% | 151.8% | 74.3% | 117.6% | 24.8% | 21.0% | 95% | 0.433 | 0.032 |
+| jev (decision head, linear readout) | 59.8% | 5.5% | 109.1% | 41.5% | 93.7% | 10.7% | 9.7% | 95% | 0.433 | 0.018 |
+| jev-pointer-argmax | 72.6% | 16.6% | 116.9% | 75.7% | 112.7% | 28.7% | 16.5% | 97% | 0.411 | 0.012 |
+| **jev-pointer** (Strands-style pointer head) | 50.0% | 5.0% | 83.0% | 29.0% | 84.6% | 15.0% | 9.4% | **97%** | 0.411 | **0.004** |
+| **ensemble** (gbt-dist x jev-pointer, w=0.6) | **35.6%** | **3.2%** | **59.5%** | **22.2%** | **75.4%** | **11.3%** | **6.4%** | 97% | **0.343** | 0.025 |
+
+(`jev*` = Qwen3-1.7B + rank-16 LoRA, 3 epochs, one T4 each. Numbers recomputed
+locally from the arms' cluster predictions on an exact local reconstruction of
+the corpus; the factory's scorecards compute the same thing.)
+
+What the table says, honestly:
+
+- **Rules lose badly; classical ML is a strong bar.** A safe static request
+  reserves 3.4x what the oracle does; history and size rules halve that but OOM
+  on 14-21% of first attempts. Quantile GBTs over scheduler-visible features
+  (with code tokens a person who knew the generator picked -- a generous
+  baseline) get within 39% of the oracle in-distribution.
+- **A 1.7B decision model reading only the prompt does not beat that GBT
+  in-distribution (50.0% vs 38.6%), and ties it on unseen families (84.6% vs
+  84.8%)** -- with no feature engineering, and calling CPU right 97% of the
+  time vs 84%.
+- **Calibrated probabilities are most of the LLM's value.** The same models
+  decoded by argmax are 23-35 points worse in-distribution and 28 points worse
+  OOD; decoded by expected cost they are good. The pointer head is the best
+  calibrated model in the bench (ECE 0.004).
+- **The two fail differently, so they pool.** A log-linear pool of the GBT's
+  and the pointer head's distributions (one weight, tuned on val) beats both
+  everywhere: 35.6% test, **75.4% OOD (-9.4 points vs either member)**, 3.2%
+  OOM -- the best arm on every column. That is the deployable answer.
+- **Adding the numeric features to the decision head hurt** (jev-num, 337%
+  OOD): a numeric-only head with the same 780-step budget scores the same 89%
+  in-distribution -- the head is optimization-starved -- and an MLP over
+  numbers extrapolates to new families far worse than trees. Numbers belong in
+  the trees; the LLM's job is the code.
 
 ## Findings
 
-(pending)
+**1. Measured labels change the picture.** Peak-to-input ratios vary 28x-527x
+within TF-IDF, 1x-53x within torch training and 0.16x-4.2x within CSV
+processing: the same bytes, different code, 1-2 orders of magnitude of memory.
+No input-size rule can see that, which is why size-rule reserves 2.3x the
+oracle and the code-reading arms do not.
+
+**2. A pure reserved-memory objective rewards OOMs.** Tuned on GiB-hours alone,
+the size rule settled at a 37% OOM rate (an OOM at small memory is cheap). The
+headline therefore charges one oracle run of delay per OOM (`OOM_PENALTY`), and
+the risk frontier sweeps that penalty 0-16x.
+
+**3. Dollar figures were measuring CPU.** Nearly every workload wants ~1 core,
+so under any price list CPU dominates the bill and an arm's CPU coin-flip
+outweighed its memory skill. The headline holds CPU at oracle and reports each
+arm's own CPU calls separately.
+
+**4. `cache="auto"` hashes only the task's own function body.**
+`generate_bench_runs` cache-hit across a change to the workload generator it
+calls, so v1 was generated before the thread caps changed: 774 runs declare
+`threads=4` and were measured on 3-CPU pods. Their memory labels are valid (the
+peak of the code as written); their CPU labels top out near 3 cores. Stations
+now key their caches on a hash of the modules they depend on
+(`bench/versioning.py`).
+
+**5. Factory reuse is task caching.** A redeploy changes every task version; an
+uncached build re-runs on the next materialization even when its artifact
+exists, and `--version` pins one version per artifact name, not per partition.
+GPU arms are now cached on the arms' source hash.
+
+**6. The capacity facts of this tenant decided the architecture.** The project
+runs ~30 actions at once; on-demand c5.4xlarge and i3.xlarge pools sit at
+their nodepool limits; the L40s group was full; A10G jobs queued for over an
+hour behind other projects; T4 admitted work immediately. Hence: measurement
+pods that run 4 workloads each (ru_maxrss is per process), interruptible pass-1
+pods, and the LLM arms on T4 in fp16 -- where `torch.cuda.is_bf16_supported()`
+returns True by counting emulation, which made the first T4 run 15x slow.
+
+**7. The autoregressive arm pays for its vocabulary.** Full-sequence logits over
+Qwen's 151k-token vocabulary are ~7 GB at batch 8 and OOMed a 16 GB T4; SFT
+now computes logits for the completion window only. The decision heads never
+build that tensor.
+
+**8. A zero-shot 27B model reasons before it answers.** At 64 output tokens it
+produced a parseable answer 35% of the time; it needs ~1k tokens per decision
+to answer at all -- versus zero generated tokens for a decision head.
 
 ## Code changes
 
