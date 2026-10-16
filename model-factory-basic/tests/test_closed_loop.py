@@ -120,6 +120,9 @@ def test_replay_takes_only_the_learnable_failures_most_solvable_first():
     assert set(out["source"]) == {"replay"} and list(out.columns) == DATASET_COLUMNS
     assert frontier_replay(None, 5).empty
 
+    hard.loc[:, "difficulty"] = "replay:replay:easy"  # replayed again on a later day
+    assert set(frontier_replay(hard, 5)["difficulty"]) == {"replay:easy"}
+
 
 # ── the comparison and the decision ─────────────────────────────────────
 

@@ -201,7 +201,8 @@ def frontier_replay(hard: pd.DataFrame | None, n: int) -> pd.DataFrame:
     f = hard[hard["rollout_pass_rate"] > 0].sort_values("rollout_pass_rate", ascending=False, kind="stable")
     f = f.head(n)[DATASET_COLUMNS].copy()
     f["source"] = "replay"
-    f["difficulty"] = "replay:" + f["difficulty"].astype(str)
+    # A task can be replayed on several days; label it once, not "replay:replay:...".
+    f["difficulty"] = "replay:" + f["difficulty"].astype(str).str.replace(r"^(replay:)+", "", regex=True)
     return f.reset_index(drop=True)
 
 

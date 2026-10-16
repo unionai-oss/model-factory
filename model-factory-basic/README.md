@@ -4,9 +4,11 @@ A **closed-loop model factory** on [Flyte v2](https://www.union.ai/docs/v2/) /
 Union, small enough to read in an afternoon. Every day it:
 
 1. curates a fresh slice of coding problems,
-2. writes new practice problems aimed at what yesterday's model got wrong,
-3. trains a small coding model (Qwen2.5-Coder-0.5B) with RL — GRPO, where
-   **running the unit tests is the reward** — starting from yesterday's best model,
+2. writes new practice problems aimed at what yesterday's model got wrong
+   (a 7B teacher on vLLM) and replays the ones it sometimes solved,
+3. trains a small coding model (Qwen2.5-Coder-0.5B) with RL — GRPO with vLLM
+   rollouts, where **running the unit tests is the reward** — as a fresh LoRA
+   on yesterday's best model,
 4. scores it against yesterday's best and the base model on a fixed held-out
    exam,
 5. releases whichever is better, serves it, and hands it to tomorrow.
@@ -16,18 +18,19 @@ a graph of versioned, partitioned artifacts. Nothing runs until you ask for an
 artifact; the platform works out what has to be built and reuses the rest.
 
 Everything is public and self-contained: KodCode-Light-RL-10K for problems,
-Qwen2.5-Coder 0.5B (student) and 1.5B (problem writer) from Hugging Face, a
-local subprocess sandbox for the tests. No external LLM APIs, no gated models.
+Qwen2.5-Coder 0.5B (student) and 7B (problem writer) from Hugging Face, a
+local subprocess sandbox for the tests. No external LLM APIs, no gated models
+(a served teacher app is an opt-in profile field, `teacher_app`).
 
 **Results so far** — see [research_log/](research_log/README.md):
-on a fixed 200-task held-out split, one A10G day of GRPO takes
-Qwen2.5-Coder-0.5B-Instruct from **35.0% to 42.5% pass@1** (+7.5 points, paired
-95% CI [+3, +12], 19 tasks gained / 4 lost). Three further warm-started days
-landed at 42.0%, 41.0% and 41.0%, within noise of that champion, so the
-champion/challenger gate kept the day-1 model each time. The loop runs
-unattended end to end; it does not yet *compound* at this budget (see
-[round 2](research_log/2026-10-15-round-2-closed-loop.md) for why and what's
-next).
+on a fixed 500-task held-out split the loop compounds. Day 1 takes
+Qwen2.5-Coder-0.5B-Instruct from **42.0% to 47.6% pass@1**; day 2, starting
+from that champion, reaches **50.8%** (+3.2 over the champion, paired 95% CI
+[+0.6, +5.8]); day 3 ties, so the gate keeps generation 2. Each step is about
+an A10G-hour of compute. See
+[round 3](research_log/2026-10-16-round-3-compounding.md) and, for the
+round-2 baseline that did *not* compound,
+[round 2](research_log/2026-10-15-round-2-closed-loop.md).
 
 ## The loop, one day at a time
 
@@ -53,13 +56,13 @@ next).
 
 | artifact | station task | what it is, and why it is an artifact |
 |---|---|---|
-| `mf-heldout-tasks` | `curate_heldout` | 200 verified problems from rows 0–599 of the dataset. **No partition**: it is built once and every day reads the same version, which is what makes day-over-day numbers comparable. |
+| `mf-heldout-tasks` | `curate_heldout` | 500 verified problems from rows 0–1999 of the dataset (`daily-r3`). **No partition**: it is built once and every day reads the same version, which is what makes day-over-day numbers comparable. |
 | `mf-baseline-report` | `evaluate_baseline` | The base model's pass@1 on that exam. Also built once; every day's eval reads it instead of re-generating it. |
 | `mf-champion[D]` | *(published outside the factory)* | The model day D starts from and must beat. Day one: the base model (`seed_champion`). After that: yesterday's release (`crown_champion`). |
 | `mf-seed-tasks[D]` | `ingest_and_curate` | ~256 problems from a window of the dataset that rotates by date (new day, new problems), schema-mapped, deduped, and **oracle-verified**: the reference solution must pass its own tests in the sandbox. Anything in the held-out set is dropped. |
-| `mf-synthetic-tasks[D]` | `generate_synthetic_tasks` | The **failure-driven curriculum**. The champion carries the list of training problems its RL rollouts kept failing; a 1.5B teacher writes variants of those (topping up with random ones), and only variants whose own solution passes their own tests survive; the failures it *sometimes* solved are also replayed as-is. Batched GPU generation via `DynamicBatcher`. |
+| `mf-synthetic-tasks[D]` | `generate_synthetic_tasks` | The **failure-driven curriculum**. The champion carries the list of training problems its RL rollouts kept failing; a 7B teacher (one batched vLLM call) writes variants of those, topping up with random ones, and only variants whose own solution passes their own tests survive (38% did on day 1). The failures it *sometimes* solved are also replayed as-is. Set `teacher_app` in the profile to use a served model instead. |
 | `mf-rl-tasks-dataset[D]` | `assemble_dataset` | Seed + synthetic. Refuses to publish if any task is in the held-out set. **Human gate 1** (data validation) lives here. |
-| `mf-policy-checkpoint[D]` | `train_grpo` | TRL GRPO + LoRA on one A10G, continuing the champion's adapter. The reward is format (0.1) + parses (0.1) + all hidden tests pass (1.0), with anti-reward-hacking guards. Records which tasks it could not solve. |
+| `mf-policy-checkpoint[D]` | `train_grpo` | TRL GRPO on one A10G with colocated vLLM rollouts: a **fresh LoRA on the champion's merged weights**, saved merged, so every generation is one full-weight model directory. The reward is format (0.1) + parses (0.1) + all hidden tests pass (1.0), with anti-reward-hacking guards. Records which tasks it could not solve. |
 | `mf-eval-report[D]` | `evaluate_checkpoint` | Greedy pass@1 of candidate, champion and base on the fixed exam, paired deltas with bootstrap 95% CIs. |
 | `mf-promoted-model[D]` | `promote_checkpoint` | Champion/challenger: the candidate if it beats the champion by ≥1 point and **human gate 2** approves; otherwise the champion carries forward. A bad day never moves the factory backwards. |
 | `mf-inference` | *(app)* | A FastAPI app serving the release; the factory deploys it with the exact version it just built. |
