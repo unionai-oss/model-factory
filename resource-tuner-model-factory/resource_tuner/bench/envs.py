@@ -103,16 +103,24 @@ live_env = flyte.TaskEnvironment(
     env_vars=cluster_env_vars(),
 )
 
-#: The LLM arms' accelerator. A10G:1 (24 GB, bf16) is the pool with headroom
-#: here: the L40s:1 group sat at "max node group size reached" for all three
-#: arms of rsb-pilot-board-3. Override per deploy with RSB_GPU=L40s:1 (then
-#: mind g6e.2xlarge's 7.66 allocatable CPU -- cpu=8 never schedules).
-BENCH_GPU = os.environ.get("RSB_GPU", "A10G:1")
+#: The LLM arms' accelerator, and the pod shape that fits its node.
+#: T4:1 (g4dn.xlarge, 16 GB, fp16 + GradScaler -- no bf16 on Turing) is the
+#: default because it is the pool that actually admits work here: the L40s:1
+#: group sat at "max node group size reached" (rsb-pilot-board-3) and A10G
+#: jobs stayed QUEUED for over an hour behind other projects
+#: (rsb-v1-board-1), while a T4 probe went straight to a node
+#: (rsb-t4-probe-1). Override per deploy with RSB_GPU=A10G:1 / L40s:1.
+BENCH_GPU = os.environ.get("RSB_GPU", "T4:1")
+_GPU_POD = {  # allocatable on the node each accelerator comes on
+    "T4:1": dict(cpu=3, memory="13Gi"),      # g4dn.xlarge: 3.67 CPU / 13.7 GiB
+    "A10G:1": dict(cpu=6, memory="24Gi"),
+    "L40s:1": dict(cpu=6, memory="44Gi"),    # g6e.2xlarge: 7.66 CPU / 59.1 GiB
+}[BENCH_GPU]
 
 bench_gpu_env = flyte.TaskEnvironment(
     name="rt-bench-gpu",
     image=bench_gpu_image,
-    resources=flyte.Resources(cpu=6, memory="24Gi", gpu=BENCH_GPU, disk="100Gi", shm="auto"),
+    resources=flyte.Resources(**_GPU_POD, gpu=BENCH_GPU, disk="80Gi", shm="auto"),
     env_vars={**cluster_env_vars(), "RSB_GPU": BENCH_GPU, "TOKENIZERS_PARALLELISM": "false",
               "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
 )

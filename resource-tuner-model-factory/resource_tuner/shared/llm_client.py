@@ -208,6 +208,17 @@ def _get(url: str, timeout: float = 30) -> dict:
         )
 
 
+def _health(url: str, timeout: float = 30) -> None:
+    """200 with an empty or JSON body is healthy: llama.cpp answers JSON,
+    vLLM answers an empty 200. An HTML 200 is the auth gateway's sign-in
+    page -- the failure the JSON check in `_get` exists to name."""
+    req = urllib.request.Request(url, headers=_headers())
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().strip()
+    if body and body[:1] not in (b"{", b"["):
+        raise TeacherError(f"{url} answered non-JSON (auth redirect? bad LLM_SERVICE_API_KEY?): {body[:120]!r}")
+
+
 def wait_until_ready(
     candidates: str | list[str],
     deadline_s: float = 1800,
@@ -239,7 +250,7 @@ def wait_until_ready(
     while time.monotonic() - started < deadline_s:
         for url in urls:
             try:
-                _get(f"{url}/health", timeout=probe_timeout_s)
+                _health(f"{url}/health", timeout=probe_timeout_s)
                 return url
             except urllib.error.HTTPError as e:
                 last[url] = f"HTTP {e.code}"
