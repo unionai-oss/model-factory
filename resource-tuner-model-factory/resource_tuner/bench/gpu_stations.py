@@ -68,7 +68,7 @@ def _pred_table(variant: str, preds: dict, split_of: dict) -> list[dict]:
 # Cached on the arms' source hash: factory reuse IS task caching, so an
 # uncached GPU arm retrains on every re-materialization (rsb-v1-board-3's
 # arms could not be reused to add the ensemble node).
-@bench_gpu_env.task(retries=1, cache=arms_cache(), timeout=flyte.Timeout(max_runtime=8 * 3600))
+@bench_gpu_env.task(retries=1, cache=arms_cache(), report=True, timeout=flyte.Timeout(max_runtime=8 * 3600))
 async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen/Qwen3-1.7B", epochs: int = 3,
                         max_train_rows: int = 0) -> flyte.io.Dir:
     cfg = TrainConfig(model_name=model_name, epochs=epochs, max_train_rows=max_train_rows,

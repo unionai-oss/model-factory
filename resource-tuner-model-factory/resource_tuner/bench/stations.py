@@ -59,7 +59,7 @@ async def _read_rows(f: flyte.io.File) -> list[dict]:
 # ── 1. generate ─────────────────────────────────────────────────────────
 
 
-@bench_env.task(cache=corpus_cache())
+@bench_env.task(cache=corpus_cache(), report=True)
 async def generate_bench_runs(release: str, tasks_per_family: int = 200, seed: int = 0) -> flyte.io.File:
     """Sample tasks from every family and expand each into its runs."""
     rows = dataset.generate_runs(tasks_per_family, seed=seed)
@@ -134,7 +134,7 @@ def _collect(results, measured: dict[str, dict]) -> int:
     return lost
 
 
-@bench_env.task(cache=corpus_cache())
+@bench_env.task(cache=corpus_cache(), report=True)
 async def measure_bench(runs: flyte.io.File, shard_size: int = 60) -> flyte.io.File:
     """Measure every run, in parallel shards; return the labelled corpus."""
     rows = await _read_rows(runs)
@@ -267,7 +267,7 @@ def _fit_cpu_arm(arm: str, splits: dict[str, list[dict]]) -> tuple[list[dict], d
     return _pred_rows(arm, preds, rows), {"knobs": knobs, "ms_per_decision": ms}
 
 
-@bench_env.task(cache=arms_cache())
+@bench_env.task(cache=arms_cache(), report=True)
 async def fit_bench_arm(corpus: flyte.io.File, arm: str, llm_model: str = "Qwen/Qwen3-1.7B", llm_epochs: int = 3,
                         llm_max_train_rows: int = 0) -> flyte.io.Dir:
     """Fit one arm on train (knob tuned on val); predict val/test/ood.
@@ -321,7 +321,7 @@ def _preds_by_variant(preds: pd.DataFrame) -> dict[str, dict[str, dict]]:
     return out
 
 
-@bench_env.task(cache=arms_cache())
+@bench_env.task(cache=arms_cache(), report=True)
 async def score_bench_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str) -> flyte.io.File:
     """Score every decoding variant of one arm on every split and slice."""
     rows = [r for r in await _read_rows(corpus) if dataset.usable(r)]
@@ -353,7 +353,7 @@ HEADLINE = ("static", "vpa", "size-rule", "gbt", "gbt-dist", "zeroshot-27b", "ze
             "jev-num-argmax", "jev-num", "jev-pointer-4b-argmax", "jev-pointer-4b", "ensemble")
 
 
-@bench_env.task(cache=arms_cache())
+@bench_env.task(cache=arms_cache(), report=True)
 async def bench_leaderboard(scorecards: list[flyte.io.File],
                             ensemble_scorecard: flyte.io.File | None = None) -> flyte.io.File:
     """Every arm side by side: the board, the frontier, and the slices."""
@@ -471,7 +471,7 @@ async def _live_one(row: dict, variant: str, mem_idx: int, cpu_idx: int, sem: as
     return out
 
 
-@bench_env.task(cache=arms_cache())
+@bench_env.task(cache=arms_cache(), report=True)
 async def live_validate(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir], runs_per_family: int = 10,
                         concurrency: int = 150) -> flyte.io.File:
     """Re-run a stratified sample of test/ood runs for real, under each
@@ -579,7 +579,7 @@ def build_ensemble(rows: list[dict], variants: dict[str, dict[str, dict]]) -> tu
                           "val_mem_regret": best_val, "candidates": candidates}
 
 
-@bench_env.task(cache=arms_cache())
+@bench_env.task(cache=arms_cache(), report=True)
 async def fit_bench_ensemble(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir]) -> flyte.io.Dir:
     """The classical anchor pooled with the best calibrated LLM arm.
 
