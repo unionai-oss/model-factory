@@ -122,7 +122,8 @@ async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen
             val_rows, {rid: p for rid, p in shift(greedy, k).items() if rid in val_ids})["mem_regret"])
         meta["greedy_margin_cells"] = best_k
         table += _pred_table("sft-greedy", shift(greedy, best_k), split_of)
-        sampled_txt = sft_generate(tok, model, eval_rows, cfg, n=cfg.n_samples, batch_size=8)
+        # batch 2 x 8 samples: 64 KV caches of 1.5k tokens do not fit a T4
+        sampled_txt = sft_generate(tok, model, eval_rows, cfg, n=cfg.n_samples, batch_size=2)
         sampled = {}
         for r, txts in zip(eval_rows, sampled_txt):
             p, c = samples_to_probs(txts)

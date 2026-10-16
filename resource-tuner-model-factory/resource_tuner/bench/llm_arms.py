@@ -405,14 +405,23 @@ def train_sft(train: list[dict], cfg: TrainConfig, log=print):
     for epoch in range(cfg.epochs):
         running = []
         for i, batch in enumerate(_batches(items, cfg.batch_size, key=lambda k: len(items[k][0]), shuffle_rng=rng)):
+            # Left-pad so every completion ends at the last position, then ask
+            # for logits on the last K positions only: the full-sequence logits
+            # over a 151k vocabulary are ~7 GB at this batch (rsb-v1-board-2's
+            # sft arm OOMed a 16 GB T4 on exactly that tensor). The decision
+            # head never builds it at all.
             seqs = [p + t for p, t in batch]
-            ids, mask = _pad(seqs, tok.pad_token_id)
-            labels = ids.clone()
-            labels[mask == 0] = -100
-            for j, (p, _t) in enumerate(batch):
-                labels[j, : len(p)] = -100  # completion-only loss
+            ids, mask = _pad(seqs, tok.pad_token_id, left=True)
+            k = max(len(t) for _p, t in batch) + 1
+            target = ids[:, -k + 1 :].clone()
+            for j, (_p, t) in enumerate(batch):
+                target[j, : (k - 1) - len(t)] = -100  # prompt tokens inside the window
             with _autocast():
-                loss = model(input_ids=ids.to(_device()), attention_mask=mask.to(_device()), labels=labels.to(_device())).loss
+                logits = model(input_ids=ids.to(_device()), attention_mask=mask.to(_device()),
+                               logits_to_keep=k).logits
+                loss = torch.nn.functional.cross_entropy(
+                    logits[:, :-1].float().reshape(-1, logits.size(-1)), target.to(_device()).reshape(-1),
+                    ignore_index=-100)
             scaler.scale(loss / cfg.grad_accum).backward()
             running.append(float(loss.detach()))
             if (i + 1) % cfg.grad_accum == 0:
