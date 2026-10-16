@@ -686,7 +686,6 @@ train = [
     { name = "peft" },
     { name = "torch" },
     { name = "transformers" },
-    { name = "trl" },
 ]
 
 [package.dev-dependencies]
@@ -699,7 +698,7 @@ dev = [
 requires-dist = [
     { name = "accelerate", marker = "extra == 'train'", specifier = ">=1.0" },
     { name = "datasets", marker = "extra == 'train'", specifier = ">=3.2" },
-    { name = "flyte", specifier = ">=2.10.0" },
+    { name = "flyte", specifier = ">=2.10.6" },
     { name = "flyteplugins-union", specifier = ">=0.12.0" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "peft", marker = "extra == 'train'", specifier = ">=0.13" },
@@ -707,7 +706,6 @@ requires-dist = [
     { name = "pytest", specifier = ">=8" },
     { name = "torch", marker = "extra == 'train'", specifier = ">=2.6" },
     { name = "transformers", marker = "extra == 'train'", specifier = ">=4.57" },
-    { name = "trl", marker = "extra == 'train'", specifier = ">=0.21" },
 ]
 provides-extras = ["train"]
 
@@ -2810,22 +2808,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/93/d9/08c75f3459f19ad00425b564058e40efa4bcd79b816064cf27499303ea42/triton-3.8.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:387dae4cb0089a7b6ba1a428ae0782b65c4c58f57d94617cb22ca8593d8ccbca", size = 247972313, upload-time = "2026-08-28T15:56:14.007Z" },
     { url = "https://files.pythonhosted.org/packages/7c/34/429c5592181cfb7361a0a8e0bff218e7224b726709d75da2472b3e819f70/triton-3.8.0-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1b84e7d512490ba529111260fa6f7cad8b254a6bb5fbdf41d5ef9a5e57f52d0a", size = 226591133, upload-time = "2026-08-28T16:09:02.271Z" },
     { url = "https://files.pythonhosted.org/packages/fe/d1/aa8a3e935c37efee7945984fdb64d7e0851bf6d920afd97b2d21f9d23360/triton-3.8.0-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:74217bb56ed8692759227758e4c4b3bd2d608a209c1a7a081bf361fb4c2c1bf9", size = 248077577, upload-time = "2026-08-28T15:56:24.94Z" },
-]
-
-[[package]]
-name = "trl"
-version = "1.14.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "accelerate" },
-    { name = "datasets" },
-    { name = "jinja2" },
-    { name = "packaging" },
-    { name = "transformers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/01/36/11cff1630c5b76cd556a8a28feaf1489a51854b088dce6bf757c07916ef9/trl-1.14.1.tar.gz", hash = "sha256:d4bfa9d408b324088136477826173695df6f1d301b078ab2a29ef8519d0c10b7", size = 764756, upload-time = "2026-09-29T13:28:02.543Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ea/71/68c462d2e5977db75a055f6fbdfe7ee36dcf47df710e93a40d37ce984a7f/trl-1.14.1-py3-none-any.whl", hash = "sha256:ae406a3ca113f23da33f297b4a067d7b25aa658ab9e5b226d36e775a55d9dfe5", size = 925516, upload-time = "2026-09-29T13:28:00.979Z" },
 ]
 
 [[package]]

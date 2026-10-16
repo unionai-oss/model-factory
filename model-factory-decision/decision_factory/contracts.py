@@ -8,76 +8,71 @@ and declares the artifact itself, so a station task returns a plain
 
 The graph, and what each partition dimension means:
 
-    decision-episodes      [date]           one labelled dataset per day
-    decision-model         [date, model]    one fine-tune per suite member
-    decision-scorecard     [date, model]    one scorecard per fine-tune
-    decision-champion      [date]           the winner, collapsing `model`
-    decision-api           (endpoint)       serves the champion
+    permission-episodes    [date]           one oracle-labelled dataset per day
+    permission-model       [date, model]    one fine-tune per torso x head
+    permission-scorecard   [date, model]    one scorecard per fine-tune
+    permission-champion    [date]           the winner, collapsing `model`
+    permission-gate        (endpoint)       serves the champion
 
-`model` is the interesting one. It is a *string* dimension whose values are
-the suite's slugs, so the two middle builds fan out to one instance per
-model, and `decision-champion` collapses them with `.all("model")` — which is
-how "train a suite, compare, deploy the best" becomes a declaration rather
-than a loop someone has to write and babysit.
+Round 1 published `decision-*` artifacts for a different problem (support
+triage). These are new names on purpose: an artifact name is a contract about
+what its versions *mean*, and a permission gate is not a triage router — the
+lineage graph should not show one as a newer version of the other.
 """
 
 from __future__ import annotations
 
 # ── artifact registry ───────────────────────────────────────────────────
-ARTIFACT_EPISODES = "decision-episodes"
-ARTIFACT_MODEL = "decision-model"
-ARTIFACT_SCORECARD = "decision-scorecard"
-ARTIFACT_CHAMPION = "decision-champion"
+ARTIFACT_EPISODES = "permission-episodes"
+ARTIFACT_MODEL = "permission-model"
+ARTIFACT_SCORECARD = "permission-scorecard"
+ARTIFACT_CHAMPION = "permission-champion"
 
-#: The factory's `serve` node: a running app, not an artifact. Never published
-#: to or read from the registry. Must be a DNS label (lowercase, digits, '-').
-ENDPOINT_APP = "decision-api"
+#: The factory's `serve` node: a running app, not an artifact. Must be a DNS
+#: label (lowercase, digits, '-').
+ENDPOINT_APP = "permission-gate"
 
 # ── partition dimensions ────────────────────────────────────────────────
 #: One episode set / suite run per day.
 PARTITION_DATE = "date"
-#: One fine-tune and scorecard per suite member; the value is a model slug
-#: from `config.MODEL_SUITE`. Slugs never contain '/' for this reason.
+#: One fine-tune and scorecard per suite member; the value is a torso x head
+#: slug from `config.MODEL_SUITE` (e.g. `qwen2.5-0.5b-pointer`).
 PARTITION_MODEL = "model"
 
 # ── payload schemas ─────────────────────────────────────────────────────
-# decision-episodes: parquet File. `obs_*` columns are the observation
-# fields; `label_json` is the training target verbatim.
+# permission-episodes: parquet File, one row per proposed tool call.
 EPISODE_COLUMNS = [
     "episode_id",
-    "label_tool",
-    "label_json",
+    "split",  # "train" | "val" | "test"
+    "label",  # allow | ask_user | deny
+    "rule",  # which oracle rule fired (R1..R5)
     "rationale",
-    "hard",
-    "split",  # "train" | "eval"
-    "obs_customer_message",
-    "obs_intent",
-    "obs_order_id",
-    "obs_order_looked_up",
-    "obs_order_status",
-    "obs_order_total_cents",
-    "obs_days_since_delivery",
-    "obs_tracking_number",
+    "family",  # sampler family, e.g. a_quote_obf
+    "slice",  # standard | adversarial
+    "seen_in_train",  # test/val rows: was this exact command/path/url in train?
+    "obs_tool",
+    "obs_command",
+    "obs_path",
+    "obs_resolved_path",
+    "obs_url",
+    "obs_workspace_root",
+    "obs_cwd",
+    "obs_home",
+    "obs_git_branch",
+    "obs_permission_mode",
+    "obs_user_task",
 ]
 
-# decision-model / decision-champion: Dir with a PEFT adapter, tokenizer
-# files, and manifest.json carrying at least these keys. The serving app
-# reads `base_model` to know what to load the adapter onto, so a Dir without
-# it is unservable.
-MODEL_MANIFEST_KEYS = ["model_slug", "base_model", "profile", "train_episodes"]
+# permission-model / permission-champion: Dir with a PEFT adapter, tokenizer
+# files, (pointer only) `pointer_head.pt`, and manifest.json carrying at least
+# these keys. The serving app reads `base_model` and `head` to know how to
+# load it, so a Dir without them is unservable.
+MODEL_MANIFEST_KEYS = ["model_slug", "base_model", "head", "profile", "train_episodes"]
 
-# decision-scorecard: JSON File with at least these keys. `exact_accuracy` is
-# what the champion is selected on.
-SCORECARD_KEYS = [
-    "model_slug",
-    "base_model",
-    "n",
-    "json_valid_rate",
-    "tool_accuracy",
-    "exact_accuracy",
-    "majority_baseline",
-]
+# permission-scorecard: JSON File with at least these keys. `primary` is the
+# readout the champion is selected on (expected cost under scoring.COST).
+SCORECARD_KEYS = ["model_slug", "base_model", "head", "primary", "readouts", "reference"]
 
-# decision-champion's manifest adds the selection record on top of
-# MODEL_MANIFEST_KEYS, so the served Dir says why it won.
-CHAMPION_MANIFEST_KEYS = MODEL_MANIFEST_KEYS + ["selected_from", "exact_accuracy"]
+# permission-champion's manifest adds the selection record and the tuned gate
+# threshold, so the served Dir says why it won and how to gate with it.
+CHAMPION_MANIFEST_KEYS = MODEL_MANIFEST_KEYS + ["selected_from", "gate_threshold", "test_metrics"]

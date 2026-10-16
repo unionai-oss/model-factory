@@ -117,6 +117,17 @@ def test_suite_slugs_are_valid_partition_values():
         assert "/" not in slug, slug
         assert slug == slug.lower()
         assert "/" in candidate.hf_id, f"{slug} should map to a HF repo id"
+        assert slug == f"{candidate.torso.slug}-{candidate.head}"
+
+
+def test_every_profile_compares_both_heads_on_each_torso():
+    # The head comparison is the point of the suite: a torso with only one
+    # head in a profile has nothing to be compared against.
+    for name in ("smoke", "dev", "full"):
+        profile = get_profile(name)
+        torsos = {c.torso.slug for c in profile.candidates}
+        for t in torsos:
+            assert {c.head for c in profile.candidates if c.torso.slug == t} == {"pointer", "sft"}, (name, t)
 
 
 def test_every_profile_names_only_known_models():
@@ -135,7 +146,7 @@ def test_the_default_suite_is_ungated():
             assert candidate.gated is False, f"{name} includes gated {candidate.slug}"
 
 
-def test_smoke_trains_more_than_one_model():
+def test_smoke_trains_more_than_one_model():  # noqa: D103
     # A "suite" of one has nothing to compare, so champion selection would be
     # vacuous and the `.all` collapse untested by a smoke run.
     assert len(get_profile("smoke").models) >= 2

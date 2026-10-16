@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     # Factories need flyte>=2.10 + flyteplugins-union>=0.12.
-    "flyte>=2.10.0",
+    "flyte>=2.10.6",
     "flyteplugins-union>=0.12.0",
     "pandas>=2.2",
     "pyarrow>=17",
@@ -16,7 +16,6 @@ dependencies = [
 train = [
     "torch>=2.6",
     "transformers>=4.57",
-    "trl>=0.21",
     "peft>=0.13",
     "datasets>=3.2",
     "accelerate>=1.0",
