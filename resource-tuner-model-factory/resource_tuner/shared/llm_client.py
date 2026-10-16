@@ -303,6 +303,7 @@ def chat(
     backoff_s: float = 2.0,
     loading_retries: int = 20,
     model: str = "default",
+    usage: dict | None = None,
 ) -> str:
     """One chat completion; returns the assistant text (content only —
     llama.cpp puts hybrid-thinking traces in reasoning_content, which we
@@ -361,6 +362,8 @@ def chat(
         time.sleep(sleep_s)
     else:  # pragma: no cover — loop always breaks or raises
         raise last or TeacherError("teacher request failed")
+    if usage is not None:  # caller wants token counts (prompt/completion)
+        usage.update(out.get("usage") or {})
     try:
         return out["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError):

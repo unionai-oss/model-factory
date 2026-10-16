@@ -96,10 +96,13 @@ measure_big_env = flyte.TaskEnvironment(
 
 # Live validation runs ONE workload under an arm's chosen request, so its
 # resources are always overridden per call; these are only defaults.
+# Interruptible, to reach the spot pools: a reclaim surfaces as a non-OOM
+# failure, so it can never be mistaken for the OOM being measured.
 live_env = flyte.TaskEnvironment(
     name="rt-bench-live",
     image=bench_image,
     resources=flyte.Resources(cpu=1, memory="1Gi", disk="40Gi"),
+    interruptible=True,
     env_vars=cluster_env_vars(),
 )
 

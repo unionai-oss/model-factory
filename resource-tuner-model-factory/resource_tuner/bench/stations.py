@@ -500,6 +500,6 @@ async def bench_peek(corpus: flyte.io.File | None = None, artifact_dir: flyte.io
         return df.drop(columns=[c for c in _PEEK_DROP if c in df.columns]).to_json(orient="records")
     if artifact_dir is not None:
         preds, meta = await _read_arm(artifact_dir)
-        return json.dumps({"meta": meta, "predictions": preds.drop(columns=["raw"]).to_dict("records")}, default=float)
+        return json.dumps({"meta": meta, "predictions": preds.to_dict("records")}, default=float)
     with open(await artifact_file.download()) as f:
         return f.read()

@@ -492,26 +492,36 @@ def measure_latency(fn, rows: list[dict], n: int = 32) -> dict:
 # ── zero-shot hosted LLM ────────────────────────────────────────────────
 
 
-def zeroshot_predict(rows: list[dict], teacher: str = "qwen35-397b", concurrency: int = 12, log=print) -> tuple[dict, dict]:
+def zeroshot_predict(rows: list[dict], teacher: str = "qwen35-397b", concurrency: int = 16, log=print,
+                     max_tokens: int = 1024) -> tuple[dict, dict]:
     """Ask a hosted model. Unparseable answers fall back to the grid's
     middle -- recorded as a parse failure, never silently."""
     url = llm_client.wait_until_ready(llm_client.resolve_teacher_candidates(teacher), deadline_s=1800)
     model = llm_client.served_model(url)
-    stats = {"teacher": teacher, "model": model, "parse_failures": 0, "errors": 0, "latency_ms": []}
+    stats = {"teacher": teacher, "model": model, "parse_failures": 0, "errors": 0, "latency_ms": [],
+             "completion_tokens": [], "prompt_tokens": []}
 
+    # Room to think. Asked for JSON only, a 27B model still reasons in prose
+    # first; at max_tokens=64 that truncated 1,505 of 2,318 answers before the
+    # JSON (rsb-v1-board-3). Letting it reason is the fair zero-shot
+    # protocol -- and its token bill is part of what is being compared.
     def one(r):
         t0 = time.perf_counter()
+        usage: dict = {}
         try:
-            text = llm_client.chat(url, prompting.messages(r), max_tokens=64, temperature=0.0, timeout=300,
-                                   model=model)
+            text = llm_client.chat(url, prompting.messages(r), max_tokens=max_tokens, temperature=0.0,
+                                   timeout=600, model=model, usage=usage)
         except Exception as e:  # noqa: BLE001
-            return r["run_id"], None, f"{type(e).__name__}: {e}", 0.0
-        return r["run_id"], text, "", (time.perf_counter() - t0) * 1000
+            return r["run_id"], None, f"{type(e).__name__}: {e}", 0.0, usage
+        return r["run_id"], text, "", (time.perf_counter() - t0) * 1000, usage
 
     preds = {}
     with ThreadPoolExecutor(concurrency) as pool:
-        for i, (rid, text, err, ms) in enumerate(pool.map(one, rows)):
+        for i, (rid, text, err, ms, usage) in enumerate(pool.map(one, rows)):
             ans = prompting.parse_answer(text) if text else None
+            if usage:
+                stats["completion_tokens"].append(usage.get("completion_tokens", 0))
+                stats["prompt_tokens"].append(usage.get("prompt_tokens", 0))
             if err:
                 stats["errors"] += 1
             elif ans is None:
@@ -519,9 +529,12 @@ def zeroshot_predict(rows: list[dict], teacher: str = "qwen35-397b", concurrency
             else:
                 stats["latency_ms"].append(ms)
             m, c = ans or (grid.mem_index_covering(4096), grid.cpu_index_covering(1))
-            preds[rid] = {"mem_idx": m, "cpu_idx": c, "raw": (text or err)[:200]}
+            preds[rid] = {"mem_idx": m, "cpu_idx": c, "raw": (text or err)[-200:]}
             if i % 100 == 0:
                 log(f"[zeroshot] {i}/{len(rows)}")
+    for k in ("completion_tokens", "prompt_tokens"):
+        v = stats.pop(k)
+        stats[f"mean_{k}"] = float(np.mean(v)) if v else float("nan")
     lat = stats.pop("latency_ms")
     stats["p50_ms"] = float(np.median(lat)) if lat else float("nan")
     stats["p90_ms"] = float(np.quantile(lat, 0.9)) if lat else float("nan")
