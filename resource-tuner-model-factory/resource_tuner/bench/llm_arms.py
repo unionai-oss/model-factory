@@ -74,7 +74,10 @@ def _amp_dtype():
     """bf16 where the hardware has it; fp16 (+ a GradScaler) on T4-class GPUs."""
     import torch
 
-    if torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+    # Capability, not is_bf16_supported(): that counts *emulation* and says
+    # True on a T4 (sm_75), where bf16 then runs ~15x slower than fp16
+    # (rsb-v1-board-2: 20 optimizer steps in 35 minutes).
+    if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8:
         return torch.float16
     return torch.bfloat16
 
