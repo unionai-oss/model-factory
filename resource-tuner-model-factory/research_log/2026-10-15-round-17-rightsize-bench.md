@@ -126,6 +126,7 @@ Base: `https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-
 | [rsb-v1-sft-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-sft-1) | `sft` alone | ABORTED (same bf16 issue) |
 | [rsb-v1-board-3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-board-3) | **all arms on v1**, fp16 on T4 | CPU arms + `jev` / `jev-pointer` / `jev-num` succeeded (~1h50 each on a T4); `zeroshot-27b` parsed only 813/2,318 answers (max_tokens=64 cut off its reasoning); `sft` (running) |
 | [rsb-v1-zs27-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-zs27-2) | `zeroshot-27b` rebuilt with 1,024 tokens to reason | succeeded after ~4.5 h: 2,318 decisions, 639 generated tokens each on average, p50 103 s per decision on the shared vLLM app; 1,207 still ran out of budget mid-reasoning |
+| [rsb-v1-4b-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-4b-1) | `jev-pointer-4b` on v1: Qwen3-4B pointer head, 2 epochs, one T4 (fp16, micro-batch 4 x 4) | succeeded, 2h37m training; see the scaling note under Results |
 | [rsb-v2-corpus-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-corpus-1) | **v2 corpus**: 400 tasks/family (14,400 runs), seed 1, describe fix, thread caps of 3, 4 workloads per measurement pod | (running) |
 
 ## Results -- v1
@@ -156,6 +157,7 @@ code rather than the input size (streaming / chunked / mmap / constants).
 | jev (decision head, linear readout) | 59.8% | 5.5% | 109.1% | 41.5% | 93.7% | 10.7% | 9.7% | 95% | 0.433 | 0.018 |
 | jev-pointer-argmax | 72.6% | 16.6% | 116.9% | 75.7% | 112.7% | 28.7% | 16.5% | 97% | 0.411 | 0.012 |
 | **jev-pointer** (Strands-style pointer head) | 50.0% | 5.0% | 83.0% | 29.0% | 84.6% | 15.0% | 9.4% | **97%** | 0.411 | **0.004** |
+| **jev-pointer-4b** (same head, Qwen3-4B, 2 epochs) | 42.5% | 3.8% | | | **78.1%** | 10.7% | 7.3% | 97% | 0.348 | 0.016 |
 | **ensemble** (gbt-dist x jev-pointer, w=0.6) | **35.6%** | **3.2%** | **59.5%** | **22.2%** | **75.4%** | **11.3%** | **6.4%** | 97% | **0.343** | 0.025 |
 
 (`jev*` = Qwen3-1.7B + rank-16 LoRA, 3 epochs, one T4 each. Numbers recomputed
@@ -192,6 +194,12 @@ What the table says, honestly:
   551 runs) and weak in-distribution (77.7% vs 32.9% / 41.4%, 560 runs) -- at
   ~600 prompt + ~640 generated tokens and ~100 s per decision. The fine-tuned
   1.7B decision head beats it on both splits at 129 ms and zero tokens.
+- **The decision model scales.** The same pointer head on Qwen3-4B (2 epochs,
+  one T4, 272 ms per decision) improves on the 1.7B everywhere -- 50.0% ->
+  42.5% in-distribution, 84.6% -> **78.1% on unseen families, now 6.7 points
+  better than the GBT** -- with better calibration (Brier 0.411 -> 0.348). Its
+  pool with the GBT reaches 36.1% / 80.4% (val picked w=0.7, leaning on the
+  trees; on OOD the 1.7B pool is still better at 75.4%).
 - **The two fail differently, so they pool.** A log-linear pool of the GBT's
   and the pointer head's distributions (one weight, tuned on val) beats both
   everywhere: 35.6% test, **75.4% OOD (-9.4 points vs either member)**, 3.2%
