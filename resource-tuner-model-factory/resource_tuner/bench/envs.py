@@ -58,30 +58,31 @@ bench_gpu_image = (
     .with_pip_packages(*_FLYTE_REPIN_LAYER)
 )
 
-#: Measurement runs in two passes, sized to the pools this tenant can
-#: actually schedule (the c5.4xlarge and i3.xlarge on-demand pools sit at
-#: their nodepool limits: rsb-pilot-1 waited 20 min, rsb-v1-corpus held 7
-#: pods for 180 shards).
+#: Measurement runs in two passes, sized to what this tenant schedules and
+#: to its ~30-concurrent-actions-per-project cap (the binding constraint:
+#: rsb-v1-corpus-2 ran 18-27 shards at a time for 288 shards, ~4.5 hours).
+#: The c5.4xlarge / i3.xlarge on-demand pools sit at their nodepool limits;
+#: the spot c5 pool does not.
 #:
-#: pass 1 -- every run, on a 3 CPU / 10Gi pod: fits a t3a.xlarge and, being
-#:           interruptible, the spot c5/t3a pools too. Workloads cap their
-#:           own threads at 3, so the pod never throttles declared
-#:           parallelism. The guard kills a workload heading past the pod
-#:           limit and records it as censored...
-#: pass 2 -- ...and only those re-run on a 24Gi pod.
-#:
-#: One workload at a time per pod either way, so a run's peak is its own.
-MEASURE_MEMORY_MIB = 10 * 1024
+#: pass 1 -- every run, MEASURE_CONCURRENCY at a time on an interruptible
+#:           12 CPU / 24Gi pod (one spot c5.4xlarge). Workloads cap their own
+#:           threads at 3, so 4 x 3 threads never throttle each other.
+#:           ru_maxrss is per process, so concurrency does not blur peaks;
+#:           each process has a guard, and a workload heading past it is
+#:           killed and recorded as censored...
+#: pass 2 -- ...and only those re-run alone on a 24Gi pod.
+MEASURE_CONCURRENCY = 4
+MEASURE_MEMORY_MIB = 24 * 1024
 BIG_MEMORY_MIB = 24 * 1024
 # floats: they are defaults of `float` task inputs, and flyte will not
 # coerce an int literal into one (rsb-pilot-2 lost every shard to that).
-MEASURE_GUARD_MIB = float(MEASURE_MEMORY_MIB - 2 * 1024)
+MEASURE_GUARD_MIB = float((MEASURE_MEMORY_MIB - 3 * 1024) // MEASURE_CONCURRENCY)
 BIG_GUARD_MIB = float(BIG_MEMORY_MIB - 4 * 1024)
 
 measure_env = flyte.TaskEnvironment(
     name="rt-bench-measure",
     image=bench_image,
-    resources=flyte.Resources(cpu=3, memory=f"{MEASURE_MEMORY_MIB}Mi", disk="40Gi"),
+    resources=flyte.Resources(cpu=12, memory=f"{MEASURE_MEMORY_MIB}Mi", disk="80Gi"),
     interruptible=True,
     env_vars=cluster_env_vars(),
 )

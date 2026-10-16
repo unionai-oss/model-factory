@@ -29,7 +29,15 @@ from ..shared.reporting import Reporter
 from . import dataset
 from . import arms as cpu_arms
 from . import charts, grid, scoring
-from .envs import BIG_GUARD_MIB, MEASURE_GUARD_MIB, bench_env, live_env, measure_big_env, measure_env
+from .envs import (
+    BIG_GUARD_MIB,
+    MEASURE_CONCURRENCY,
+    MEASURE_GUARD_MIB,
+    bench_env,
+    live_env,
+    measure_big_env,
+    measure_env,
+)
 from .gpu_stations import train_llm_arm
 from .llm_arms import zeroshot_predict
 from .measure import measure_run
@@ -64,30 +72,43 @@ async def generate_bench_runs(release: str, tasks_per_family: int = 200, seed: i
 # ── 2. measure ──────────────────────────────────────────────────────────
 
 
-def _measure_rows(rows: list[dict], guard_mib: float) -> list[dict]:
-    """Execute and measure runs one at a time, each in its own interpreter,
-    so every peak is that workload's alone. The guard kills a workload
-    heading past the pod limit and records it as censored, instead of
-    letting the kernel kill the pod and lose the whole shard."""
-    out = []
-    for r in rows:
-        try:
-            m = measure_run(r["harness_code"], json.loads(r["inputs_json"]), seed=r["seed"],
-                            kill_above_mib=guard_mib, timeout_s=900)
-        except Exception as e:  # noqa: BLE001 -- a broken prep is a result, not a crash
-            m = {"ok": False, "error": f"prep: {type(e).__name__}: {e}"[:500]}
-        out.append({"run_id": r["run_id"], **{k: v for k, v in m.items() if k != "result"}})
-        print(f"{r['run_id']}: ok={m.get('ok')} peak={m.get('peak_rss_mib', 0):.0f}MiB "
-              f"wall={m.get('wall_s', 0):.1f}s {m.get('error', '')[:120]}", flush=True)
-    return out
+def _measure_one(r: dict, guard_mib: float) -> dict:
+    try:
+        m = measure_run(r["harness_code"], json.loads(r["inputs_json"]), seed=r["seed"],
+                        kill_above_mib=guard_mib, timeout_s=900)
+    except Exception as e:  # noqa: BLE001 -- a broken prep is a result, not a crash
+        m = {"ok": False, "error": f"prep: {type(e).__name__}: {e}"[:500]}
+    print(f"{r['run_id']}: ok={m.get('ok')} peak={m.get('peak_rss_mib', 0):.0f}MiB "
+          f"wall={m.get('wall_s', 0):.1f}s {m.get('error', '')[:120]}", flush=True)
+    return {"run_id": r["run_id"], **{k: v for k, v in m.items() if k != "result"}}
+
+
+def _measure_rows(rows: list[dict], guard_mib: float, concurrency: int = 1) -> list[dict]:
+    """Execute and measure runs, each in its own interpreter.
+
+    `ru_maxrss` is per process, so running `concurrency` workloads side by
+    side does not blur anyone's peak -- what it costs is the pod's memory,
+    which is why each process gets its own guard (pod limit / concurrency,
+    roughly) and a workload heading past it is killed and recorded as
+    censored rather than taking the pod, and every peak in it, down. The
+    project caps concurrent actions (~30 here), so runs per pod is the
+    throughput lever, not pods.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    if concurrency <= 1:
+        return [_measure_one(r, guard_mib) for r in rows]
+    with ThreadPoolExecutor(concurrency) as pool:
+        return list(pool.map(lambda r: _measure_one(r, guard_mib), rows))
 
 
 # retries=3: pass 1 runs on interruptible capacity, so a spot reclaim is
 # an expected event, not a failure.
 @measure_env.task(retries=3, cache="auto", timeout=flyte.Timeout(max_runtime=4 * 3600))
-async def measure_shard(rows_json: str, guard_mib: float = MEASURE_GUARD_MIB) -> str:
-    """Pass 1: measure a shard of runs on a small pod."""
-    return json.dumps(_measure_rows(json.loads(rows_json), guard_mib))
+async def measure_shard(rows_json: str, guard_mib: float = MEASURE_GUARD_MIB,
+                        concurrency: int = MEASURE_CONCURRENCY) -> str:
+    """Pass 1: measure a shard of runs, `concurrency` at a time."""
+    return json.dumps(_measure_rows(json.loads(rows_json), guard_mib, concurrency))
 
 
 @measure_big_env.task(retries=1, cache="auto", timeout=flyte.Timeout(max_runtime=4 * 3600))
@@ -109,7 +130,7 @@ def _collect(results, measured: dict[str, dict]) -> int:
 
 
 @bench_env.task(cache="auto")
-async def measure_bench(runs: flyte.io.File, shard_size: int = 25) -> flyte.io.File:
+async def measure_bench(runs: flyte.io.File, shard_size: int = 60) -> flyte.io.File:
     """Measure every run, in parallel shards; return the labelled corpus."""
     rows = await _read_rows(runs)
     order = list(range(len(rows)))
@@ -177,7 +198,9 @@ async def bench_pilot(release: str = "pilot", tasks_per_family: int = 4, shard_s
 CPU_ARMS = ("static", "vpa", "size-rule", "gbt", "gbt-dist")
 GPU_ARMS = ("sft", "jev", "jev-pointer")
 #: hosted zero-shot arms -> the llm-service app each one asks
-HOSTED_ARMS = {"zeroshot": "qwen35-397b", "zeroshot-27b": "qwen38-27b"}
+# (the llama.cpp qwen38-27b could not get an L40S on 2026-10-16; its vLLM
+# build was up -- same weights, so the arm points there)
+HOSTED_ARMS = {"zeroshot": "qwen35-397b", "zeroshot-27b": "qwen38-27b-vllm"}
 ALL_ARMS = CPU_ARMS + tuple(HOSTED_ARMS) + GPU_ARMS
 
 _EVAL_SPLITS = ("val", "test", "ood")

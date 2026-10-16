@@ -35,12 +35,16 @@ TEACHERS_PUBLIC: dict[str, str] = {
     # DIFFERENT model families writing archetypes.
     "minimax-m3": "https://minimax-m3-llm-service-development.apps.demo.hosted.unionai.cloud",
     "qwen35-397b": "https://qwen35-397b-llm-service-development.apps.demo.hosted.unionai.cloud",
+    # vLLM build of the 27B (OpenAI-compatible, validates the model name --
+    # use served_model()). Up when the llama.cpp builds cannot get an L40S.
+    "qwen38-27b-vllm": "https://qwen38-27b-vllm-llm-service-development.apps.demo.hosted.unionai.cloud",
 }
 # In-cluster service DNS — the keyless fallback.
 TEACHERS_SVC: dict[str, str] = {
     "qwen38-27b": "http://qwen38-27b.llm-service-development.svc.cluster.local",
     "minimax-m3": "http://minimax-m3.llm-service-development.svc.cluster.local",
     "qwen35-397b": "http://qwen35-397b.llm-service-development.svc.cluster.local",
+    "qwen38-27b-vllm": "http://qwen38-27b-vllm.llm-service-development.svc.cluster.local",
 }
 DEFAULT_TEACHER = "qwen38-27b"
 
@@ -268,6 +272,16 @@ _RETRY_STATUS = {429, 500, 502, 503, 504}
 # hiccuping. So the per-call retry budget is now small and the CALLER is
 # expected to stop sending to an endpoint that keeps failing (see the
 # circuit breaker in training/stations.py).
+def served_model(base_url: str) -> str:
+    """The id a server expects in `model`. llama.cpp ignores the field; vLLM
+    rejects anything but its served name."""
+    try:
+        models = _get(f"{base_url}/v1/models").get("data") or []
+        return models[0]["id"] if models else "default"
+    except Exception:  # noqa: BLE001 -- llama.cpp builds answer without it
+        return "default"
+
+
 def chat(
     base_url: str,
     messages: list[dict],
@@ -277,6 +291,7 @@ def chat(
     retries: int = 2,
     backoff_s: float = 2.0,
     loading_retries: int = 20,
+    model: str = "default",
 ) -> str:
     """One chat completion; returns the assistant text (content only —
     llama.cpp puts hybrid-thinking traces in reasoning_content, which we
@@ -287,8 +302,9 @@ def chat(
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            # llama.cpp accepts and ignores model for single-model servers
-            "model": "default",
+            # llama.cpp accepts and ignores model for single-model servers;
+            # vLLM needs its served name (served_model())
+            "model": model,
             # The hosted presets default to reasoning_effort=medium; a
             # thinking model spends the whole token budget in
             # reasoning_content and returns EMPTY content (observed: 6/6

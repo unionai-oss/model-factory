@@ -427,12 +427,14 @@ def zeroshot_predict(rows: list[dict], teacher: str = "qwen35-397b", concurrency
     """Ask a hosted model. Unparseable answers fall back to the grid's
     middle -- recorded as a parse failure, never silently."""
     url = llm_client.wait_until_ready(llm_client.resolve_teacher_candidates(teacher), deadline_s=1800)
-    stats = {"teacher": teacher, "parse_failures": 0, "errors": 0, "latency_ms": []}
+    model = llm_client.served_model(url)
+    stats = {"teacher": teacher, "model": model, "parse_failures": 0, "errors": 0, "latency_ms": []}
 
     def one(r):
         t0 = time.perf_counter()
         try:
-            text = llm_client.chat(url, prompting.messages(r), max_tokens=64, temperature=0.0, timeout=300)
+            text = llm_client.chat(url, prompting.messages(r), max_tokens=64, temperature=0.0, timeout=300,
+                                   model=model)
         except Exception as e:  # noqa: BLE001
             return r["run_id"], None, f"{type(e).__name__}: {e}", 0.0
         return r["run_id"], text, "", (time.perf_counter() - t0) * 1000
