@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RightSize Bench</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a single reading column of findings, each anchored by one chart or table drawn from the bench's own numbers. */
+:root {
+  --bg: #f5f6f9;
+  --panel: #ffffff;
+  --ink: #161823;
+  --muted: #5d6273;
+  --rule: #dcdfe8;
+  --accent: #4d65ff;     /* decision model */
+  --warm: #c9760a;       /* autoregressive LLM */
+  --tree: #1f9b6a;       /* classical ML */
+  --rule-c: #8a8fa0;     /* rules */
+  --bad: #d4383b;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38;
+    --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --bad: #ff6b6b;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38;
+  --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --bad: #ff6b6b;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.55; }
+.wrap { max-width: 980px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 72px; }
+header { display: grid; gap: 14px; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(40px, 7vw, 64px); line-height: 1; margin: 0; letter-spacing: -.01em; }
+.lede { font-size: 19px; max-width: 64ch; margin: 0; text-wrap: pretty; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 22px; font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; }
+section { padding-block: 36px 8px; display: grid; gap: 14px; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.15; margin: 0; text-wrap: balance; }
+p { margin: 0; max-width: 68ch; }
+.muted { color: var(--muted); }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 18px 12px; min-width: 0; }
+.figure svg { display: block; width: 100%; height: auto; }
+.caption { font-size: 13px; color: var(--muted); margin-top: 8px; max-width: none; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+td.best { font-weight: 600; }
+tr.hl td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.stat { display: grid; gap: 4px; }
+.stat .n { font-family: var(--font-display); font-size: 34px; font-weight: 600; line-height: 1.05; }
+.stat .l { font-size: 14px; color: var(--muted); }
+code, .mono { font-family: var(--font-mono); font-size: .92em; }
+ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 70ch; }
+.flow { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; color: var(--ink); white-space: pre; overflow-x: auto; margin: 0; }
+footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); display: grid; gap: 6px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 520px) { .lede { font-size: 17px; } h2 { font-size: 24px; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Union model factory · resource right-sizing · round 17</div>
+    <h1>RightSize Bench</h1>
+    <p class="lede">A task is about to run. How much memory should it ask for? We measured 7,089 runs of real Flyte task code and scored rules, gradient-boosted trees, autoregressive LLMs and a Jev-style decision model on what it costs to get every run to <span class="mono">SUCCEEDED</span>.</p>
+    <div class="facts">
+      <span><b>7,089</b> runs, labels from <span class="mono">ru_maxrss</span></span>
+      <span><b>12</b> workload families, <b>2</b> never trained on</span>
+      <span><b>40.5</b> pod-hours of measurement</span>
+      <span><b>600</b> live validation pods</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Same input size, very different memory</h2>
+    <p>Memory is set by the code as much as by the input. Within one family, the ratio of peak memory to input bytes spans one to two orders of magnitude, depending on choices a scheduler never sees in the input metadata: streaming versus eager reads, <span class="mono">.toarray()</span>, float32 downcasts, Python objects versus columns.</p>
+    <div class="figure"><svg id="spread" viewBox="0 0 900 260" role="img" aria-label="Range of peak memory to input bytes ratio by workload family"></svg>
+      <p class="caption">Peak RSS ÷ input bytes, 10th to 90th percentile per family, log scale (v1 corpus, partial sample of 2,300 runs).</p></div>
+  </section>
+
+  <section>
+    <h2>The leaderboard</h2>
+    <p><b>Memory regret</b> is the GiB-hours reserved to get every run to <span class="mono">SUCCEEDED</span>, including OOM-killed attempts and their retries at double the memory, relative to an oracle that asks for the cheapest request that fits. Zero is perfect. "Unseen families" are two workload types no arm trained on.</p>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--rule-c)"></span>rule</span>
+      <span><span class="kind" style="background:var(--tree)"></span>classical ML</span>
+      <span><span class="kind" style="background:var(--warm)"></span>autoregressive LLM</span>
+      <span><span class="kind" style="background:var(--accent)"></span>decision model</span>
+    </div>
+    <div class="figure"><svg id="board" viewBox="0 0 900 430" role="img" aria-label="Memory regret by arm, test and unseen families"></svg>
+      <p class="caption">Solid bar: test split. Outline: unseen families. Lower is better.</p></div>
+    <div class="figure table-wrap"><table id="boardtable"></table></div>
+  </section>
+
+  <section>
+    <h2>A decision head beats generation on serving cost</h2>
+    <p>The SFT and decision-model arms share the torso (Qwen3-1.7B), LoRA, prompt, data and training steps. Only the output differs. The autoregressive model writes <span class="mono">{"memory": "3Gi", "cpu": 1}</span> token by token. The decision model replaces the LM head with a pointer head that scores every option in the prompt in one forward pass and returns a calibrated probability for each. Quality lands in the same place. The cost per decision does not.</p>
+    <div class="figure"><svg id="latency" viewBox="0 0 900 250" role="img" aria-label="Latency per decision by arm, log scale"></svg>
+      <p class="caption">Median wall-clock per decision at batch size 1. LLMs on one NVIDIA T4; the 27B zero-shot model on a shared hosted endpoint, where it also left 52% of answers unfinished within 1,024 tokens.</p></div>
+  </section>
+
+  <section>
+    <h2>Calibrated probabilities are the risk knob</h2>
+    <p>A distribution over requests lets the platform pick the request with the lowest expected cost, and re-pick it under a different OOM penalty without retraining. A point estimate can only add margin. At a 1 to 2% first-attempt OOM rate, the distributional arms reserve a fraction of what margin-padded point estimates need.</p>
+    <div class="figure"><svg id="frontier" viewBox="0 0 900 420" role="img" aria-label="First-attempt OOM rate versus memory regret as each arm's risk knob moves"></svg>
+      <p class="caption">Each curve is one model as its knob moves: OOM penalty 0–16× for distributional arms, ±cells of margin for point estimates. Test split. Lower-left is better.</p></div>
+    <div class="cols">
+      <div class="stat"><span class="n" id="argmaxgap">23–35 pts</span><span class="l">worse in-distribution when the same LLMs are decoded by argmax instead of expected cost</span></div>
+      <div class="stat"><span class="n">0.004</span><span class="l">expected calibration error of the pointer head's P(OOM), the best in the bench</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Pooled, they beat both</h2>
+    <p>The trees read the numbers well and the code badly; the decision model reads the code and treats numbers as tokens. Both emit calibrated distributions over the same requests, so one weighted geometric mean, with the weight tuned on validation, combines them. The pooled model is the best arm on every column, and on unseen workload families it cuts memory regret by 9 points over either member.</p>
+    <div class="cols" id="poolstats"></div>
+  </section>
+
+  <section>
+    <h2>Checked against the kernel</h2>
+    <p>We re-ran a stratified sample of test runs in real pods sized by each arm's decision, with no retries, so an OOM kill is the measurement.</p>
+    <div class="cols">
+      <div class="stat"><span class="n">0 of 395</span><span class="l">pods the simulator said would fit were OOM-killed. Every disagreement was on the conservative side.</span></div>
+      <div class="stat"><span class="n">0.91–1.06×</span><span class="l">re-measured peak against the label (5th to 95th percentile, median 1.00, 424 runs)</span></div>
+      <div class="stat"><span class="n">0.8% → 4.2%</span><span class="l">real first-attempt OOM rate, from the tree model to the static request, in leaderboard order</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Built as a Union factory</h2>
+    <p>The whole bench is one declared graph of partitioned artifacts. Adding an arm adds a partition value; changing one arm rebuilds that arm and the leaderboard and reuses the thousands of measurement pods.</p>
+    <div class="figure"><pre class="flow">rt-bench-runs [release]      generate_bench_runs     task code + input specs
+      │
+rt-bench-corpus [release]    measure_bench           288 shards → real pods → ru_maxrss
+      │                                              (spot, 4 workloads per pod, censored → 24Gi pass)
+      ├──────────────┬─────────── … ──────┐  one instance per arm
+rt-bench-arm [release, arm]  fit_bench_arm           CPU · hosted LLM · T4 GPU
+rt-bench-scorecard           score_bench_arm
+      └──────────────┴──── .all("arm") ──┘
+rt-bench-ensemble            fit_bench_ensemble      pools two arms' distributions
+rt-bench-leaderboard         bench_leaderboard
+rt-bench-live                live_validate           arms' requests → real pods → OOM or not</pre></div>
+  </section>
+
+  <section>
+    <h2>Limits</h2>
+    <ul>
+      <li>Workloads are scaled-down kernels of real tasks: seconds, not hours, and peaks up to 20 GiB. Regret is a ratio, so it does not depend on run length, but absolute dollars would.</li>
+      <li>The trees' code features were hand-picked by the person who wrote the workload generator, which makes them a generous baseline.</li>
+      <li>CPU is held at the oracle in the headline because nearly every workload wants about one core. Each arm's own CPU calls are scored separately: decision models 97% exact, trees 84%.</li>
+      <li>The live sample lost 161 of 600 pods to a scheduling timeout while other measurement jobs held the project's slots. A re-run is queued.</li>
+      <li>A second corpus (14,400 runs) and a Qwen3-4B decision model are in progress; this page will update.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <div>Source: <span class="mono">resource-tuner-model-factory/resource_tuner/bench/</span> · research log round 17 · cluster project <span class="mono">resource-tuner-model-factory</span> on demo.hosted.unionai.cloud.</div>
+    <div>Pricing for secondary dollar figures: node-packed (dominant share of an m6i.xlarge) and Fargate per-resource rates.</div>
+  </footer>
+</div>
+
+<script>
+const ARMS = {"static": {"test": 2.429, "test_oom": 0.1084, "ood": 2.2345, "ood_oom": 0.1618, "cpu": 0.277, "cold": 2.4785, "code": 4.2497, "ece": -1, "brier": -1}, "vpa": {"test": 1.4663, "test_oom": 0.1416, "ood": 1.6344, "ood_oom": 0.1729, "cpu": 0.692, "cold": 2.4785, "code": 1.9661, "ece": -1, "brier": -1}, "size-rule": {"test": 1.3207, "test_oom": 0.2072, "ood": 0.9184, "ood_oom": 0.184, "cpu": 0.835, "cold": 2.1068, "code": 1.8196, "ece": -1, "brier": -1}, "gbt": {"test": 0.4653, "test_oom": 0.0393, "ood": 0.8606, "ood_oom": 0.1405, "cpu": 0.841, "cold": 0.6882, "code": 0.2878, "ece": -1, "brier": -1}, "gbt-dist": {"test": 0.3865, "test_oom": 0.0367, "ood": 0.8478, "ood_oom": 0.115, "cpu": 0.841, "cold": 0.6086, "code": 0.2521, "ece": 0.0317, "brier": 0.3854}, "sft-greedy": {"test": 0.5866, "test_oom": 0.0332, "ood": 0.8855, "ood_oom": 0.092, "cpu": 0.976, "cold": 0.7683, "code": 0.4075, "ece": -1, "brier": -1}, "sft-sampled": {"test": 0.5492, "test_oom": 0.0306, "ood": 0.8329, "ood_oom": 0.1022, "cpu": 0.973, "cold": 0.9277, "code": 0.5439, "ece": 0.0084, "brier": 0.417}, "jev-argmax": {"test": 0.9442, "test_oom": 0.2089, "ood": 1.1755, "ood_oom": 0.2479, "cpu": 0.955, "cold": 1.5179, "code": 0.7431, "ece": 0.0323, "brier": 0.4331}, "jev": {"test": 0.5977, "test_oom": 0.0551, "ood": 0.9372, "ood_oom": 0.1073, "cpu": 0.955, "cold": 1.0908, "code": 0.4145, "ece": 0.0176, "brier": 0.4331}, "jev-pointer-argmax": {"test": 0.7256, "test_oom": 0.1661, "ood": 1.1267, "ood_oom": 0.2871, "cpu": 0.968, "cold": 1.1694, "code": 0.7573, "ece": 0.0118, "brier": 0.4114}, "jev-pointer": {"test": 0.5002, "test_oom": 0.0498, "ood": 0.8458, "ood_oom": 0.1499, "cpu": 0.968, "cold": 0.8299, "code": 0.2904, "ece": 0.0039, "brier": 0.4114}, "jev-num": {"test": 0.89, "test_oom": 0.0865, "ood": 3.3695, "ood_oom": 0.4693, "cpu": 0.95, "cold": 1.1265, "code": 0.5131, "ece": 0.01, "brier": 0.5528}, "ensemble": {"test": 0.3558, "test_oom": 0.0323, "ood": 0.7537, "ood_oom": 0.1133, "cpu": 0.968, "cold": 0.5946, "code": 0.2219, "ece": 0.0252, "brier": 0.3435}};
+const FRONTIER = {"static": [[0.1469, 2.5113, "shift=-1"], [0.1084, 2.429, "shift=+0"], [0.0699, 3.0248, "shift=+1"], [0.0402, 3.5056, "shift=+2"], [0.0227, 5.1861, "shift=+3"], [0.0044, 6.8201, "shift=+4"]], "size-rule": [[0.4685, 1.6248, "shift=-1"], [0.2072, 1.3207, "shift=+0"], [0.0953, 1.557, "shift=+1"], [0.0393, 2.2944, "shift=+2"], [0.0184, 3.1311, "shift=+3"], [0.0096, 4.5446, "shift=+4"]], "gbt": [[0.5559, 1.2592, "shift=-1"], [0.0393, 0.4653, "shift=+0"], [0.0079, 0.7605, "shift=+1"], [0.0026, 1.4198, "shift=+2"], [0.0, 2.3675, "shift=+3"], [0.0, 3.6921, "shift=+4"]], "gbt-dist": [[0.1049, 0.6561, "penalty=0"], [0.0542, 0.4284, "penalty=0.5"], [0.0367, 0.3865, "penalty=1"], [0.028, 0.3977, "penalty=2"], [0.0219, 0.4655, "penalty=4"], [0.007, 0.6784, "penalty=8"], [0.0044, 0.9299, "penalty=16"]], "sft-greedy": [[0.1434, 0.6078, "shift=-1"], [0.0332, 0.5866, "shift=+0"], [0.0131, 1.0713, "shift=+1"], [0.0044, 1.7461, "shift=+2"], [0.0044, 2.8672, "shift=+3"], [0.0017, 4.0452, "shift=+4"]], "sft-sampled": [[0.3654, 0.8395, "penalty=0"], [0.0699, 0.5356, "penalty=0.5"], [0.0306, 0.5492, "penalty=1"], [0.0192, 0.9501, "penalty=2"], [0.0105, 1.6635, "penalty=4"], [0.0044, 3.2919, "penalty=8"], [0.0035, 3.3191, "penalty=16"]], "jev-pointer": [[0.1285, 0.7365, "penalty=0"], [0.0691, 0.5297, "penalty=0.5"], [0.0498, 0.5002, "penalty=1"], [0.035, 0.5141, "penalty=2"], [0.0175, 0.5548, "penalty=4"], [0.0114, 0.691, "penalty=8"], [0.007, 0.8672, "penalty=16"]], "jev-pointer-argmax": [[0.1285, 0.7365, "penalty=0"], [0.0691, 0.5297, "penalty=0.5"], [0.0498, 0.5002, "penalty=1"], [0.035, 0.5141, "penalty=2"], [0.0175, 0.5548, "penalty=4"], [0.0114, 0.691, "penalty=8"], [0.007, 0.8672, "penalty=16"]]};
+const SPREAD = [
+  ["csv_chunked", 0.16, 4.20], ["duckdb_sql", 0.16, 4.29], ["polars_pipeline", 0.20, 3.65],
+  ["jsonl_records", 0.41, 9.86], ["pandas_groupby", 0.80, 7.19], ["python_grouping", 0.88, 15.49],
+  ["numpy_linalg", 1.04, 9.07], ["image_batch", 1.12, 9.12], ["torch_train", 1.23, 52.82],
+  ["sklearn_fit", 3.83, 36.52], ["pandas_join", 5.32, 21.84], ["tfidf_text", 27.91, 526.88]
+];
+const LATENCY = [
+  ["gbt-dist", 1, "tree"], ["jev-pointer", 129, "dec"], ["sft-greedy", 1178, "llm"],
+  ["sft-sampled (8)", 2104, "llm"], ["zero-shot 27B", 103086, "llm"]
+];
+const LABEL = {
+  "static": "static request", "vpa": "history max × margin", "size-rule": "size rule",
+  "gbt": "quantile GBT", "gbt-dist": "GBT, expected cost", "sft-greedy": "SFT 1.7B, greedy",
+  "sft-sampled": "SFT 1.7B, 8 samples", "jev": "decision, linear head", "jev-pointer": "decision, pointer head",
+  "jev-num": "decision + numeric", "ensemble": "GBT × decision, pooled",
+  "jev-argmax": "decision, linear, argmax", "jev-pointer-argmax": "decision, pointer, argmax"
+};
+const KIND = a => a === "ensemble" ? "dec" : a.startsWith("jev") ? "dec" : a.startsWith("sft") ? "llm" : a.startsWith("gbt") ? "tree" : "rule";
+const COLOR = { rule: "var(--rule-c)", tree: "var(--tree)", llm: "var(--warm)", dec: "var(--accent)" };
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const pct = x => (x * 100).toFixed(1) + "%";
+
+// 1. spread
+(function () {
+  const svg = document.getElementById("spread"), L = 150, R = 20, T = 12, rowH = 19;
+  const lo = Math.log10(0.1), hi = Math.log10(1000), W = 900 - L - R;
+  const x = v => L + W * (Math.log10(v) - lo) / (hi - lo);
+  [0.1, 1, 10, 100, 1000].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * SPREAD.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * SPREAD.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, svg, v + "×");
+  });
+  SPREAD.forEach(([f, a, b], i) => {
+    const y = T + i * rowH + rowH / 2;
+    el("text", { x: L - 10, y: y + 4, "text-anchor": "end", "font-size": 12.5, fill: "var(--ink)", "font-family": "IBM Plex Mono, monospace" }, svg, f);
+    el("line", { x1: x(a), x2: x(b), y1: y, y2: y, stroke: "var(--accent)", "stroke-width": 7, "stroke-linecap": "round" }, svg);
+    el("text", { x: x(b) + 8, y: y + 4, "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, svg, Math.round(b / a) + "× spread");
+  });
+})();
+
+// 2. leaderboard bars
+const ORDER = ["static", "vpa", "size-rule", "gbt", "gbt-dist", "sft-greedy", "sft-sampled", "jev", "jev-pointer", "ensemble"].filter(a => ARMS[a]);
+(function () {
+  const svg = document.getElementById("board"), L = 200, R = 60, T = 10, rowH = 40;
+  const max = 2.6, W = 900 - L - R, x = v => L + W * Math.min(v, max) / max;
+  [0, 0.5, 1, 1.5, 2, 2.5].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * ORDER.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * ORDER.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, svg, (v * 100) + "%");
+  });
+  ORDER.forEach((a, i) => {
+    const d = ARMS[a], y = T + i * rowH, c = COLOR[KIND(a)];
+    el("text", { x: L - 10, y: y + 17, "text-anchor": "end", "font-size": 13, fill: "var(--ink)", "font-weight": a === "ensemble" ? 600 : 400 }, svg, LABEL[a] || a);
+    el("rect", { x: L, y: y + 5, width: Math.max(1, x(d.test) - L), height: 13, rx: 2, fill: c }, svg);
+    el("rect", { x: L, y: y + 21, width: Math.max(1, x(d.ood) - L), height: 11, rx: 2, fill: "none", stroke: c, "stroke-width": 1.5 }, svg);
+    el("text", { x: x(d.test) + 6, y: y + 16, "font-size": 11, fill: "var(--ink)", "font-family": "IBM Plex Mono, monospace" }, svg, pct(d.test));
+    el("text", { x: x(d.ood) + 6, y: y + 31, "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, svg, pct(d.ood));
+  });
+})();
+
+// table
+(function () {
+  const t = document.getElementById("boardtable");
+  const cols = [["test", "test regret"], ["test_oom", "test OOM"], ["cold", "no history"], ["code", "code-driven"], ["ood", "unseen fam."], ["ood_oom", "unseen OOM"], ["cpu", "CPU exact"], ["ece", "ECE"]];
+  const best = {};
+  cols.forEach(([k]) => { const vals = ORDER.map(a => ARMS[a][k]).filter(v => v >= 0); best[k] = k === "cpu" ? Math.max(...vals) : Math.min(...vals); });
+  let h = "<thead><tr><th>arm</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    const d = ARMS[a];
+    h += `<tr class="${a === "ensemble" ? "hl" : ""}"><td><span class="kind" style="background:${COLOR[KIND(a)]}"></span>${LABEL[a] || a}</td>`;
+    cols.forEach(([k]) => {
+      const v = d[k];
+      const s = v < 0 ? "–" : k === "ece" ? v.toFixed(3) : k === "cpu" ? Math.round(v * 100) + "%" : pct(v);
+      h += `<td class="${v === best[k] ? "best" : ""}">${s}</td>`;
+    });
+    h += "</tr>";
+  });
+  t.innerHTML = h + "</tbody>";
+})();
+
+// 3. latency (log)
+(function () {
+  const svg = document.getElementById("latency"), L = 160, R = 110, T = 8, rowH = 42;
+  const lo = 0, hi = Math.log10(200000), W = 900 - L - R, x = v => L + W * Math.log10(Math.max(v, 1)) / hi;
+  [1, 10, 100, 1000, 10000, 100000].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * LATENCY.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * LATENCY.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, svg, v >= 1000 ? (v / 1000) + " s" : v + " ms");
+  });
+  LATENCY.forEach(([n, ms, k], i) => {
+    const y = T + i * rowH;
+    el("text", { x: L - 10, y: y + 22, "text-anchor": "end", "font-size": 13, fill: "var(--ink)" }, svg, n);
+    el("rect", { x: L, y: y + 10, width: Math.max(3, x(ms) - L), height: 16, rx: 2, fill: COLOR[k] }, svg);
+    el("text", { x: Math.max(L + 3, x(ms)) + 8, y: y + 22, "font-size": 12, fill: "var(--ink)", "font-family": "IBM Plex Mono, monospace" }, svg, ms >= 1000 ? (ms / 1000).toFixed(1) + " s" : ms + " ms");
+  });
+})();
+
+// 4. frontier
+(function () {
+  const svg = document.getElementById("frontier"), L = 60, R = 200, T = 14, B = 44;
+  const W = 900 - L - R, H = 420 - T - B, xmax = 0.25, ymax = 3.5;
+  const x = v => L + W * Math.min(v, xmax) / xmax, y = v => T + H - H * Math.min(v, ymax) / ymax;
+  [0, 0.05, 0.1, 0.15, 0.2, 0.25].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + H, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + H + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, svg, (v * 100) + "%");
+  });
+  [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5].forEach(v => {
+    el("line", { x1: L, x2: L + W, y1: y(v), y2: y(v), stroke: "var(--rule)" }, svg);
+    el("text", { x: L - 8, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, svg, (v * 100) + "%");
+  });
+  el("text", { x: L + W / 2, y: 420 - 6, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, svg, "first-attempt OOM rate");
+  el("text", { x: 14, y: T + H / 2, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)", transform: `rotate(-90 14 ${T + H / 2})` }, svg, "memory regret");
+  const show = ["static", "size-rule", "gbt", "gbt-dist", "sft-greedy", "sft-sampled", "jev-pointer"].filter(a => FRONTIER[a]);
+  show.forEach((a, i) => {
+    const pts = FRONTIER[a].map(p => [p[0], p[1]]).sort((p, q) => p[0] - q[0]);
+    const c = COLOR[KIND(a)], dashed = ["gbt", "sft-greedy", "static", "size-rule"].includes(a);
+    el("polyline", { points: pts.map(p => `${x(p[0])},${y(p[1])}`).join(" "), fill: "none", stroke: c, "stroke-width": 2, "stroke-dasharray": dashed ? "5 4" : "none" }, svg);
+    pts.forEach(p => { if (p[1] <= ymax && p[0] <= xmax) el("circle", { cx: x(p[0]), cy: y(p[1]), r: 3, fill: c }, svg); });
+    const ly = T + 12 + i * 20;
+    el("line", { x1: L + W + 16, x2: L + W + 36, y1: ly - 4, y2: ly - 4, stroke: c, "stroke-width": 2, "stroke-dasharray": dashed ? "5 4" : "none" }, svg);
+    el("text", { x: L + W + 42, y: ly, "font-size": 12, fill: "var(--ink)" }, svg, LABEL[a] || a);
+  });
+  el("text", { x: L + W + 16, y: T + 12 + show.length * 20 + 10, "font-size": 11, fill: "var(--muted)" }, svg, "dashed: margin knob");
+  el("text", { x: L + W + 16, y: T + 12 + show.length * 20 + 26, "font-size": 11, fill: "var(--muted)" }, svg, "solid: expected-cost knob");
+})();
+
+// 5. pooled stats
+(function () {
+  const e = ARMS["ensemble"], g = ARMS["gbt-dist"], j = ARMS["jev-pointer"];
+  const box = document.getElementById("poolstats");
+  [[pct(e.test), `test memory regret, vs ${pct(g.test)} for the trees and ${pct(j.test)} for the decision model`],
+   [pct(e.ood), `on unseen families, vs ${pct(g.ood)} and ${pct(j.ood)}`],
+   [pct(e.test_oom), "first-attempt OOM rate on test, the lowest in the bench"]].forEach(([n, l]) => {
+    const d = document.createElement("div"); d.className = "stat";
+    d.innerHTML = `<span class="n">${n}</span><span class="l">${l}</span>`; box.appendChild(d);
+  });
+})();
+</script>
+
+</html>
