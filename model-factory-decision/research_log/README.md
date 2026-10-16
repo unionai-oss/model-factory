@@ -10,7 +10,31 @@ This factory deploys into the shared `model-factory` project, so run URLs
 share a base with model-factory-basic:
 `https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/<run>`
 
-## Standing results — coding-agent permission gate (round 2 →)
+## Standing results — held-out families, seed-averaged (round 3)
+
+[Round 3](2026-10-16-round-3-heldout-claims.md): 3 seeds ([df3-seed1](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/df3-seed1),
+[df3-seed2](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/df3-seed2),
+[df3-seed3](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/df3-seed3)),
+each one date = independent data + init. 600 held-out test calls from 4
+families never in train or val; temperature and threshold tuned on 2 OTHER
+held-out families (leave-families-out). Mean ± sd, %.
+
+| model · readout | in-dist acc | held-out acc | held-out unsafe (argmax) | held-out severe (argmax) | held-out unsafe, shift gate + guard | held-out severe, shift gate + guard | held-out autonomy, shift gate + guard | held-out ECE raw → tempered |
+|---|---|---|---|---|---|---|---|---|
+| qwen2.5-0.5b · pointer | 98.6 ± 0.8 | 63.1 ± 3.9 | 24.7 ± 2.7 | 4.1 ± 4.0 | 17.1 ± 5.5 | **0.0** | 64.0 ± 3.7 | 0.34 → 0.21 |
+| qwen2.5-0.5b · sft json | 99.1 ± 0.4 | 67.4 ± 1.4 | 18.9 ± 3.0 | 3.7 ± 1.9 | 16.5 ± 1.2 | **0.0** | 67.7 ± 11.2 | 0.33 (one-hot) |
+| qwen3-0.6b · pointer | 98.4 ± 0.7 | 61.6 ± 2.6 | 21.8 ± 3.7 | 2.0 ± 2.1 | **12.2 ± 4.3** | **0.0** | 60.5 ± 6.0 | 0.36 → 0.23 |
+| qwen3-0.6b · sft json | 99.0 ± 0.2 | **73.2 ± 2.1** | **15.4 ± 4.9** | 2.5 ± 2.0 | 13.8 ± 3.3 | **0.0** | 69.4 ± 6.8 | 0.27 (one-hot) |
+| qwen3-0.6b · sft logprob | 99.1 ± 0.2 | 73.3 ± 2.1 | 15.5 ± 4.8 | 2.7 ± 1.8 | 13.8 ± 3.3 | **0.0** | 69.4 ± 6.8 | 0.23 → **0.15** |
+
+Reading: seed-averaged, SFT is more robust under shift than the pointer
+head (almost all of it URL lookalikes); the shift-tuned gate + evidence guard
+removes every severe (deny→allow) held-out failure on every seed; what is
+left is mostly `xargs` read calls the oracle asks about. Held-out-aware
+selection picks SFT on all 3 seeds — 6.5× slower, and 8–10 s/decision on
+the CPU app. MC-dropout (p=0.05) was a null result.
+
+## Standing results — coding-agent permission gate, in distribution (round 2)
 
 Latest suite: [df2-dev-r3](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/df2-dev-r3)
 (permission-* artifacts, date 2026-10-17). Test split: 1,600 in-distribution
@@ -44,8 +68,10 @@ Reading:
   unsafe-allow at confidence ~0.95, and the val-tuned ≤1% threshold does not
   transfer. These numbers swing ±10–30pp between seeds; treat single runs as
   anecdotes.
-- Served: `https://solitary-moon-91169.apps.demo.hosted.unionai.cloud`
-  (CPU, 1.7–2.0 s/decision with prefix KV caching; 25 ms on an A10G).
+- Served (round 3): `https://solitary-moon-91169.apps.demo.hosted.unionai.cloud`,
+  now the round-3 held-out-aware champion `qwen2.5-0.5b-sft` with the
+  evidence guard (8–10 s/decision on CPU). Round 2's pointer champion served
+  at 1.7–2.0 s with prefix KV caching (25 ms on an A10G).
 
 ## Round 1 results — support triage (retired problem, `decision-*` artifacts)
 
@@ -63,6 +89,7 @@ Majority-class baseline is **20.0%** (`lookup_order`). `exact` = right tool
 | date | entry | tl;dr |
 |---|---|---|
 | 2026-10-02 | [round-1-suite-and-serve](2026-10-02-round-1-suite-and-serve.md) | Project built and green end to end: oracle-labelled synthetic episodes, a 2-model suite fanned out over a `model` partition, `.all("model")` collapse to a champion, CPU-served decision API. qwen2.5-0.5b wins at 82.5% exact (+50pp over untuned) |
+| 2026-10-16 | [round-3-heldout-claims](2026-10-16-round-3-heldout-claims.md) | 3-seed held-out study (2 torsos × 2 heads) with leave-families-out tuning. Held-out unsafe-allow sd is 3–5pp. Seed-averaged, SFT beats the pointer head under shift (15–19% vs 22–25% unsafe; URL lookalikes). Logit temperature fit on other held-out families cuts held-out ECE ~1/3; shift-tuned gate + evidence guard → **0% severe held-out failures on every seed**. MC-dropout null. Held-out-aware selection now picks SFT. Weekly retrain made opt-in |
 | 2026-10-15 | [round-2-coding-agent-permission-gate](2026-10-15-round-2-coding-agent-permission-gate.md) | Re-targeted to a coding-agent permission gate (5-rule oracle over shell effects, 45% adversarial) and a real decision head (Strands-style pointer, ~1M params) vs generative SFT on the same torso, as a torso×head `model` partition. In-distribution solved at ≥0.5B by both heads (99%+); pointer wins clearly at 360M (98% vs 83%) and is 6.5× faster with zero output tokens. Held-out families: everyone 55–80%, overconfident, threshold doesn't transfer. Also: stations had no `cache=` (factory re-ran everything), round 1's nightly trigger ran every GPU job twice nightly |
 
 ## Key links

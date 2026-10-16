@@ -149,7 +149,15 @@ Full scorecards and the run ledger: [research_log](research_log/README.md).
   threshold tuned in-distribution does not protect you there. The worst miss
   is an edit whose `resolved_path` is `~/.ssh/authorized_keys`, allowed at
   P=0.997, because training never made `resolved_path` the decisive field.
-- **Serving.** The champion (`qwen2.5-0.5b-pointer`) runs on a 2-vCPU app at
+- **Under shift, measured over 3 seeds (round 3).** Held-out unsafe-allow
+  varies by 3–5pp (sd) between seeds. Seed-averaged, SFT is *more* robust
+  than the pointer head (15–19% vs 22–25% unsafe-allow, mostly URL
+  lookalikes). Temperature-scaling the logits on *other* held-out families
+  cuts held-out ECE by about a third, and that shift-tuned gate plus an
+  evidence-disagreement guard (`harness/guard.py`) removes **every severe
+  (deny→allow) held-out failure on every seed**. What remains is mostly
+  `xargs` read calls the oracle asks about.
+- **Serving (round 2).** The champion (`qwen2.5-0.5b-pointer`) ran on a 2-vCPU app at
   1.7–2.0 s per decision after prefix KV caching, down from 4.3 s; only 85 of
   ~420 tokens are computed per request.
 
@@ -239,7 +247,8 @@ See `research_log/` for the runs behind each.
 - **A Cron on a `Daily`-partitioned factory is a full rebuild every time it
   fires** (a new day is a new partition), and `factory.on(cron, a, b)` makes one
   trigger *per target* that each rebuild the shared upstream concurrently. The
-  trigger here is weekly and targets the endpoint only.
+  weekly retrain here is **opt-in** (`DF_WEEKLY_TRIGGER=1` at `factory deploy`;
+  factory triggers have no `auto_activate`), and targets the endpoint only.
 - **Flyte 2 task caching is off by default, and a factory depends on it.**
   Without `cache=` on the station envs, `factory plan` reports instances as
   existing while `materialize` re-runs every one of them. All envs here set

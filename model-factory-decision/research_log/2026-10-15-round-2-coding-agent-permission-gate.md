@@ -294,3 +294,12 @@ Branch `round-2-decision-coding-agent` (not pushed). Every module except
   (the head is candidate-set agnostic; not built this round).
 - CPU serving latency after the fixes; a GPU serving option exists
   (`DF_SERVING_GPU`) but the demo T4 serving node is held by `mf-inference`.
+
+---
+
+*2026-10-16 note (round 3):* the `weekly-suite` trigger described in finding 8
+is no longer declared by default — the schedule now exists only when the
+factory is deployed with `DF_WEEKLY_TRIGGER=1`, so recurring GPU spend is an
+explicit choice. Finding 10's single-run held-out comparisons are superseded
+by round 3's 3-seed numbers, which reverse the pointer-vs-SFT ordering under
+shift ([round 3](2026-10-16-round-3-heldout-claims.md)).
