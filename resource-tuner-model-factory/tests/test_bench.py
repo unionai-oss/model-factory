@@ -325,3 +325,12 @@ def test_ensemble_pools_two_distributions(splits):
     assert set(preds) == set(g)
     p = stations.log_pool([0.5, 0.5], [0.9, 0.1], 0.0)
     assert p[0] == pytest.approx(0.9, abs=1e-6)
+
+
+def test_ensemble_without_an_llm_member_is_the_anchor(splits):
+    from resource_tuner.bench import stations
+
+    rows = splits["val"] + splits["test"]
+    g = arms.predict_gbt_dist(arms.fit_gbt_dist(splits["train"], splits["val"]), rows)
+    preds, meta = stations.build_ensemble(rows, {"gbt-dist": g})
+    assert meta["llm_member"] is None and preds == g

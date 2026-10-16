@@ -572,6 +572,9 @@ def build_ensemble(rows: list[dict], variants: dict[str, dict[str, dict]]) -> tu
             out[rid] = {"mem_idx": scoring.bayes_mem_index(p), "cpu_idx": b["cpu_idx"], "mem_probs": p}
         return out
 
+    if not candidates:  # every LLM arm failed or is absent: the anchor alone
+        return dict(anchor), {"anchor": ENSEMBLE_ANCHOR, "llm_member": None, "w_anchor": 1.0,
+                              "val_mem_regret": scoring.score(val, anchor).get("mem_regret"), "candidates": []}
     grid_ = [(v, w) for v in candidates for w in _POOL_WEIGHTS]
     scored = [(scoring.score(val, pooled(v, w))["mem_regret"], v, w) for v, w in grid_]
     best_val, v, w = min(scored)
