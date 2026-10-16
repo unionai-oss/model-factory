@@ -7,7 +7,7 @@ pipeline runs as a minutes-long smoke test or a multi-hour training run.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # Secret names on the Union cluster, scoped to the model-factory project
 # (created in demo/development; see TODO.md for creation commands).
@@ -213,112 +213,85 @@ SEED_DATASET = "KodCode/KodCode-Light-RL-10K"
 
 @dataclass(frozen=True)
 class FactoryProfile:
-    """Sizing knobs for one factory iteration."""
+    """Sizing knobs for one factory day."""
 
     name: str
-    base_model: str
+    base_model: str  # the policy being trained (the "student")
     # data
-    train_tasks: int  # curated tasks fed to GRPO
-    eval_tasks: int  # held-out tasks for the eval gate
+    eval_tasks: int  # size of the FIXED held-out split (built once, reused daily)
+    heldout_pool: int  # seed-dataset rows reserved for held-out; training never reads them
+    train_tasks: int  # fresh curated tasks per day, from a window that rotates by date
     min_test_functions: int  # curation floor (anti reward-hacking)
-    # synthetic generation
-    synthetic_seeds: int  # seed problems to mutate
+    # synthetic generation (failure-driven curriculum)
+    synthetic_model: str  # the "teacher" that mutates seed problems
+    synthetic_seeds: int  # problems to mutate per day
     synthetic_max_new_tokens: int
     # GRPO
     max_steps: int
-    num_generations: int
-    per_device_batch: int  # prompts per device step (before generations)
+    num_generations: int  # completions per prompt (the GRPO group)
+    per_device_batch: int  # completions per device micro-batch
+    grad_accum: int
     max_completion_length: int
     learning_rate: float
     lora_r: int
-    use_vllm: bool  # colocate rollouts; off for smoke (robustness first)
-    # eval gate: candidate pass@1 must beat base by this margin to auto-pass
+    # eval gate: candidate pass@1 must beat the CHAMPION's by this margin
     promotion_margin: float
-    gpu: str = "A10G:1"
+    eval_batch: int = 32
 
     @property
     def wandb_enabled(self) -> bool:
         return USE_SECRETS
 
+    @property
+    def prompts_per_step(self) -> int:
+        return self.per_device_batch * self.grad_accum // self.num_generations
 
+
+#: Machinery check: tiny everything, minutes end to end. Its margin is -1 so the
+#: gate always passes — a smoke run proves the plumbing, never the quality.
 SMOKE = FactoryProfile(
     name="smoke",
     base_model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
-    train_tasks=64,
-    eval_tasks=32,
+    eval_tasks=16,
+    heldout_pool=60,
+    train_tasks=32,
     min_test_functions=3,
+    synthetic_model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
     synthetic_seeds=8,
     synthetic_max_new_tokens=512,
-    max_steps=10,
+    max_steps=4,
     num_generations=4,
-    per_device_batch=4,
-    max_completion_length=512,
-    learning_rate=2e-5,
-    lora_r=16,
-    use_vllm=False,
-    promotion_margin=-1.0,  # smoke never blocks on quality
-    gpu="A10G:1",
-)
-
-# Longer smoke: same tiny model, enough steps for the reward curve to move.
-SMOKE_PLUS = FactoryProfile(
-    name="smoke-plus",
-    base_model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
-    train_tasks=64,
-    eval_tasks=32,
-    min_test_functions=3,
-    synthetic_seeds=8,
-    synthetic_max_new_tokens=512,
-    max_steps=60,
-    num_generations=8,
     per_device_batch=8,
-    max_completion_length=512,
+    grad_accum=1,
+    max_completion_length=384,
     learning_rate=2e-5,
     lora_r=16,
-    use_vllm=False,
     promotion_margin=-1.0,
-    gpu="A10G:1",
 )
 
-DEV = FactoryProfile(
-    name="dev",
-    base_model="Qwen/Qwen2.5-Coder-1.5B-Instruct",
-    train_tasks=2000,
+#: The real day: sized to move held-out pass@1 on one A10G in under an hour.
+#: 200 held-out tasks keep the standard error of a pass@1 around 3 points.
+DAILY = FactoryProfile(
+    name="daily",
+    base_model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
     eval_tasks=200,
-    min_test_functions=5,
-    synthetic_seeds=64,
+    heldout_pool=600,
+    train_tasks=256,
+    min_test_functions=3,
+    synthetic_model="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+    synthetic_seeds=48,
     synthetic_max_new_tokens=768,
-    max_steps=100,
+    max_steps=50,
     num_generations=8,
-    per_device_batch=4,
-    max_completion_length=768,
-    learning_rate=1e-5,
+    per_device_batch=16,
+    grad_accum=2,
+    max_completion_length=512,
+    learning_rate=3e-5,
     lora_r=16,
-    use_vllm=True,
-    promotion_margin=0.0,
-    gpu="A10G:1",
-)
-
-FULL = FactoryProfile(
-    name="full",
-    base_model="Qwen/Qwen2.5-Coder-1.5B-Instruct",
-    train_tasks=10000,
-    eval_tasks=500,
-    min_test_functions=5,
-    synthetic_seeds=256,
-    synthetic_max_new_tokens=1024,
-    max_steps=500,
-    num_generations=8,
-    per_device_batch=4,
-    max_completion_length=1024,
-    learning_rate=1e-5,
-    lora_r=32,
-    use_vllm=True,
     promotion_margin=0.01,
-    gpu="A10G:1",
 )
 
-PROFILES: dict[str, FactoryProfile] = {p.name: p for p in (SMOKE, SMOKE_PLUS, DEV, FULL)}
+PROFILES: dict[str, FactoryProfile] = {p.name: p for p in (SMOKE, DAILY)}
 
 
 def get_profile(name: str) -> FactoryProfile:

@@ -1,4 +1,2 @@
-"""Data engineering team: ingestion, curation, filtering, validation, and
-synthetic task generation. Publishes the `rl-tasks-dataset` artifact — the
-contract that kicks off the training team's loop.
-"""
+"""Data engineering team: the fixed held-out split, each day's curated seed
+tasks, the failure-driven synthetic curriculum, and the leak-checked release."""

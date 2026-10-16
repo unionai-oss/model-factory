@@ -36,8 +36,11 @@ from .config import (
     cluster_env_vars,
 )
 from .contracts import (
+    ARTIFACT_BASELINE,
+    ARTIFACT_CHAMPION,
     ARTIFACT_CHECKPOINT,
     ARTIFACT_EVAL_REPORT,
+    ARTIFACT_HELDOUT,
     ARTIFACT_PROMOTED,
     ARTIFACT_RL_DATASET,
     ARTIFACT_SEED_TASKS,
@@ -51,6 +54,9 @@ from .shared.images import cpu_image
 # model_factory/factory.py. Each artifact is one team's contract
 # (contracts.py), so the station's owner is part of its identity.
 STATIONS: list[dict[str, str]] = [
+    {"artifact": ARTIFACT_HELDOUT, "label": "Held-out split (fixed)", "team": "data-eng"},
+    {"artifact": ARTIFACT_BASELINE, "label": "Baseline report (fixed)", "team": "eval"},
+    {"artifact": ARTIFACT_CHAMPION, "label": "Champion (loop state)", "team": "eval"},
     {"artifact": ARTIFACT_SEED_TASKS, "label": "Seed tasks", "team": "data-eng"},
     {"artifact": ARTIFACT_SYNTHETIC, "label": "Synthetic tasks", "team": "data-eng"},
     {"artifact": ARTIFACT_RL_DATASET, "label": "RL task dataset", "team": "data-eng"},
@@ -69,19 +75,29 @@ TEAMS: dict[str, str] = {
     "inference": "Inference",
 }
 
-# The factory graph as a DAG (model_factory/factory.py). Not a straight line:
-# the day's seed tasks feed both the synthetic batch and the release, and
-# `policy-checkpoint` feeds both the eval report and the promotion.
+# The factory graph (model_factory/factory.py) plus the one edge the factory
+# does not own: promoted[D] -> champion[D+1], published by crown_champion.
 CONTRACT_EDGES: list[tuple[str, str]] = [
+    (ARTIFACT_HELDOUT, ARTIFACT_BASELINE),
+    (ARTIFACT_HELDOUT, ARTIFACT_SEED_TASKS),
+    (ARTIFACT_HELDOUT, ARTIFACT_SYNTHETIC),
+    (ARTIFACT_HELDOUT, ARTIFACT_RL_DATASET),
+    (ARTIFACT_HELDOUT, ARTIFACT_EVAL_REPORT),
+    (ARTIFACT_BASELINE, ARTIFACT_EVAL_REPORT),
     (ARTIFACT_SEED_TASKS, ARTIFACT_SYNTHETIC),
     (ARTIFACT_SEED_TASKS, ARTIFACT_RL_DATASET),
     (ARTIFACT_SYNTHETIC, ARTIFACT_RL_DATASET),
+    (ARTIFACT_CHAMPION, ARTIFACT_SYNTHETIC),
+    (ARTIFACT_CHAMPION, ARTIFACT_CHECKPOINT),
+    (ARTIFACT_CHAMPION, ARTIFACT_EVAL_REPORT),
+    (ARTIFACT_CHAMPION, ARTIFACT_PROMOTED),
     (ARTIFACT_RL_DATASET, ARTIFACT_CHECKPOINT),
-    (ARTIFACT_RL_DATASET, ARTIFACT_EVAL_REPORT),
     (ARTIFACT_CHECKPOINT, ARTIFACT_EVAL_REPORT),
     (ARTIFACT_CHECKPOINT, ARTIFACT_PROMOTED),
     (ARTIFACT_EVAL_REPORT, ARTIFACT_PROMOTED),
     (ARTIFACT_PROMOTED, ENDPOINT_APP),
+    # The cross-day edge: crown_champion publishes champion[D+1] = promoted[D].
+    (ARTIFACT_PROMOTED, ARTIFACT_CHAMPION),
 ]
 
 REFRESH_INTERVAL_S = 20

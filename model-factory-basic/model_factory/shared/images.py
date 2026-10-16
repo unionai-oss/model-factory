@@ -12,6 +12,11 @@ from ..config import HF_TOKEN_SECRET, USE_SECRETS, WANDB_SECRET
 
 PYTHON = (3, 12)
 
+#: The task images' flyte must track the SDK that deploys the factory: an image
+#: a minor behind cannot read a factory task spec, and an unpinned one drifts to
+#: whatever is newest on PyPI. flyteplugins-union 0.17 caps flyte below 2.11.
+FLYTE_PIN = "flyte>=2.10.6,<2.11"
+
 
 def secrets() -> list[flyte.Secret]:
     """Secret attachments, gated until the secrets exist on the cluster."""
@@ -26,7 +31,7 @@ def secrets() -> list[flyte.Secret]:
 cpu_image = (
     flyte.Image.from_debian_base(name="mf-cpu", python_version=PYTHON)
     .with_pip_packages(
-        "flyte>=2.6.0",
+        FLYTE_PIN,
         "pandas>=2.2",
         "pyarrow>=17",
         "datasets>=3.2",
@@ -39,7 +44,7 @@ gpu_image = (
     flyte.Image.from_debian_base(name="mf-gpu", python_version=PYTHON)
     .with_apt_packages("git")
     .with_pip_packages(
-        "flyte>=2.6.0",
+        FLYTE_PIN,
         "torch>=2.6",
         "transformers>=4.57",
         "trl>=1.10",

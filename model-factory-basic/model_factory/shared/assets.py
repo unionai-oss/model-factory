@@ -6,8 +6,7 @@ artifact CRUD API. It does now (`Artifact.listall` verified 2026-10-02), and
 the factory publishes every artifact with its partition values, so the
 registry is the only source this needs.
 
-Consumers are the lineage dashboard and the serving app's fallback path — the
-factory itself never comes through here: it resolves versions in its own
+The consumer is the lineage dashboard — the factory itself never comes through here: it resolves versions in its own
 driver and hands them to each build.
 """
 
@@ -18,8 +17,11 @@ from dataclasses import dataclass
 import flyte.remote as remote
 
 from ..contracts import (
+    ARTIFACT_BASELINE,
+    ARTIFACT_CHAMPION,
     ARTIFACT_CHECKPOINT,
     ARTIFACT_EVAL_REPORT,
+    ARTIFACT_HELDOUT,
     ARTIFACT_PROMOTED,
     ARTIFACT_RL_DATASET,
     ARTIFACT_SEED_TASKS,
@@ -30,6 +32,9 @@ from ..contracts import (
 #: lineage dashboard uses this to label a run with the station it belongs to.
 #: Old `mf-*` names are kept so pre-decomposition runs still map.
 PRODUCERS: dict[str, tuple[str, ...]] = {
+    ARTIFACT_HELDOUT: ("de-cpu.curate_heldout",),
+    ARTIFACT_BASELINE: ("eval-gpu.evaluate_baseline",),
+    ARTIFACT_CHAMPION: ("eval-cpu.crown_champion", "eval-cpu.seed_champion"),
     ARTIFACT_SEED_TASKS: ("de-cpu.ingest_and_curate", "mf-cpu.ingest_and_curate"),
     ARTIFACT_SYNTHETIC: ("de-gpu.generate_synthetic_tasks", "mf-gpu.generate_synthetic_tasks"),
     ARTIFACT_RL_DATASET: ("de-cpu.assemble_dataset", "de-cpu.publish_dataset", "mf-cpu.publish_dataset"),

@@ -1,2 +1,1 @@
-"""Model training team: owns the RL training loop. Triggered by new
-`rl-tasks-dataset` versions; publishes `policy-checkpoint` artifacts."""
+"""Model training team: GRPO, warm-started from the champion each day."""

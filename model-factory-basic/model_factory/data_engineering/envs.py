@@ -23,5 +23,4 @@ de_cpu_env = flyte.TaskEnvironment(
     image=cpu_image,
     secrets=secrets(),
     cache="auto",
-    depends_on=[de_gpu_env],  # release driver + nightly trigger call synthetic gen
 )
