@@ -42,6 +42,13 @@ from .llm_arms import (
 
 _EVAL = ("val", "test", "ood")
 
+#: Per-arm overrides of TrainConfig. The 4B rung fits a 16 GB T4 in fp16
+#: with a smaller micro-batch (same effective batch of 16) and 2 epochs.
+ARM_CONFIGS: dict[str, dict] = {
+    "jev-pointer-4b": dict(model_name="Qwen/Qwen3-4B", batch_size=4, grad_accum=4, epochs=2, head="pointer"),
+}
+_HEADS = {"jev": "classify", "jev-pointer": "pointer", "jev-num": "classify+num"}
+
 
 def _rows_by_split(df: pd.DataFrame) -> dict[str, list[dict]]:
     out = {s: [] for s in dataset.SPLITS}
@@ -64,8 +71,10 @@ def _pred_table(variant: str, preds: dict, split_of: dict) -> list[dict]:
 @bench_gpu_env.task(retries=1, cache=arms_cache(), timeout=flyte.Timeout(max_runtime=8 * 3600))
 async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen/Qwen3-1.7B", epochs: int = 3,
                         max_train_rows: int = 0) -> flyte.io.Dir:
-    cfg = TrainConfig(model_name=model_name, epochs=epochs, max_train_rows=max_train_rows)
-    cfg.head = {"jev-pointer": "pointer", "jev-num": "classify+num"}.get(arm, "classify")
+    cfg = TrainConfig(model_name=model_name, epochs=epochs, max_train_rows=max_train_rows,
+                      head=_HEADS.get(arm, "classify"))
+    for k, v in ARM_CONFIGS.get(arm, {}).items():
+        setattr(cfg, k, v)
     df = pd.read_parquet(await corpus.download())
     splits = _rows_by_split(df)
     train = splits["train"]
@@ -85,7 +94,7 @@ async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen
     t0 = time.time()
     table: list[dict] = []
     meta: dict = {"arm": arm, "config": config_dict(cfg), "n_train": len(train)}
-    if arm in ("jev", "jev-pointer", "jev-num"):
+    if arm.startswith("jev"):
         tok, model, head, hist = train_jev(train, splits["val"], cfg, log=log)
         meta["train_s"], meta["loss"] = time.time() - t0, hist
         mem_l, cpu_l = jev_logits(tok, model, head, eval_rows, cfg)

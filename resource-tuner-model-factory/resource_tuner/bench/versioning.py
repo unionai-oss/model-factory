@@ -31,7 +31,7 @@ def _hash(*names: str) -> str:
 #: What a corpus is made of: the code, how it is measured, how rows are labelled.
 CORPUS_VERSION = _hash("workloads", "measure", "dataset", "grid")
 #: What an arm's predictions and its scorecard depend on.
-ARMS_VERSION = _hash("arms", "llm_arms", "features", "prompting", "grid", "scoring", "dataset")
+ARMS_VERSION = _hash("arms", "llm_arms", "gpu_stations", "features", "prompting", "grid", "scoring", "dataset")
 
 
 def corpus_cache() -> flyte.Cache:
