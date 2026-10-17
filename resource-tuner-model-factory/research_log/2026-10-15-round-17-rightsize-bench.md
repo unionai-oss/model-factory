@@ -97,7 +97,7 @@ that fits; `regret` = cost / oracle cost - 1. The memory grid is the
 half-power-of-two ladder (512Mi, 768Mi, 1Gi, 1.5Gi, ...) people actually
 write, which halves the grid's own waste floor relative to round 16's.
 
-### Results -- v2 (CPU arms; LLM arms running)
+### Results -- v2 (`sft` and `jev-pointer-4b` still training)
 
 Corpus `rt-bench-corpus[release=v2]` @ `f02c7caf`: 14,234 runs, train 8,457 /
 val 1,138 / test 2,316 / OOD 2,323 -- twice v1's training data.
@@ -110,9 +110,22 @@ val 1,138 / test 2,316 / OOD 2,323 -- twice v1's training data.
 | gbt | 33.7% | 3.2% | 92.8% | 13.0% |
 | gbt-dist | 34.0% | 2.5% | 84.9% | 9.8% |
 
-Twice the data moved the trees in-distribution (38.6% -> 34.0%) and not at all
-on unseen families (84.8% -> 84.9%): more tabular data does not buy
-generalization to new code.
+| zeroshot-27b (600-run subsample; 312 unanswered) | 154.5% | 9.7% | 192.6% | 22.0% |
+| jev (linear head) | 52.0% | 4.1% | 112.5% | 15.8% |
+| **jev-pointer** (1.7B) | **33.2%** | 3.2% | 90.8% | 13.8% |
+| **gbt-dist x jev-pointer, pooled (w=0.7)** | **20.8%** | **1.7%** | **79.0%** | **9.6%** |
+
+- Twice the data moved the trees in-distribution (38.6% -> 34.0%) and not at
+  all on unseen families (84.8% -> 84.9%): more tabular data does not buy
+  generalization to new code.
+- **With twice the data the 1.7B decision model passes the trees
+  in-distribution** (33.2% vs 34.0%), better calibrated (Brier 0.294 vs 0.325,
+  ECE 0.006 vs 0.039). On unseen families it got *worse* than at v1 (90.8% vs
+  84.6%): more in-distribution data made it more confident there, and that
+  confidence transferred badly (OOD ECE 0.097).
+- **Pooled, v2 gets the bench's best number: 20.8% memory regret at a 1.7%
+  first-attempt OOM rate** -- 37% less waste than either member alone -- and
+  79.0% on unseen families.
 
 ## Live validation
 
