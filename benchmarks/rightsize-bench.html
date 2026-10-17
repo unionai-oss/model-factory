@@ -79,11 +79,11 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   <header>
     <div class="eyebrow">Union model factory · resource right-sizing · round 17</div>
     <h1>RightSize Bench</h1>
-    <p class="lede">A task is about to run. How much memory should it ask for? We measured 7,089 runs of real Flyte task code and scored rules, gradient-boosted trees, autoregressive LLMs and a Jev-style decision model on what it costs to get every run to <span class="mono">SUCCEEDED</span>.</p>
+    <p class="lede">A task is about to run. How much memory should it ask for? We measured 21,323 runs of real Flyte task code and scored rules, gradient-boosted trees, autoregressive LLMs and a Jev-style decision model on what it costs to get every run to <span class="mono">SUCCEEDED</span>.</p>
     <div class="facts">
-      <span><b>7,089</b> runs, labels from <span class="mono">ru_maxrss</span></span>
+      <span><b>14,234 + 7,089</b> runs (v2 + v1), labels from <span class="mono">ru_maxrss</span></span>
       <span><b>12</b> workload families, <b>2</b> never trained on</span>
-      <span><b>40.5</b> pod-hours of measurement</span>
+      <span><b>112</b> pod-hours of measurement</span>
       <span><b>600</b> live validation pods, all run</span>
     </div>
   </header>
@@ -105,36 +105,36 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       <span><span class="kind" style="background:var(--accent)"></span>decision model</span>
     </div>
     <div class="figure"><svg id="board" viewBox="0 0 900 470" role="img" aria-label="Memory regret by arm, test and unseen families"></svg>
-      <p class="caption">Solid bar: test split. Outline: unseen families. Lower is better.</p></div>
+      <p class="caption">v2 corpus (14,234 runs; 8,457 train). Solid bar: test split (2,316 runs). Outline: unseen families (2,323 runs). Lower is better.</p></div>
     <div class="figure table-wrap"><table id="boardtable"></table></div>
   </section>
 
   <section>
     <h2>A decision head beats generation on serving cost</h2>
-    <p>The SFT and decision-model arms share the torso (Qwen3-1.7B), LoRA, prompt, data and training steps. Only the output differs. The autoregressive model writes <span class="mono">{"memory": "3Gi", "cpu": 1}</span> token by token. The decision model replaces the LM head with a pointer head that scores every option in the prompt in one forward pass and returns a calibrated probability for each. Quality lands in the same place. The cost per decision does not.</p>
+    <p>The SFT and decision-model arms share the torso (Qwen3-1.7B), LoRA, prompt, data and training steps. Only the output differs. The autoregressive model writes <span class="mono">{"memory": "3Gi", "cpu": 1}</span> token by token. The decision model replaces the LM head with a pointer head that scores every option in the prompt in one forward pass and returns a calibrated probability for each. On v2 the decision model is better (33.2% memory regret against 41.6% greedy and 39.1% sampled) and answers in a tenth of the time.</p>
     <div class="figure"><svg id="latency" viewBox="0 0 900 292" role="img" aria-label="Latency per decision by arm, log scale"></svg>
-      <p class="caption">Median wall-clock per decision at batch size 1. LLMs on one NVIDIA T4; the 27B zero-shot model on a shared hosted endpoint, where it also left 52% of answers unfinished within 1,024 tokens.</p></div>
+      <p class="caption">Median wall-clock per decision at batch size 1. LLMs on one NVIDIA T4; the 27B zero-shot model on a shared hosted endpoint, where it spent about 630 generated tokens per decision and still left about half its answers unfinished within 1,024 tokens.</p></div>
   </section>
 
   <section>
     <h2>Calibrated probabilities are the risk knob</h2>
-    <p>A distribution over requests lets the platform pick the request with the lowest expected cost, and re-pick it under a different OOM penalty without retraining. A point estimate can only add margin. At a 1 to 2% first-attempt OOM rate, the distributional arms reserve a fraction of what margin-padded point estimates need.</p>
+    <p>A distribution over requests lets the platform pick the request with the lowest expected cost, and re-pick it under a different OOM penalty without retraining. A point estimate can only add margin. At a 1% first-attempt OOM rate the pooled model reserves about 23% more than the oracle, the 4B decision model about 30%, and the trees about 36%; margin-padded rules need several times that.</p>
     <div class="figure"><svg id="frontier" viewBox="0 0 900 420" role="img" aria-label="First-attempt OOM rate versus memory regret as each arm's risk knob moves"></svg>
-      <p class="caption">Each curve is one model as its knob moves: OOM penalty 0–16× for distributional arms, ±cells of margin for point estimates. Test split. Lower-left is better.</p></div>
+      <p class="caption">v2 test split. Each curve is one model as its knob moves: OOM penalty 0–16× for distributional arms, ±cells of margin for point estimates. Lower-left is better.</p></div>
     <div class="cols">
-      <div class="stat"><span class="n" id="argmaxgap">23–35 pts</span><span class="l">worse in-distribution when the same LLMs are decoded by argmax instead of expected cost</span></div>
-      <div class="stat"><span class="n">0.004</span><span class="l">expected calibration error of the pointer head's P(OOM), the best in the bench</span></div>
+      <div class="stat"><span class="n" id="argmaxgap">11–23 pts</span><span class="l">worse in-distribution when the same decision models are decoded by argmax instead of expected cost, with 3 to 4 times the OOMs</span></div>
+      <div class="stat"><span class="n">0.004</span><span class="l">expected calibration error of the 4B pointer head's P(OOM), the best in the bench (trees: 0.039)</span></div>
     </div>
   </section>
 
   <section>
     <h2>The decision model scales</h2>
-    <p>The same pointer head on Qwen3-4B, trained on the same data on one T4, improves on the 1.7B model everywhere: 42.5% memory regret in-distribution, and 78.1% on unseen workload families, 6.7 points better than the trees. It answers in 272 ms with no generated tokens.</p>
+    <p>The same pointer head on Qwen3-4B, trained on one T4, is the best single model in the bench: 25.8% memory regret in-distribution, 24% less waste than the trees (34.0%), and the best calibrated (ECE 0.004). It answers in 256 ms with no generated tokens. On v1, with half the data, it was also 6.7 points better than the trees on unseen families; on v2 the two are level there (86.6% vs 84.9%).</p>
   </section>
 
   <section>
     <h2>Pooled, they beat both</h2>
-    <p>The trees read the numbers well and the code badly; the decision model reads the code and treats numbers as tokens. Both emit calibrated distributions over the same requests, so one weighted geometric mean, with the weight tuned on validation, combines them. The pooled model is the best arm on every column, and on unseen workload families it cuts memory regret by 9 points over either member.</p>
+    <p>The trees read the numbers well and the code badly; the decision model reads the code and treats numbers as tokens. Both emit calibrated distributions over the same requests, so one weighted geometric mean, with the weight tuned on validation, combines them. The pooled model is the best arm on every column: 37 to 39% less waste than either member in-distribution, at the lowest OOM rate in the bench.</p>
     <div class="cols" id="poolstats"></div>
   </section>
 
@@ -172,7 +172,8 @@ rt-bench-live                live_validate           arms' requests → real pod
       <li>Workloads are scaled-down kernels of real tasks: seconds, not hours, and peaks up to 20 GiB. Regret is a ratio, so it does not depend on run length, but absolute dollars would.</li>
       <li>The trees' code features were hand-picked by the person who wrote the workload generator, which makes them a generous baseline.</li>
       <li>CPU is held at the oracle in the headline because nearly every workload wants about one core. Each arm's own CPU calls are scored separately: decision models 97% exact, trees 84%.</li>
-      <li>A second corpus (14,400 runs, twice the training data) is being measured; this page will update.</li>
+      <li>Unseen workload families remain the hard case for every arm: 79 to 91% memory regret on v2. More in-distribution data improved the decision models on familiar code and made them more confident, not better, on new code.</li>
+      <li>Live validation used the v1 corpus and the v1 arms.</li>
     </ul>
   </section>
 
@@ -183,8 +184,8 @@ rt-bench-live                live_validate           arms' requests → real pod
 </div>
 
 <script>
-const ARMS = {"static": {"test": 2.429, "test_oom": 0.1084, "ood": 2.2345, "ood_oom": 0.1618, "cpu": 0.277, "cold": 2.4785, "code": 4.2497, "ece": -1, "brier": -1}, "vpa": {"test": 1.4663, "test_oom": 0.1416, "ood": 1.6344, "ood_oom": 0.1729, "cpu": 0.692, "cold": 2.4785, "code": 1.9661, "ece": -1, "brier": -1}, "size-rule": {"test": 1.3207, "test_oom": 0.2072, "ood": 0.9184, "ood_oom": 0.184, "cpu": 0.835, "cold": 2.1068, "code": 1.8196, "ece": -1, "brier": -1}, "gbt": {"test": 0.4653, "test_oom": 0.0393, "ood": 0.8606, "ood_oom": 0.1405, "cpu": 0.841, "cold": 0.6882, "code": 0.2878, "ece": -1, "brier": -1}, "gbt-dist": {"test": 0.3865, "test_oom": 0.0367, "ood": 0.8478, "ood_oom": 0.115, "cpu": 0.841, "cold": 0.6086, "code": 0.2521, "ece": 0.0317, "brier": 0.3854}, "sft-greedy": {"test": 0.5866, "test_oom": 0.0332, "ood": 0.8855, "ood_oom": 0.092, "cpu": 0.976, "cold": 0.7683, "code": 0.4075, "ece": -1, "brier": -1}, "sft-sampled": {"test": 0.5492, "test_oom": 0.0306, "ood": 0.8329, "ood_oom": 0.1022, "cpu": 0.973, "cold": 0.9277, "code": 0.5439, "ece": 0.0084, "brier": 0.417}, "jev-argmax": {"test": 0.9442, "test_oom": 0.2089, "ood": 1.1755, "ood_oom": 0.2479, "cpu": 0.955, "cold": 1.5179, "code": 0.7431, "ece": 0.0323, "brier": 0.4331}, "jev": {"test": 0.5977, "test_oom": 0.0551, "ood": 0.9372, "ood_oom": 0.1073, "cpu": 0.955, "cold": 1.0908, "code": 0.4145, "ece": 0.0176, "brier": 0.4331}, "jev-pointer-argmax": {"test": 0.7256, "test_oom": 0.1661, "ood": 1.1267, "ood_oom": 0.2871, "cpu": 0.968, "cold": 1.1694, "code": 0.7573, "ece": 0.0118, "brier": 0.4114}, "jev-pointer": {"test": 0.5002, "test_oom": 0.0498, "ood": 0.8458, "ood_oom": 0.1499, "cpu": 0.968, "cold": 0.8299, "code": 0.2904, "ece": 0.0039, "brier": 0.4114}, "jev-num": {"test": 0.89, "test_oom": 0.0865, "ood": 3.3695, "ood_oom": 0.4693, "cpu": 0.95, "cold": 1.1265, "code": 0.5131, "ece": 0.01, "brier": 0.5528}, "ensemble": {"test": 0.3558, "test_oom": 0.0323, "ood": 0.7537, "ood_oom": 0.1133, "cpu": 0.968, "cold": 0.5946, "code": 0.2219, "ece": 0.0252, "brier": 0.3435}, "jev-pointer-4b": {"test": 0.425, "test_oom": 0.0376, "ood": 0.7814, "ood_oom": 0.1073, "cpu": 0.969, "cold": 0.8055, "code": 0.2269, "ece": 0.0157, "brier": 0.3479}};
-const FRONTIER = {"static": [[0.1469, 2.5113, "shift=-1"], [0.1084, 2.429, "shift=+0"], [0.0699, 3.0248, "shift=+1"], [0.0402, 3.5056, "shift=+2"], [0.0227, 5.1861, "shift=+3"], [0.0044, 6.8201, "shift=+4"]], "size-rule": [[0.4685, 1.6248, "shift=-1"], [0.2072, 1.3207, "shift=+0"], [0.0953, 1.557, "shift=+1"], [0.0393, 2.2944, "shift=+2"], [0.0184, 3.1311, "shift=+3"], [0.0096, 4.5446, "shift=+4"]], "gbt": [[0.5559, 1.2592, "shift=-1"], [0.0393, 0.4653, "shift=+0"], [0.0079, 0.7605, "shift=+1"], [0.0026, 1.4198, "shift=+2"], [0.0, 2.3675, "shift=+3"], [0.0, 3.6921, "shift=+4"]], "gbt-dist": [[0.1049, 0.6561, "penalty=0"], [0.0542, 0.4284, "penalty=0.5"], [0.0367, 0.3865, "penalty=1"], [0.028, 0.3977, "penalty=2"], [0.0219, 0.4655, "penalty=4"], [0.007, 0.6784, "penalty=8"], [0.0044, 0.9299, "penalty=16"]], "sft-greedy": [[0.1434, 0.6078, "shift=-1"], [0.0332, 0.5866, "shift=+0"], [0.0131, 1.0713, "shift=+1"], [0.0044, 1.7461, "shift=+2"], [0.0044, 2.8672, "shift=+3"], [0.0017, 4.0452, "shift=+4"]], "sft-sampled": [[0.3654, 0.8395, "penalty=0"], [0.0699, 0.5356, "penalty=0.5"], [0.0306, 0.5492, "penalty=1"], [0.0192, 0.9501, "penalty=2"], [0.0105, 1.6635, "penalty=4"], [0.0044, 3.2919, "penalty=8"], [0.0035, 3.3191, "penalty=16"]], "jev-pointer": [[0.1285, 0.7365, "penalty=0"], [0.0691, 0.5297, "penalty=0.5"], [0.0498, 0.5002, "penalty=1"], [0.035, 0.5141, "penalty=2"], [0.0175, 0.5548, "penalty=4"], [0.0114, 0.691, "penalty=8"], [0.007, 0.8672, "penalty=16"]], "jev-pointer-argmax": [[0.1285, 0.7365, "penalty=0"], [0.0691, 0.5297, "penalty=0.5"], [0.0498, 0.5002, "penalty=1"], [0.035, 0.5141, "penalty=2"], [0.0175, 0.5548, "penalty=4"], [0.0114, 0.691, "penalty=8"], [0.007, 0.8672, "penalty=16"]]};
+const ARMS = {"static": {"test": 2.5562, "test_oom": 0.0889, "ood": 2.3184, "ood_oom": 0.152, "cpu": 0.258, "cold": 2.5454, "code": 4.4969, "ece": -1, "brier": -1}, "vpa": {"test": 1.6552, "test_oom": 0.1205, "ood": 1.6368, "ood_oom": 0.1528, "cpu": 0.679, "cold": 2.5454, "code": 2.2128, "ece": -1, "brier": -1}, "size-rule": {"test": 1.1872, "test_oom": 0.2297, "ood": 0.8126, "ood_oom": 0.2131, "cpu": 0.847, "cold": 2.136, "code": 1.2093, "ece": -1, "brier": -1}, "gbt": {"test": 0.3373, "test_oom": 0.0324, "ood": 0.9281, "ood_oom": 0.1296, "cpu": 0.866, "cold": 0.4998, "code": 0.1863, "ece": -1, "brier": -1}, "gbt-dist": {"test": 0.3404, "test_oom": 0.0246, "ood": 0.8494, "ood_oom": 0.0977, "cpu": 0.866, "cold": 0.5119, "code": 0.1922, "ece": 0.0388, "brier": 0.3248}, "sft-greedy": {"test": 0.4157, "test_oom": 0.0984, "ood": 1.0363, "ood_oom": 0.2191, "cpu": 0.984, "cold": 0.5858, "code": 0.4, "ece": -1, "brier": -1}, "sft-sampled": {"test": 0.3908, "test_oom": 0.0216, "ood": 0.9145, "ood_oom": 0.1201, "cpu": 0.981, "cold": 0.6281, "code": 0.4722, "ece": 0.0138, "brier": 0.3091}, "jev": {"test": 0.5201, "test_oom": 0.041, "ood": 1.1254, "ood_oom": 0.1584, "cpu": 0.966, "cold": 0.7011, "code": 0.372, "ece": 0.0026, "brier": 0.3717}, "jev-pointer": {"test": 0.332, "test_oom": 0.0324, "ood": 0.9083, "ood_oom": 0.1382, "cpu": 0.975, "cold": 0.4819, "code": 0.293, "ece": 0.0058, "brier": 0.2936}, "jev-pointer-4b": {"test": 0.2576, "test_oom": 0.0298, "ood": 0.8661, "ood_oom": 0.1235, "cpu": 0.972, "cold": 0.4786, "code": 0.2034, "ece": 0.0035, "brier": 0.2645}, "ensemble": {"test": 0.2084, "test_oom": 0.0173, "ood": 0.7902, "ood_oom": 0.0956, "cpu": 0.975, "cold": 0.314, "code": 0.1753, "ece": 0.0212, "brier": 0.2585}};
+const FRONTIER = {"static": [[0.1278, 2.524, "shift=-1"], [0.0889, 2.5562, "shift=+0"], [0.0548, 3.2448, "shift=+1"], [0.0363, 3.9199, "shift=+2"], [0.0199, 5.8129, "shift=+3"], [0.0035, 7.6693, "shift=+4"]], "size-rule": [[0.5017, 1.6494, "shift=-1"], [0.2297, 1.1872, "shift=+0"], [0.0933, 1.364, "shift=+1"], [0.0393, 1.8685, "shift=+2"], [0.0212, 2.6201, "shift=+3"], [0.0147, 3.7617, "shift=+4"]], "gbt": [[0.6913, 1.4171, "shift=-1"], [0.0324, 0.3373, "shift=+0"], [0.0039, 0.5769, "shift=+1"], [0.0013, 1.2012, "shift=+2"], [0.0, 2.0808, "shift=+3"], [0.0, 3.328, "shift=+4"]], "gbt-dist": [[0.0799, 0.5619, "penalty=0"], [0.0397, 0.365, "penalty=0.5"], [0.0246, 0.3404, "penalty=1"], [0.0173, 0.3345, "penalty=2"], [0.013, 0.3589, "penalty=4"], [0.0017, 0.5239, "penalty=8"], [0.0009, 0.813, "penalty=16"]], "sft-greedy": [[0.8985, 1.601, "shift=-1"], [0.0984, 0.4157, "shift=+0"], [0.0108, 0.4919, "shift=+1"], [0.0026, 1.0317, "shift=+2"], [0.0009, 1.8303, "shift=+3"], [0.0, 3.0041, "shift=+4"]], "sft-sampled": [[0.2988, 0.5472, "penalty=0"], [0.0462, 0.3409, "penalty=0.5"], [0.0216, 0.3908, "penalty=1"], [0.0095, 0.8157, "penalty=2"], [0.0065, 1.6985, "penalty=4"], [0.0026, 3.5887, "penalty=8"], [0.0017, 3.62, "penalty=16"]], "jev-pointer": [[0.0648, 0.3772, "penalty=0"], [0.0402, 0.3146, "penalty=0.5"], [0.0324, 0.332, "penalty=1"], [0.0237, 0.3521, "penalty=2"], [0.0125, 0.3758, "penalty=4"], [0.006, 0.4267, "penalty=8"], [0.0047, 0.5194, "penalty=16"]], "jev-pointer-4b": [[0.0643, 0.3266, "penalty=0"], [0.0449, 0.2758, "penalty=0.5"], [0.0298, 0.2576, "penalty=1"], [0.0203, 0.2618, "penalty=2"], [0.0091, 0.2958, "penalty=4"], [0.0039, 0.3415, "penalty=8"], [0.0026, 0.4402, "penalty=16"]], "ensemble": [[0.0488, 0.331, "penalty=0"], [0.0216, 0.2253, "penalty=0.5"], [0.0173, 0.2084, "penalty=1"], [0.0117, 0.2255, "penalty=2"], [0.0082, 0.2855, "penalty=4"], [0.0043, 0.4172, "penalty=8"], [0.0022, 0.6368, "penalty=16"]]};
 const SPREAD = [
   ["csv_chunked", 0.16, 4.20], ["duckdb_sql", 0.16, 4.29], ["polars_pipeline", 0.20, 3.65],
   ["jsonl_records", 0.41, 9.86], ["pandas_groupby", 0.80, 7.19], ["python_grouping", 0.88, 15.49],
@@ -192,8 +193,8 @@ const SPREAD = [
   ["sklearn_fit", 3.83, 36.52], ["pandas_join", 5.32, 21.84], ["tfidf_text", 27.91, 526.88]
 ];
 const LATENCY = [
-  ["gbt-dist", 1, "tree"], ["jev-pointer", 129, "dec"], ["jev-pointer 4B", 272, "dec"], ["sft-greedy", 1178, "llm"],
-  ["sft-sampled (8)", 2104, "llm"], ["zero-shot 27B", 103086, "llm"]
+  ["gbt-dist", 1, "tree"], ["jev-pointer", 126, "dec"], ["jev-pointer 4B", 256, "dec"], ["sft-greedy", 1135, "llm"],
+  ["sft-sampled (8)", 2087, "llm"], ["zero-shot 27B", 93446, "llm"]
 ];
 const LABEL = {
   "static": "static request", "vpa": "history max × margin", "size-rule": "size rule",
@@ -301,7 +302,7 @@ const ORDER = ["static", "vpa", "size-rule", "gbt", "gbt-dist", "sft-greedy", "s
   });
   el("text", { x: L + W / 2, y: 420 - 6, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, svg, "first-attempt OOM rate");
   el("text", { x: 14, y: T + H / 2, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)", transform: `rotate(-90 14 ${T + H / 2})` }, svg, "memory regret");
-  const show = ["static", "size-rule", "gbt", "gbt-dist", "sft-greedy", "sft-sampled", "jev-pointer"].filter(a => FRONTIER[a]);
+  const show = ["static", "size-rule", "gbt", "gbt-dist", "sft-greedy", "sft-sampled", "jev-pointer", "jev-pointer-4b", "ensemble"].filter(a => FRONTIER[a]);
   show.forEach((a, i) => {
     const pts = FRONTIER[a].map(p => [p[0], p[1]]).sort((p, q) => p[0] - q[0]);
     const c = COLOR[KIND(a)], dashed = ["gbt", "sft-greedy", "static", "size-rule"].includes(a);
