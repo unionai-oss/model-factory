@@ -97,7 +97,7 @@ that fits; `regret` = cost / oracle cost - 1. The memory grid is the
 half-power-of-two ladder (512Mi, 768Mi, 1Gi, 1.5Gi, ...) people actually
 write, which halves the grid's own waste floor relative to round 16's.
 
-### Results -- v2 (`sft` still decoding)
+### Results -- v2 (headline)
 
 Corpus `rt-bench-corpus[release=v2]` @ `f02c7caf`: 14,234 runs, train 8,457 /
 val 1,138 / test 2,316 / OOD 2,323 -- twice v1's training data.
@@ -111,6 +111,8 @@ val 1,138 / test 2,316 / OOD 2,323 -- twice v1's training data.
 | gbt-dist | 34.0% | 2.5% | 84.9% | 9.8% |
 
 | zeroshot-27b (600-run subsample; 312 unanswered) | 154.5% | 9.7% | 192.6% | 22.0% |
+| sft-greedy (1.7B, autoregressive) | 41.6% | 9.8% | 103.6% | 21.9% |
+| sft-sampled (8 samples) | 39.1% | 2.2% | 91.5% | 12.0% |
 | jev (linear head) | 52.0% | 4.1% | 112.5% | 15.8% |
 | **jev-pointer** (1.7B) | **33.2%** | 3.2% | 90.8% | 13.8% |
 | **jev-pointer-4b** (Qwen3-4B) | **25.8%** | 3.0% | 86.6% | 12.4% |
@@ -124,6 +126,10 @@ val 1,138 / test 2,316 / OOD 2,323 -- twice v1's training data.
   ECE 0.006 vs 0.039). On unseen families it got *worse* than at v1 (90.8% vs
   84.6%): more in-distribution data made it more confident there, and that
   confidence transferred badly (OOD ECE 0.097).
+- **Head vs. generation, v2:** the pointer head beats generative SFT on the
+  same torso, data and steps -- 33.2% vs 41.6% greedy / 39.1% sampled -- at
+  126 ms per decision vs 1,135 / 2,087 ms on a T4 (9-17x), with zero
+  generated tokens vs ~14.
 - **The 4B decision model is the best single model in the bench:** 25.8%
   in-distribution, 24% less waste than the trees (34.0%), and the best
   calibrated (Brier 0.265, ECE 0.004). On unseen families it is level with the
@@ -167,7 +173,7 @@ Base: `https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-
 | [rsb-v1-4b-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v1-4b-1) | `jev-pointer-4b` on v1: Qwen3-4B pointer head, 2 epochs, one T4 (fp16, micro-batch 4 x 4) | succeeded, 2h37m training; see the scaling note under Results |
 | [rsb-v2-corpus-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-corpus-1) | **v2 corpus**: 400 tasks/family (14,400 runs), seed 1, describe fix, thread caps of 3, 4 workloads per measurement pod | **ABORTED** at 79/240 shards: spot reclaims ("terminated in response to imminent node shutdown") left ~25 shard actions RUNNING for 40+ min with no failover. Fix: 1 h shard `max_runtime` so the timeout drives the retry |
 | [rsb-v2-corpus-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-corpus-2) | v2 relaunched (completed shards cache hits) | **succeeded**: 14,400 runs, **14,234 usable, 0 failed**, 166 censored above 20 GiB; 1,070 runs re-measured on 24Gi pods in pass 2 (the per-process guard is tighter at 4 per pod). 71.6 pod-hours |
-| [rsb-v2-board-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-board-1) | **all arms + ensemble on v2 in one materialization**, corpus pinned | (running) |
+| [rsb-v2-board-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-board-1) | **all arms + ensemble on v2 in one materialization**, corpus pinned | **succeeded**: 10 arms (4 on T4: 1.7B arms ~5 h, 4B ~6 h), 11 scorecards, the ensemble node and the leaderboard; the factory's scorecards match the local reconstruction to the digit |
 
 ## Results -- v1
 
@@ -331,6 +337,27 @@ build that tensor.
 **8. A zero-shot 27B model reasons before it answers.** At 64 output tokens it
 produced a parseable answer 35% of the time; it needs ~1k tokens per decision
 to answer at all -- versus zero generated tokens for a decision head.
+
+## What this round shows (for the record)
+
+1. On measured workloads, rules and history leave 1.2-2.6x the oracle's memory
+   on the table; a quantile GBT over scheduler-visible features is a strong bar
+   (34%).
+2. A Jev-style decision model -- an LLM torso with its LM head replaced by a
+   pointer head over the request grid -- reads the code and beats that bar
+   in-distribution (1.7B: 33.2%; 4B: **25.8%**), is the best-calibrated model
+   in the bench, and beats the autoregressive version of itself on quality at
+   1/9-1/17 the serving cost.
+3. Calibrated probabilities are the product: decoding by expected cost is
+   11-23 points better than argmax, and the same predictions re-decode under
+   any OOM penalty without retraining.
+4. Pooling the trees and the decision model is the best policy found:
+   **20.8% memory regret at a 1.7% first-attempt OOM rate** on v2.
+5. The simulator was never optimistic in 600 live pods.
+6. Still open: unseen workload families (79-91% for every arm); a decision
+   model fed more in-distribution data became more confident there, not more
+   correct. Next: rotate held-out families into validation for calibration
+   under shift, ensembles of decision heads, and live validation on v2.
 
 ## Code changes
 

@@ -33,7 +33,31 @@ Conventions:
 | 2026-09-06 | [round-11-format-capacity-composition](2026-09-06-round-11-format-capacity-composition.md) | Graded JSON reward -> 100% validity on every arm; **FIRST GATE PASS** (Qwen3.5-4B, +\$40.52/1k task-hrs); GBT-hint hits 93% fit but copies the anchor's padding; full FT > LoRA on fit |
 | 2026-09-09 | [round-12-14-corpus-at-scale](2026-09-09-round-12-14-corpus-at-scale.md) | Corpus quality gates (2 gate bugs, recovered via `flyte fork`) + stack axis + teacher tiers; **the 1M release shipped 31,704 rows and reported success** — post-mortem: deadline unenforceable inside a wave, retries feeding dead endpoints, 7 pods to reject broken code, ~17 min/pod at 1/10 the available fan-out |
 | 2026-09-16 | [round-15-fullft-1day](2026-09-16-round-15-fullft-1day.md) | Artifact cards on every published artifact; **the 1M corpus target is met** (1,016,896 rows); 1-day Qwen3-4B FULL fine-tune launched after 3 dead runs that each fixed something real — `flyte run` re-registers trainer resources, 10⁶ rows can't be read with pandas, preflight was blind to full-FT optimizer state |
+| 2026-10-15 | [round-17-rightsize-bench](2026-10-15-round-17-rightsize-bench.md) | **RightSize Bench**: 21,323 runs of real task code measured in pods; rules vs quantile GBT vs zero-shot 27B vs SFT vs Jev-style decision heads, one cost model, 600 live pods. 4B decision model 25.8% memory regret vs GBT 34.0%; GBT x decision pool **20.8% at 1.7% OOM**; decision head beats generation at 1/9-1/17 the latency; unseen families still 79-91% for all |
 | 2026-10-02 | [round-16-decision-arm-and-factory](2026-10-02-round-16-decision-arm-and-factory.md) | Third arm: a multi-head **decision model** that picks a grid cell directly, trained with a cost-asymmetry loss; the arm suite is a Union **factory** fanning out over an `under_penalty` partition with the corpus as a `factory.source` (LLM path untouched). The knob is monotone across all 3 arms (fit 54%→71%→89%) but only the paranoid arm beats the rule baseline on fit, and at +5% cost — 3 dead runs first (1M rows OOM the station, `Reporter` API, `baseline_proposal` arity) |
+
+## Standing results — RightSize Bench (as of 2026-10-17)
+
+Measured labels (`ru_maxrss` in pods), scheduler-visible inputs only, memory
+regret vs oracle (lower is better), v2 corpus (14,234 runs), from
+[rsb-v2-board-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsb-v2-board-1).
+
+| arm | test | OOM | unseen families | per decision |
+|---|---|---|---|---|
+| static | 255.6% | 8.9% | 231.8% | -- |
+| size-rule | 118.7% | 23.0% | 81.3% | -- |
+| gbt-dist | 34.0% | 2.5% | 84.9% | ~1 ms |
+| zeroshot-27b | 154.5% | 9.7% | 192.6% | ~630 tokens, ~93 s |
+| sft-sampled (1.7B) | 39.1% | 2.2% | 91.5% | 2,087 ms (T4) |
+| jev-pointer (1.7B) | 33.2% | 3.2% | 90.8% | 126 ms, 0 tokens |
+| jev-pointer-4b | 25.8% | 3.0% | 86.6% | 256 ms, 0 tokens |
+| **gbt-dist x jev-pointer, pooled** | **20.8%** | **1.7%** | **79.0%** | both |
+
+Full tables, live validation and caveats: [round-17](2026-10-15-round-17-rightsize-bench.md).
+Results page: `benchmarks/rightsize-bench.html` at the repo root.
+
+The rounds 1-16 tables below were scored against analytic footprints, not
+measurements, and are superseded by the bench.
 
 ## Standing results — LLM arm (as of 2026-09-03)
 

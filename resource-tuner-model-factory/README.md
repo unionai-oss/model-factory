@@ -54,32 +54,33 @@ rt-bench-runs [release] ─► rt-bench-corpus [release] ─┬─► rt-bench-a
                              real pods                 └──────────────────────────────► rt-bench-live   rt-bench-leaderboard
 ```
 
-### Results (v1: 7,089 measured runs)
+### Results (v2: 14,234 measured runs)
 
 Memory regret = GiB-hours reserved to get every run to SUCCEEDED (OOM retries
-included) over the oracle's, minus 1. OOD = two workload families no arm
-trained on.
+included) over the oracle's, minus 1. Unseen = two workload families no arm
+trained on. Full tables, v1, live validation: research_log/round-17; page:
+`../benchmarks/rightsize-bench.html`.
 
-| arm | test | OOM | unseen families | per-decision cost |
+| arm | test | OOM | unseen families | per decision |
 |---|---|---|---|---|
-| static safe request | 242.9% | 10.8% | 223.5% | -- |
-| size rule (power law in input bytes) | 132.1% | 20.7% | 91.8% | -- |
-| quantile GBT, decoded by expected cost | 38.6% | 3.7% | 84.8% | ~1 ms CPU |
-| zero-shot 27B LLM (hosted) | 162.1% | 10.5% | 171.6% | ~640 tokens, ~100 s |
-| SFT 1.7B, autoregressive (8 samples) | 54.9% | 3.1% | 83.3% | 2,104 ms on a T4 |
-| **Jev-style decision model** (1.7B, pointer head) | 50.0% | 5.0% | 84.6% | **129 ms, 0 tokens** |
-| **GBT x decision model, pooled** | **35.6%** | **3.2%** | **75.4%** | both |
+| static safe request | 255.6% | 8.9% | 231.8% | -- |
+| size rule (power law in input bytes) | 118.7% | 23.0% | 81.3% | -- |
+| quantile GBT, decoded by expected cost | 34.0% | 2.5% | 84.9% | ~1 ms CPU |
+| zero-shot 27B LLM (hosted) | 154.5% | 9.7% | 192.6% | ~630 tokens, ~93 s |
+| SFT 1.7B, autoregressive (8 samples) | 39.1% | 2.2% | 91.5% | 2,087 ms on a T4 |
+| Jev-style decision model, 1.7B | 33.2% | 3.2% | 90.8% | 126 ms, 0 tokens |
+| **Jev-style decision model, 4B** | **25.8%** | 3.0% | 86.6% | 256 ms, 0 tokens |
+| **GBT x decision model, pooled** | **20.8%** | **1.7%** | **79.0%** | both |
 
-- Rules lose; a quantile GBT over scheduler-visible features is a strong bar.
-- A 1.7B decision model reading only the prompt ties the GBT on unseen workload
-  families with no feature engineering, calls CPU right 97% of the time (vs 84%),
-  and is the best-calibrated model in the bench (ECE 0.004) -- at 1/9-1/16 the
-  serving cost of the same model generating its answer.
-- Decoding by expected cost is most of the value: the same models decoded by
-  argmax are 23-35 points worse.
-- Pooling the two calibrated distributions beats both, everywhere.
-- Live: 600 pods re-run under the arms' decisions; the simulator was never
-  optimistic (0 false "fits" in 395), and labels reproduce to 0.91-1.06x.
+- The 4B decision model, reading only the prompt, wastes 24% less than the
+  tuned GBT and is the best-calibrated model (ECE 0.004).
+- Same torso, data and steps: the decision head beats generating the answer,
+  at 1/9-1/17 the latency.
+- Decoding by expected cost is 11-23 points better than argmax; the risk knob
+  needs no retraining.
+- Live: 600 real pods under the arms' requests; the simulator was never
+  optimistic (0 of 550 "fits" OOMed); labels reproduce to 0.91-1.06x.
+- Open: unseen workload families (79-91% for every arm).
 
 Code: `resource_tuner/bench/` (module docstrings explain each piece);
 results and every run link: [research_log/round-17](research_log/2026-10-15-round-17-rightsize-bench.md).
