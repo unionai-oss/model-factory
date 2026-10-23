@@ -76,6 +76,13 @@ def attach_measurement(row: dict, m: dict) -> dict:
         "n_samples": int(m.get("n_samples") or 0),
     })
     out["peak_gpu_gib"] = out["peak_gpu_mib"] / 1024
+    # cuDNN's workspace search and the caching allocator grow into whatever the
+    # device has (rsg-pilot-1: a CNN logged failed 3-8 GB workspace allocations,
+    # fell back, and peaked at 15.1 of 15.1 GiB -- and succeeded). Such a peak is
+    # the device's size, not the task's need: the device label stands, the
+    # memory-accuracy columns skip it.
+    total = out["device_total_mib"]
+    out["fills_device"] = bool(out["ok"] and total and out["peak_gpu_mib"] >= 0.95 * total)
     out["label_gmem_idx"] = grid.label_mem_index(out["peak_gpu_gib"])
     out["label_util_idx"] = grid.util_index(out["mean_util"])
     return out

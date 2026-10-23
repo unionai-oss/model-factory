@@ -35,8 +35,27 @@ Conventions:
 | 2026-09-16 | [round-15-fullft-1day](2026-09-16-round-15-fullft-1day.md) | Artifact cards on every published artifact; **the 1M corpus target is met** (1,016,896 rows); 1-day Qwen3-4B FULL fine-tune launched after 3 dead runs that each fixed something real — `flyte run` re-registers trainer resources, 10⁶ rows can't be read with pandas, preflight was blind to full-FT optimizer state |
 | 2026-10-15 | [round-17-rightsize-bench](2026-10-15-round-17-rightsize-bench.md) | **RightSize Bench**: 21,323 runs of real task code measured in pods; rules vs quantile GBT vs zero-shot 27B vs SFT vs Jev-style decision heads, one cost model, 600 live pods. 4B decision model 25.8% memory regret vs GBT 34.0%; GBT x decision pool **20.8% at 1.7% OOM**; decision head beats generation at 1/9-1/17 the latency; unseen families still 79-91% for all |
 | 2026-10-02 | [round-16-decision-arm-and-factory](2026-10-02-round-16-decision-arm-and-factory.md) | Third arm: a multi-head **decision model** that picks a grid cell directly, trained with a cost-asymmetry loss; the arm suite is a Union **factory** fanning out over an `under_penalty` partition with the corpus as a `factory.source` (LLM path untouched). The knob is monotone across all 3 arms (fit 54%→71%→89%) but only the paranoid arm beats the rule baseline on fit, and at +5% cost — 3 dead runs first (1M rows OOM the station, `Reporter` API, `baseline_proposal` arity) |
+| 2026-10-23 | [round-18-rightsize-cpu-gpu](2026-10-23-round-18-rightsize-cpu-gpu.md) | RightSize Bench renamed **RightSizeMem**; **RightSizeCPU** (peak cores in Union's 15 s monitoring window, cgroup-measured) and **RightSizeGPU** (peak GPU memory -> device on the T4/L4/L40S ladder, mean utilization; NVML at DCGM's 30 s cadence) small releases, one factory materialization each. CPU: zero-shot 27B 79%/93% within ±25%, code-rule 81%/95% (fails the GIL), 1.7B decision head 71%/83% from 116 rows. GPU: no arm above 55% within ±20% at 62 training rows; utilization saturates (88% of runs 90-100%). Factory deploy pins station versions (rsg-small-3 re-ran old code) |
 
-## Standing results — RightSize Bench (as of 2026-10-17)
+## Standing results — RightSizeCPU / RightSizeGPU small-1 (as of 2026-10-23)
+
+Small releases: read orderings, not decimals (test n=52 / 22, unseen n=40 / 32).
+From [rsc-small-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-small-1)
+and [rsg-small-4](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-small-4).
+
+| arm | CPU: peak within ±25% (test / unseen) | GPU: peak memory within ±20% (test / unseen) |
+|---|---|---|
+| static | 34.6% / 32.5% | 9.1% / 23.3% |
+| vpa | 67.3% / 67.5% | 40.9% / 43.3% |
+| code-rule (CPU) / size-rule (GPU) | 80.8% / 95.0% | 54.5% / 36.7% |
+| gbt-dist | 73.1% / 47.5% | 50.0% / 20.0% |
+| zeroshot-27b | 78.8% / 92.5% | 36.4% / 40.0% |
+| sft-greedy (1.7B) | 71.2% / 67.5% | 50.0% / 50.0% |
+| jev-pointer (1.7B) | 71.2% / 82.5% | 36.4% / 30.0% |
+
+Details and caveats: [round-18](2026-10-23-round-18-rightsize-cpu-gpu.md).
+
+## Standing results — RightSizeMem Bench (as of 2026-10-17; called RightSize Bench then)
 
 Measured labels (`ru_maxrss` in pods), scheduler-visible inputs only, memory
 regret vs oracle (lower is better), v2 corpus (14,234 runs), from
@@ -54,7 +73,7 @@ regret vs oracle (lower is better), v2 corpus (14,234 runs), from
 | **gbt-dist x jev-pointer, pooled** | **20.8%** | **1.7%** | **79.0%** | both |
 
 Full tables, live validation and caveats: [round-17](2026-10-15-round-17-rightsize-bench.md).
-Results page: `benchmarks/rightsize-bench.html` at the repo root.
+Results page: `benchmarks/rightsize-mem-bench.html` at the repo root.
 
 The rounds 1-16 tables below were scored against analytic footprints, not
 measurements, and are superseded by the bench.

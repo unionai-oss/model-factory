@@ -9,8 +9,18 @@ first forward/backward), and is retried on the next device up. Each OOM
 also costs OOM_PENALTY oracle runs of delay. ``gpu_regret`` = dollars /
 the oracle's dollars - 1; the oracle runs on the cheapest device that fits.
 
+Headline and decoding target: memory **accuracy**, not cost. On this
+tenant's ladder ~95% of runs fit the cheapest device, so under expected-cost
+decoding "anything up to 15 GiB" is free and every distributional arm
+collapsed to that one cell (rsg-small-1: gbt-dist, sft-sampled and
+jev-pointer scored identically) -- the device choice was trivial and the
+memory prediction was thrown away. Distributions are decoded by
+``decode_index`` (the cell most likely within margin of the peak, ties up);
+the device and its dollars follow from that prediction. ``bayes_index``
+remains for the risk frontier.
+
 **Accuracy.** Memory: exact cell, within one cell, within 20% of the peak
-(``grid.mem_within_margin``), first-attempt OOM rate, and whether the
+(``grid.mem_within_margin``; skipping runs whose peak filled the device), first-attempt OOM rate, and whether the
 device matches the oracle's. Utilization: mean absolute error in points and
 the share within 10 points (``grid.UTIL_MARGIN``).
 
@@ -65,6 +75,27 @@ def cost_matrix(penalty: float = OOM_PENALTY, t_peak_frac: float = 0.1) -> np.nd
 _C: np.ndarray | None = None
 
 
+def hit_matrix() -> np.ndarray:
+    H = np.zeros((N, N))
+    for j in range(N):
+        need = (CELLS[j - 1] + CELLS[j]) / 2 if j else CELLS[0] * 0.7
+        for m in range(N):
+            H[m, j] = float(grid.mem_within_margin(CELLS[m], need))
+    return H
+
+
+_H: np.ndarray | None = None
+
+
+def decode_index(probs) -> int:
+    """The cell most likely within margin of the peak; ties go up."""
+    global _H
+    if _H is None:
+        _H = hit_matrix()
+    p = np.asarray(probs, dtype=float)
+    return int(np.argmax(_H @ (p / p.sum()) + 1e-6 * np.arange(N)))
+
+
 def bayes_index(probs, C: np.ndarray | None = None) -> int:
     global _C
     if C is None:
@@ -77,8 +108,9 @@ def bayes_index(probs, C: np.ndarray | None = None) -> int:
 
 def score(rows: list[dict], preds: dict[str, dict]) -> dict:
     """`preds[run_id]` = {"gmem_idx", "util_idx", optional "gmem_probs"}."""
-    acc = {k: [] for k in ("cost", "ocost", "oom", "dev_exact", "dev_over", "exact", "adj", "hit", "err",
+    acc = {k: [] for k in ("cost", "ocost", "oom", "dev_exact", "dev_over", "exact", "adj",
                            "u_err", "u_hit", "u_exact", "fail")}
+    mem_hit, mem_err = [], []
     briers, nlls, p_ooms, real_ooms = [], [], [], []
     missing = 0
     for r in rows:
@@ -95,7 +127,8 @@ def score(rows: list[dict], preds: dict[str, dict]) -> dict:
         dev, odev = grid.device_for(CELLS[i]), grid.device_for(peak)
         acc["dev_exact"].append(dev == odev), acc["dev_over"].append(grid.DEVICES[dev][2] > grid.DEVICES[odev][2])
         acc["exact"].append(i == oi), acc["adj"].append(abs(i - oi) <= 1)
-        acc["hit"].append(grid.mem_within_margin(CELLS[i], peak)), acc["err"].append(abs(CELLS[i] - peak))
+        if not r.get("fills_device"):  # a device-bound peak is not the task's need
+            mem_hit.append(grid.mem_within_margin(CELLS[i], peak)), mem_err.append(abs(CELLS[i] - peak))
         ui = int(p["util_idx"])
         acc["u_err"].append(abs(grid.util_mid(ui) - r["mean_util"]))
         acc["u_hit"].append(abs(grid.util_mid(ui) - r["mean_util"]) <= grid.UTIL_MARGIN)
@@ -118,8 +151,10 @@ def score(rows: list[dict], preds: dict[str, dict]) -> dict:
     out = {"n": n, "missing": missing,
            "gpu_regret": float(np.sum(acc["cost"]) / np.sum(acc["ocost"]) - 1.0),
            "oom_rate": m["oom"], "fail_rate": m["fail"], "device_exact": m["dev_exact"], "device_over": m["dev_over"],
-           "mem_exact": m["exact"], "mem_within_one_cell": m["adj"], "mem_within_margin": m["hit"],
-           "mem_mae_gib": m["err"], "util_mae": m["u_err"], "util_within_10": m["u_hit"], "util_exact": m["u_exact"]}
+           "mem_exact": m["exact"], "mem_within_one_cell": m["adj"],
+           "mem_within_margin": float(np.mean(mem_hit)) if mem_hit else float("nan"),
+           "mem_mae_gib": float(np.mean(mem_err)) if mem_err else float("nan"), "n_mem_scored": len(mem_hit),
+           "util_mae": m["u_err"], "util_within_10": m["u_hit"], "util_exact": m["u_exact"]}
     if briers:
         out.update({"brier": float(np.mean(briers)), "nll": float(np.mean(nlls)),
                     "ece_oom": expected_calibration_error(p_ooms, real_ooms)})

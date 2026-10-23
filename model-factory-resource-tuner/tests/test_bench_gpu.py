@@ -153,3 +153,12 @@ def test_pointer_offsets_land_on_gpu_options(corpus):
             for off, o in zip(offs, opts):
                 # the option's last character may share a token with the separator ("%,")
                 assert tok.decode([ids[n - 1 - off]]).rstrip(", \n") in o
+
+
+def test_a_device_bound_peak_is_not_scored_for_memory_accuracy(splits):
+    rows = [dict(r) for r in splits["test"][:6]]
+    for r in rows:
+        r["fills_device"] = True
+    preds = {r["run_id"]: {"gmem_idx": r["label_gmem_idx"], "util_idx": 0} for r in rows}
+    s = scoring.score(rows, preds)
+    assert s["n_mem_scored"] == 0 and s["device_exact"] == 1.0

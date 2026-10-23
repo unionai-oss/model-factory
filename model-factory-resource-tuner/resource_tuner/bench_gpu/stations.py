@@ -205,14 +205,14 @@ async def gpu_leaderboard(scorecards: list[flyte.io.File]) -> flyte.io.File:
         if not rows:
             continue
         rep.h(f"{split}: GPU memory -> device, and mean GPU utilization")
-        rep.table(["arm", "gpu $ regret", "OOM (1st try)", "device = oracle", "memory within ±20%",
-                   "memory within 1 cell", "util MAE (pts)", "util within ±10", "Brier", "ECE", "n"],
-                  [[v, f"{s['gpu_regret']:.1%}", f"{s['oom_rate']:.1%}", f"{s['device_exact']:.1%}",
-                    f"{s['mem_within_margin']:.1%}", f"{s['mem_within_one_cell']:.1%}", f"{s['util_mae']:.1f}",
+        rep.table(["arm", "memory within ±20%", "memory within 1 cell", "MAE GiB", "gpu $ regret", "OOM (1st try)",
+                   "device = oracle", "util MAE (pts)", "util within ±10", "Brier", "ECE", "n"],
+                  [[v, f"{s['mem_within_margin']:.1%}", f"{s['mem_within_one_cell']:.1%}", f"{s['mem_mae_gib']:.2f}",
+                    f"{s['gpu_regret']:.1%}", f"{s['oom_rate']:.1%}", f"{s['device_exact']:.1%}", f"{s['util_mae']:.1f}",
                     f"{s['util_within_10']:.1%}", f"{s['brier']:.3f}" if "brier" in s else "-",
                     f"{s['ece_oom']:.3f}" if "ece_oom" in s else "-", str(s["n"])] for v, s in rows])
-        rep.raw(charts.hbars([(v, s["gpu_regret"], charts.arm_color(v)) for v, s in rows],
-                             title=f"{split}: GPU dollars over the oracle (lower is better)"))
+        rep.raw(charts.hbars([(v, s["mem_within_margin"], charts.arm_color(v)) for v, s in rows],
+                             title=f"{split}: peak GPU memory predicted within ±20% (higher is better)"))
     rep.h("test: by driver (GPU memory within ±20%)")
     keys = sorted({k for v in order for k in board[v] if k.startswith("driver=")})
     rep.table(["slice", *order], [[k[7:], *[f"{board[v].get(k, {}).get('mem_within_margin', float('nan')):.0%}" for v in order]]

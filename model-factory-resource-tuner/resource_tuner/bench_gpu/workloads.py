@@ -258,7 +258,9 @@ def _loader_bound(rng: Random) -> dict:
     side = rng.choice([64, 96, 128])
     workers = rng.choice([0, 1, 2])
     batch = rng.choice([32, 64, 128])
-    aug = rng.choice(["flip", "crop_noise", "per_pixel_python"])
+    # per-sample Python work is what starves a GPU; NVML/DCGM utilization reads
+    # ~95% for anything that keeps a kernel queued (rsg-pilot-1: 14 of 16 runs >90%)
+    aug = rng.choice(["flip", "crop_noise", "per_pixel_python", "per_pixel_python"])
     width = rng.choice([16, 64, 256])
     aug_code = {
         "flip": ["        img = self.images[i][:, ::-1] if i % 2 else self.images[i]"],

@@ -1,10 +1,21 @@
 # model-factory-resource-tuner
 
 Right-sizing `flyte.Resources` for Flyte tasks -- the prototype for the
-**AI Resource Tuning** PRD -- and **RightSize Bench**, the experiment that
-decides which kind of model should do it.
+**AI Resource Tuning** PRD -- and the **RightSize benches**, the experiments
+that decide which kind of model should do it:
 
-## RightSize Bench
+| bench | predicts | package | factory |
+|---|---|---|---|
+| **RightSizeMem** | the memory request (OOM-killed below the peak) | `resource_tuner/bench/` | `rightsize-bench` |
+| **RightSizeCPU** | peak CPU in Union's 15 s monitoring window, and mean CPU | `resource_tuner/bench_cpu/` | `rightsize-cpu-bench` |
+| **RightSizeGPU** | peak GPU memory (-> which device) and mean GPU utilization | `resource_tuner/bench_gpu/` | `rightsize-gpu-bench` |
+
+All three share the information boundary (source, input metadata, run
+history), the LLM arms and the T4 trainer (`bench/spec.py` says what differs).
+RightSizeCPU and RightSizeGPU have small releases so far; see
+[research_log/round-18](research_log/2026-10-23-round-18-rightsize-cpu-gpu.md).
+
+## RightSizeMem Bench
 
 > A task is submitted with some inputs. What should it request? Does reading
 > the code help? Does an LLM help -- and does the *kind* of LLM matter?
@@ -59,7 +70,7 @@ rt-bench-runs [release] ─► rt-bench-corpus [release] ─┬─► rt-bench-a
 Memory regret = GiB-hours reserved to get every run to SUCCEEDED (OOM retries
 included) over the oracle's, minus 1. Unseen = two workload families no arm
 trained on. Full tables, v1, live validation: research_log/round-17; page:
-`../benchmarks/rightsize-bench.html`.
+`../benchmarks/rightsize-mem-bench.html`.
 
 | arm | test | OOM | unseen families | per decision |
 |---|---|---|---|---|

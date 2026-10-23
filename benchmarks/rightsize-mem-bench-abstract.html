@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>RightSize Bench Abstract</title>
+<title>RightSizeMem Bench Abstract</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
-/* Layout: a paper-style abstract. One paragraph, then the results (chart, table, five findings), then the setup and definitions in compact form. Same tokens as the full RightSize Bench report. */
+/* Layout: a paper-style abstract. One paragraph, then the results (chart, table, five findings), then the setup and definitions in compact form. Same tokens as the full RightSizeMem Bench report. */
 :root {
   --bg: #f5f6f9;
   --panel: #ffffff;
@@ -82,12 +82,12 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 <div class="wrap">
   <header>
     <div class="eyebrow">Union model factory · round 17 · October 2026</div>
-    <h1>RightSize Bench: choosing memory requests from code</h1>
+    <h1>RightSizeMem Bench: choosing memory requests from code</h1>
   </header>
 
   <div class="abstract">
     <div class="label">Abstract</div>
-    <p>Every task asks for its memory before it starts. If the request is too small, the kernel kills the task and it must be retried; if it is too large, the cluster pays for memory nobody uses. RightSize Bench measures how well different approaches make that choice. It contains 14,234 runs of generated Flyte task code from 12 workload families, each run executed on the cluster and labelled with the smallest of 17 memory sizes that fits its measured peak. Every approach sees only what a scheduler sees when a task is submitted: the source code, the input files' metadata, and the task's earlier runs. Each is scored on <b>memory regret</b>, the extra memory it reserves over a perfect oracle once killed attempts, retries and a delay penalty are counted.</p>
+    <p>Every task asks for its memory before it starts. If the request is too small, the kernel kills the task and it must be retried; if it is too large, the cluster pays for memory nobody uses. RightSizeMem Bench measures how well different approaches make that choice. It contains 14,234 runs of generated Flyte task code from 12 workload families, each run executed on the cluster and labelled with the smallest of 17 memory sizes that fits its measured peak. Every approach sees only what a scheduler sees when a task is submitted: the source code, the input files' metadata, and the task's earlier runs. Each is scored on <b>memory regret</b>, the extra memory it reserves over a perfect oracle once killed attempts, retries and a delay penalty are counted.</p>
     <p>A single static request reserves 256% more memory than the oracle. Gradient-boosted trees bring that to 34%. A Jev-style decision model, Qwen3-4B fine-tuned with a head that scores each request option, reaches 26%, with the most accurate probabilities of any single model. Pooling a 1.7B decision model with the trees reaches 21%, with 1.7% of runs killed on the first attempt. With the same base model and training, scoring the options beats generating the answer as text, and answers 9 to 17 times faster. On two workload families held out of training, even the best approaches still reserve 79% to 91% more than the oracle. A live re-run in 600 real pods found no run that the simulator said would fit and that was actually killed.</p>
   </div>
 
@@ -139,7 +139,7 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   </section>
 
   <footer>
-    <div>Full report with methodology, chart reading guides and limits: <a href="https://claude.ai/artifact/BHvwdVkkGvAP8yWyHWo8Xc">RightSize Bench</a>.</div>
+    <div>Full report with methodology, chart reading guides and limits: <a href="https://claude.ai/artifact/BHvwdVkkGvAP8yWyHWo8Xc">RightSizeMem Bench</a>.</div>
     <div>Source: <span class="mono">model-factory-resource-tuner/resource_tuner/bench/</span> · research log <span class="mono">research_log/2026-10-15-round-17-rightsize-bench.md</span> · demo.hosted.unionai.cloud.</div>
   </footer>
 </div>

@@ -1,4 +1,5 @@
-"""Non-LLM arms for RightSizeGPU. One knob each, tuned on val against ``gpu_regret``.
+"""Non-LLM arms for RightSizeGPU. One knob each, tuned on val for the headline
+(peak GPU memory within margin; ties broken by ``gpu_regret``).
 
 - ``static``     one GPU memory request for every run (a training-peak quantile).
 - ``vpa``        the largest peak this task has used, times a margin; cold
@@ -8,7 +9,7 @@
                  the input-size ratio to that power.
 - ``gbt``        quantile gradient-boosted trees over the scheduler-visible
                  features (PyTorch API tokens, Linear sizes, batch slice, history).
-- ``gbt-dist``   the same trees at 19 quantiles -> expected-cost decoding.
+- ``gbt-dist``   the same trees at 19 quantiles -> the cell most likely within margin.
 
 Utilization: training median (static), the task's last observed value
 (vpa / size-rule, when there is history), a median-regression GBT (gbt arms).
@@ -37,7 +38,9 @@ def _pred(gib: float, util: float) -> dict:
 def _tune(candidates, make_preds, val_rows):
     best = None
     for c in candidates:
-        cost = scoring.score(val_rows, make_preds(c))["gpu_regret"]
+        s = scoring.score(val_rows, make_preds(c))
+        hit = s["mem_within_margin"]
+        cost = (1.0 - (hit if hit == hit else 0.0), s["gpu_regret"])
         if best is None or cost < best[1]:
             best = (c, cost)
     return best[0]
@@ -156,7 +159,7 @@ def predict_gbt_dist(state, rows):
     out = {}
     for i, r in enumerate(rows):
         probs = quantiles_to_cell_probs(Q[i], levels, _EDGES)
-        out[r["run_id"]] = {"gmem_idx": scoring.bayes_index(probs), "util_idx": grid.util_index(u[i]),
+        out[r["run_id"]] = {"gmem_idx": scoring.decode_index(probs), "util_idx": grid.util_index(u[i]),
                             "gmem_probs": probs.tolist()}
     return out
 

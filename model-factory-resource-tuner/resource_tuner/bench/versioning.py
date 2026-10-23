@@ -39,12 +39,15 @@ CORPUS_VERSION = _hash("workloads", "measure", "dataset", "grid")
 #: What an arm's predictions and its scorecard depend on.
 ARMS_VERSION = _hash("arms", "features", "prompting", "grid", "scoring", "dataset", *_SHARED_LLM)
 
-CPU_CORPUS_VERSION = _hash("workloads", "measure", "bench_cpu/workloads", "bench_cpu/measure",
-                           "bench_cpu/dataset", "bench_cpu/grid")
-CPU_ARMS_VERSION = _hash("bench_cpu/arms", "bench_cpu/dataset", "bench_cpu/stations", "arms", *_SHARED_LLM)
-GPU_CORPUS_VERSION = _hash("workloads", "measure", "bench_cpu/measure", "bench_gpu/workloads",
-                           "bench_gpu/measure", "bench_gpu/dataset", "bench_gpu/grid")
-GPU_ARMS_VERSION = _hash("bench_gpu/arms", "bench_gpu/dataset", "bench_gpu/stations", "arms", *_SHARED_LLM)
+# The CPU and GPU benches' versions are computed when their own stations ask
+# for them, not at import: the code bundler ships only modules a deploy
+# imports, and a RightSizeCPU deploy does not ship bench_gpu/workloads.py
+# (rsc-pilot-1 died on exactly that FileNotFoundError).
+_CPU_CORPUS = ("workloads", "measure", "bench_cpu/workloads", "bench_cpu/measure", "bench_cpu/dataset", "bench_cpu/grid")
+_CPU_ARMS = ("bench_cpu/arms", "bench_cpu/dataset", "bench_cpu/stations", "arms", *_SHARED_LLM)
+_GPU_CORPUS = ("workloads", "measure", "bench_cpu/measure", "bench_gpu/workloads", "bench_gpu/measure",
+               "bench_gpu/dataset", "bench_gpu/grid")
+_GPU_ARMS = ("bench_gpu/arms", "bench_gpu/dataset", "bench_gpu/stations", "arms", *_SHARED_LLM)
 
 
 def corpus_cache() -> flyte.Cache:
@@ -56,16 +59,16 @@ def arms_cache() -> flyte.Cache:
 
 
 def cpu_corpus_cache() -> flyte.Cache:
-    return flyte.Cache(behavior="override", version_override=f"cpu-corpus-{CPU_CORPUS_VERSION}")
+    return flyte.Cache(behavior="override", version_override=f"cpu-corpus-{_hash(*_CPU_CORPUS)}")
 
 
 def cpu_arms_cache() -> flyte.Cache:
-    return flyte.Cache(behavior="override", version_override=f"cpu-arms-{CPU_ARMS_VERSION}")
+    return flyte.Cache(behavior="override", version_override=f"cpu-arms-{_hash(*_CPU_ARMS)}")
 
 
 def gpu_corpus_cache() -> flyte.Cache:
-    return flyte.Cache(behavior="override", version_override=f"gpu-corpus-{GPU_CORPUS_VERSION}")
+    return flyte.Cache(behavior="override", version_override=f"gpu-corpus-{_hash(*_GPU_CORPUS)}")
 
 
 def gpu_arms_cache() -> flyte.Cache:
-    return flyte.Cache(behavior="override", version_override=f"gpu-arms-{GPU_ARMS_VERSION}")
+    return flyte.Cache(behavior="override", version_override=f"gpu-arms-{_hash(*_GPU_ARMS)}")
