@@ -123,3 +123,26 @@ def test_chat_does_not_retry_client_errors(monkeypatch):
     with _pytest.raises(lc.TeacherError):
         lc.chat("http://x", [{"role": "user", "content": "hi"}], backoff_s=0)
     assert calls["n"] == 1  # fail fast on a real client error
+
+
+def test_health_accepts_vllm_empty_200(monkeypatch):
+    """vLLM's /health is an empty 200; rsb-v1-board-1's zeroshot-27b timed out
+    after 30 min treating it as an auth redirect."""
+    import io
+
+    from resource_tuner.shared import llm_client
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(llm_client.urllib.request, "urlopen", lambda req, timeout=0: Resp(b""))
+    llm_client._health("http://x/health")
+    monkeypatch.setattr(llm_client.urllib.request, "urlopen", lambda req, timeout=0: Resp(b"<html>sign in</html>"))
+    import pytest
+
+    with pytest.raises(llm_client.TeacherError):
+        llm_client._health("http://x/health")

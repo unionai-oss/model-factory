@@ -66,7 +66,12 @@ cannot satisfy).
   compiles into one trigger per target, so it shows up as several runs.
   A triggered materialization with nothing changed is all cache hits and
   finishes in seconds (9.1s for a 6-station graph), so it is cheap to leave
-  armed. `factory.on(<source>)` needs a `factory.source` — an artifact
+  armed -- **but only when it re-targets an existing partition**: a cron on a
+  `Daily`-partitioned factory builds a *new* day every time it fires, i.e. a
+  full rebuild (decision-model-factory round 2 was retraining a GPU suite
+  nightly). `factory.on` has no `auto_activate`; the off switch is not
+  declaring the trigger. One `factory.on(cron, a, b)` makes one trigger per
+  target and each re-runs shared upstream work: target only the endpoint. `factory.on(<source>)` needs a `factory.source` — an artifact
   published outside the factory; everything a factory builds itself is
   reached by materializing it, not by a trigger.
 - The code bundler ships only statically-imported modules; import task
@@ -81,3 +86,47 @@ cannot satisfy).
   everything upstream has already run. Pin cross-module call shapes with a
   local test instead (see
   `resource-tuner-model-factory/tests/test_decision_model.py`).
+
+## Caching and reuse (learned across all three factories, 2026-10)
+
+- **Factory reuse IS task caching.** Flyte 2 task caching is off by default;
+  an uncached build re-runs on every materialization even if its artifact
+  exists (`factory plan` will still say "existing"). A redeploy changes every
+  task version. `--version name=<v>` pins one version per artifact name, so it
+  cannot pin a partitioned suite.
+- **`cache="auto"` hashes only the task's own function body**, not modules it
+  imports, and not profile/config *contents* (only their names). A station
+  whose output is decided by imported code or a profile cache-hits across
+  changes to it. Key the cache on what matters:
+  `flyte.Cache(behavior="override", version_override=<hash of those sources>)`
+  (resource-tuner `bench/versioning.py`), and treat profile names as immutable.
+- A cache-hit GPU task still waits for GPU admission before its cache lookup
+  (20+ min on a busy pool).
+
+## Capacity on demo.hosted (2026-10)
+
+- A project runs ~30 actions at once; beyond that they sit QUEUED with no
+  cluster events. Throughput lever: more work per pod (e.g. several measured
+  subprocesses per pod), not more pods.
+- On-demand c5.4xlarge and i3.xlarge pools sit at their nodepool limits;
+  `interruptible=True` reaches the spot pools. Spot reclaims can strand an
+  action in RUNNING ("terminated in response to imminent node shutdown"):
+  set `max_runtime` near the expected duration so the timeout drives the retry.
+- GPUs: L40s:1 frequently at "max node group size"; A10G jobs can queue >1 h
+  behind other projects; T4:1 (g4dn.xlarge, request <= 3 CPU / 13Gi) admits
+  quickly. `torch.cuda.is_bf16_supported()` says True on a T4 (it counts
+  emulation) -- check `get_device_capability()[0] >= 8`, else fp16 + GradScaler.
+- Read action failure/scheduling reasons from `Action.details()` ->
+  `pb2.attempts[-1].clusterEvents`; the laptop has no data-plane S3 credentials,
+  so read artifacts through a small in-cluster task that returns them inline.
+
+## LLM services and models
+
+- llm-service apps: task pods use `http://<app>.llm-service-development.svc.cluster.local`;
+  public URLs need a real User-Agent and the API key. vLLM apps answer `/health`
+  with an empty 200 and validate the `model` field (read it from `/v1/models`).
+  A shared 27B can run at ~1 token/s under load.
+- vLLM inside a plain debian task image needs `VLLM_USE_FLASHINFER_SAMPLER=0`.
+- Generative training over a 151k vocabulary: compute logits for the completion
+  window only (`logits_to_keep`); full-sequence logits OOM a 16 GB GPU.
+- Temperature-scale **logits**, not probabilities: fp32 softmax saturates to 1.0.

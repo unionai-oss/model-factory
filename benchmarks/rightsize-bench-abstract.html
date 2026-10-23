@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RightSize Bench Abstract</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a paper-style abstract. One paragraph, then the results (chart, table, five findings), then the setup and definitions in compact form. Same tokens as the full RightSize Bench report. */
+:root {
+  --bg: #f5f6f9;
+  --panel: #ffffff;
+  --ink: #161823;
+  --muted: #5d6273;
+  --rule: #dcdfe8;
+  --tint: #eef0fb;
+  --accent: #4d65ff;     /* decision model */
+  --warm: #c9760a;       /* autoregressive LLM */
+  --tree: #1f9b6a;       /* classical ML */
+  --rule-c: #8a8fa0;     /* rules */
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+    --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+  --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 860px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; display: grid; gap: 30px; }
+header { display: grid; gap: 10px; }
+.eyebrow, .label { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.label { color: var(--accent); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(36px, 6vw, 52px); line-height: 1.02; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 24px; line-height: 1.15; margin: 0; text-wrap: balance; }
+p { margin: 0; max-width: 68ch; }
+section { display: grid; gap: 14px; min-width: 0; }
+.abstract { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 20px 22px; display: grid; gap: 10px; }
+.abstract p { font-size: 16.5px; max-width: none; text-wrap: pretty; }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 16px 10px; min-width: 0; }
+.figure svg { display: block; width: 100%; height: auto; }
+.caption { font-size: 13px; color: var(--muted); margin-top: 6px; max-width: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+td.best { font-weight: 600; }
+tr.hl td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+td.note { color: var(--muted); }
+ol.findings { margin: 0; padding: 0; list-style: none; display: grid; gap: 14px; counter-reset: f; }
+ol.findings li { counter-increment: f; display: grid; grid-template-columns: 112px 1fr; gap: 16px; align-items: baseline; }
+ol.findings .n { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.05; font-variant-numeric: tabular-nums; }
+ol.findings b { font-weight: 600; }
+@media (max-width: 560px) { ol.findings li { grid-template-columns: 1fr; gap: 2px; } }
+dl.defs { display: grid; grid-template-columns: minmax(140px, 190px) 1fr; gap: 9px 20px; margin: 0; }
+dl.defs dt { font-weight: 600; }
+dl.defs dd { margin: 0; min-width: 0; }
+@media (max-width: 560px) { dl.defs { grid-template-columns: 1fr; gap: 2px 0; } dl.defs dd { margin-bottom: 8px; } }
+.mono { font-family: var(--font-mono); font-size: .9em; }
+.muted { color: var(--muted); }
+footer { padding-top: 16px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); display: grid; gap: 4px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Union model factory · round 17 · October 2026</div>
+    <h1>RightSize Bench: choosing memory requests from code</h1>
+  </header>
+
+  <div class="abstract">
+    <div class="label">Abstract</div>
+    <p>Every task asks for its memory before it starts. If the request is too small, the kernel kills the task and it must be retried; if it is too large, the cluster pays for memory nobody uses. RightSize Bench measures how well different approaches make that choice. It contains 14,234 runs of generated Flyte task code from 12 workload families, each run executed on the cluster and labelled with the smallest of 17 memory sizes that fits its measured peak. Every approach sees only what a scheduler sees when a task is submitted: the source code, the input files' metadata, and the task's earlier runs. Each is scored on <b>memory regret</b>, the extra memory it reserves over a perfect oracle once killed attempts, retries and a delay penalty are counted.</p>
+    <p>A single static request reserves 256% more memory than the oracle. Gradient-boosted trees bring that to 34%. A Jev-style decision model, Qwen3-4B fine-tuned with a head that scores each request option, reaches 26%, with the most accurate probabilities of any single model. Pooling a 1.7B decision model with the trees reaches 21%, with 1.7% of runs killed on the first attempt. With the same base model and training, scoring the options beats generating the answer as text, and answers 9 to 17 times faster. On two workload families held out of training, even the best approaches still reserve 79% to 91% more than the oracle. A live re-run in 600 real pods found no run that the simulator said would fit and that was actually killed.</p>
+  </div>
+
+  <section>
+    <div class="label">Results</div>
+    <h2>Memory regret by approach</h2>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--rule-c)"></span>rule</span>
+      <span><span class="kind" style="background:var(--tree)"></span>classical ML</span>
+      <span><span class="kind" style="background:var(--warm)"></span>autoregressive LLM</span>
+      <span><span class="kind" style="background:var(--accent)"></span>decision model</span>
+    </div>
+    <div class="figure"><svg id="board" viewBox="0 0 860 460" role="img" aria-label="Memory regret by approach on the test split and on unseen families"></svg>
+      <p class="caption">Bar length is memory regret: extra memory reserved over the oracle to finish every run. Shorter is better; 0% matches the oracle. Solid bars are the test split (2,316 runs of new code from the 10 training families); outlined bars are the two unseen families (2,323 runs). Bars stop at 260%.</p></div>
+    <div class="figure table-wrap"><table id="boardtable"></table>
+      <p class="caption">OOM is the share of runs killed on their first attempt. ECE is calibration error, shown only for approaches that output probabilities. Bold marks the best value in each column. The zero-shot 27B model was scored on a 600-run subset because each answer took over a minute.</p></div>
+  </section>
+
+  <section>
+    <h2>Five findings</h2>
+    <ol class="findings">
+      <li><span class="n">20.8%</span><span><b>The pooled model is the best policy.</b> The trees read input sizes well but cannot read code; the decision model reads code but handles numbers as text. Because both output a probability for each memory size, they combine by a weighted geometric mean (70% trees, chosen on validation). The result beats both members on every column, at the lowest OOM rate in the benchmark.</span></li>
+      <li><span class="n">25.8%</span><span><b>A decision model that reads the code beats tuned trees.</b> On Qwen3-4B, the pointer head reserves 25.8% more than the oracle against 34.0% for the trees, and its probabilities are the most accurate of any single model (Brier 0.265) and well calibrated (ECE 0.004, against 0.039 for the trees). It answers in 256 ms on one T4 GPU without generating any tokens.</span></li>
+      <li><span class="n">33% vs 42%</span><span><b>Scoring options beats writing the answer.</b> The 1.7B decision model and the fine-tuned generator share the base model, adapters, prompt, data and training; only the output differs. The decision model has lower regret (33.2% against 41.6% greedy and 39.1% with 8 samples) and answers in 126 ms against 1.1 s and 2.1 s.</span></li>
+      <li><span class="n">23% at 1%</span><span><b>Calibrated probabilities make OOM risk a setting.</b> Approaches that output probabilities can re-pick each request for a different OOM tolerance without retraining. Held to a 1% first-attempt OOM rate, the pooled model reserves about 23% more than the oracle, the 4B decision model about 30% and the trees about 36%. Picking the single most likely size instead of the lowest expected cost costs the decision models 11 to 23 points.</span></li>
+      <li><span class="n">79–91%</span><span><b>Unseen code is the open problem.</b> On the two held-out families (DuckDB SQL and image arrays), the learned approaches' regret rises 2.5 to 4 times, to between 79% and 113%. The pooled model is still best (79.0%), and the 4B decision model and the trees are level (86.6% and 84.9%).</span></li>
+    </ol>
+    <p class="muted">Live check: 120 runs were re-executed in real pods at the first-attempt request of each of five approaches (600 pods). None of the 550 pods the simulator expected to fit were killed, and re-measured peaks matched their labels within 0.91–1.06× (median 1.00). On those runs the 1.7B decision model requested 57% less memory than the static request, with fewer real OOMs (2.5% against 4.2%).</p>
+  </section>
+
+  <section>
+    <div class="label">Setup</div>
+    <h2>How the benchmark works</h2>
+    <dl class="defs">
+      <dt>Workloads</dt><dd>12 families of task code (pandas, polars, DuckDB, CSV, JSON lines, NumPy, scikit-learn, TF-IDF, PyTorch, image arrays, plain Python). A generator varies the code choices that decide memory, such as streaming versus eager reads, chunk sizes, <span class="mono">.toarray()</span>, dtypes and model size. Each task runs 3 times on inputs scaled 0.25× to 4×, so later runs have a history.</dd>
+      <dt>Labels</dt><dd>Each run's peak memory is read from the kernel (<span class="mono">ru_maxrss</span>) in a fresh process on cluster pods, with library versions pinned. Required memory is (peak + 180 MiB for the Flyte runtime) × 1.05. The label is the smallest of 17 sizes from 256Mi to 64Gi, about 1.4× apart, that covers it.</dd>
+      <dt>Splits</dt><dd>Split by task, so no approach is tested on code it trained on: 8,457 train, 1,138 validation and 2,316 test runs from 10 families, plus 2,323 runs from 2 families held out entirely. Settings are tuned on validation; test and unseen are scored once.</dd>
+      <dt>Approaches</dt><dd><b>Rules:</b> one static request; history maximum times a margin; a per-format power law of input size. <b>Trees:</b> gradient-boosted quantile regression on ~110 numeric features (input bytes, visible schema, 64 code tokens, history). <b>Autoregressive LLMs:</b> a zero-shot 27B model, and Qwen3-1.7B fine-tuned with LoRA to write the answer. <b>Decision models:</b> the same LoRA setup with the language-model output replaced by a head that scores each of the 17 sizes. All LLMs trained on one T4 GPU.</dd>
+    </dl>
+    <h2>Key terms</h2>
+    <dl class="defs">
+      <dt>Oracle</dt><dd>Knows each run's peak in advance and always picks the smallest size that fits. No approach can do better.</dd>
+      <dt>Memory regret</dt><dd>Total GiB-hours an approach reserves to get every run to finish, divided by the oracle's total, minus 1. A killed attempt reserves memory until the point of the peak, the retry doubles the request, and each kill adds one oracle-sized run as a delay penalty. 0% equals the oracle; 100% is twice its memory.</dd>
+      <dt>First-attempt OOM</dt><dd>The share of runs whose first request was too small and were killed for running out of memory.</dd>
+      <dt>Unseen families</dt><dd>The two workload families no approach trained on. They measure whether an approach generalizes to a new kind of code.</dd>
+      <dt>Calibration, ECE</dt><dd>A model is calibrated when its stated probabilities match outcomes. Expected calibration error is the average gap between predicted and observed OOM rates over 10 probability bins. 0 is perfect.</dd>
+      <dt>Expected-cost decoding</dt><dd>Given a probability for each size, choose the size with the lowest expected cost, counting the cost of an OOM and retry. The alternative, argmax, picks the most likely size.</dd>
+    </dl>
+  </section>
+
+  <footer>
+    <div>Full report with methodology, chart reading guides and limits: <a href="https://claude.ai/artifact/BHvwdVkkGvAP8yWyHWo8Xc">RightSize Bench</a>.</div>
+    <div>Source: <span class="mono">resource-tuner-model-factory/resource_tuner/bench/</span> · research log <span class="mono">research_log/2026-10-15-round-17-rightsize-bench.md</span> · demo.hosted.unionai.cloud.</div>
+  </footer>
+</div>
+
+<script>
+const ARMS = {"static":{"test":2.5562,"test_oom":0.0889,"ood":2.3184,"ood_oom":0.152,"ece":-1},"vpa":{"test":1.6552,"test_oom":0.1205,"ood":1.6368,"ood_oom":0.1528,"ece":-1},"size-rule":{"test":1.1872,"test_oom":0.2297,"ood":0.8126,"ood_oom":0.2131,"ece":-1},"gbt":{"test":0.3373,"test_oom":0.0324,"ood":0.9281,"ood_oom":0.1296,"ece":-1},"gbt-dist":{"test":0.3404,"test_oom":0.0246,"ood":0.8494,"ood_oom":0.0977,"ece":0.0388},"zeroshot-27b":{"test":1.545,"test_oom":0.097,"ood":1.926,"ood_oom":0.22,"ece":-1,"subset":true},"sft-greedy":{"test":0.4157,"test_oom":0.0984,"ood":1.0363,"ood_oom":0.2191,"ece":-1},"sft-sampled":{"test":0.3908,"test_oom":0.0216,"ood":0.9145,"ood_oom":0.1201,"ece":0.0138},"jev":{"test":0.5201,"test_oom":0.041,"ood":1.1254,"ood_oom":0.1584,"ece":0.0026},"jev-pointer":{"test":0.332,"test_oom":0.0324,"ood":0.9083,"ood_oom":0.1382,"ece":0.0058},"jev-pointer-4b":{"test":0.2576,"test_oom":0.0298,"ood":0.8661,"ood_oom":0.1235,"ece":0.0035},"ensemble":{"test":0.2084,"test_oom":0.0173,"ood":0.7902,"ood_oom":0.0956,"ece":0.0212}};
+const LABEL = {
+  "static": "static request", "vpa": "history max × margin", "size-rule": "size rule",
+  "gbt": "trees (gbt)", "gbt-dist": "trees, expected cost", "zeroshot-27b": "zero-shot 27B",
+  "sft-greedy": "SFT 1.7B, greedy", "sft-sampled": "SFT 1.7B, 8 samples", "jev": "decision 1.7B, linear",
+  "jev-pointer": "decision 1.7B, pointer", "jev-pointer-4b": "decision 4B, pointer", "ensemble": "trees × decision, pooled"
+};
+const KIND = a => a.startsWith("jev") || a === "ensemble" ? "dec" : a.startsWith("sft") || a.startsWith("zeroshot") ? "llm" : a.startsWith("gbt") ? "tree" : "rule";
+const COLOR = { rule: "var(--rule-c)", tree: "var(--tree)", llm: "var(--warm)", dec: "var(--accent)" };
+const NS = "http://www.w3.org/2000/svg", MONO = "IBM Plex Mono, monospace";
+const pct = x => (x * 100).toFixed(1) + "%";
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+// chart: every approach scored on the full splits (the 27B subset sits in the table only)
+const CHART = ["static", "vpa", "size-rule", "gbt", "gbt-dist", "sft-greedy", "sft-sampled", "jev", "jev-pointer", "jev-pointer-4b", "ensemble"];
+(function () {
+  const svg = document.getElementById("board"), L = 190, R = 56, T = 8, rowH = 39;
+  const max = 2.6, W = 860 - L - R, x = v => L + W * Math.min(v, max) / max;
+  [0, 0.5, 1, 1.5, 2, 2.5].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * CHART.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * CHART.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v * 100) + "%");
+  });
+  CHART.forEach((a, i) => {
+    const d = ARMS[a], y = T + i * rowH, c = COLOR[KIND(a)];
+    el("text", { x: L - 10, y: y + 17, "text-anchor": "end", "font-size": 13, fill: "var(--ink)", "font-weight": a === "ensemble" ? 600 : 400 }, svg, LABEL[a]);
+    el("rect", { x: L, y: y + 5, width: Math.max(1, x(d.test) - L), height: 13, rx: 2, fill: c }, svg);
+    el("rect", { x: L, y: y + 21, width: Math.max(1, x(d.ood) - L), height: 11, rx: 2, fill: "none", stroke: c, "stroke-width": 1.5 }, svg);
+    el("text", { x: x(d.test) + 6, y: y + 16, "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, pct(d.test));
+    el("text", { x: x(d.ood) + 6, y: y + 31, "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, pct(d.ood));
+  });
+})();
+
+// table: best values are taken over full-split approaches only
+(function () {
+  const order = ["static", "vpa", "size-rule", "gbt", "gbt-dist", "zeroshot-27b", "sft-greedy", "sft-sampled", "jev", "jev-pointer", "jev-pointer-4b", "ensemble"];
+  const cols = [["test", "test regret"], ["test_oom", "test OOM"], ["ood", "unseen regret"], ["ood_oom", "unseen OOM"], ["ece", "ECE"]];
+  const best = {};
+  cols.forEach(([k]) => { best[k] = Math.min(...order.filter(a => !ARMS[a].subset).map(a => ARMS[a][k]).filter(v => v >= 0)); });
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  order.forEach(a => {
+    const d = ARMS[a];
+    h += `<tr class="${a === "ensemble" ? "hl" : ""}"><td><span class="kind" style="background:${COLOR[KIND(a)]}"></span>${LABEL[a]}${d.subset ? " <span class=\"muted\">(subset)</span>" : ""}</td>`;
+    cols.forEach(([k]) => {
+      const v = d[k];
+      const s = v < 0 ? "–" : k === "ece" ? v.toFixed(3) : pct(v);
+      h += `<td class="${!d.subset && v === best[k] ? "best" : ""}${d.subset ? " note" : ""}">${s}</td>`;
+    });
+    h += "</tr>";
+  });
+  document.getElementById("boardtable").innerHTML = h + "</tbody>";
+})();
+</script>
+
+</html>

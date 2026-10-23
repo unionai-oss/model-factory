@@ -1,10 +1,96 @@
 # resource-tuner-model-factory
 
-Right-sizing `flyte.Resources` for Flyte tasks — the prototype for the
-**AI Resource Tuning** PRD's RL track.
+Right-sizing `flyte.Resources` for Flyte tasks -- the prototype for the
+**AI Resource Tuning** PRD -- and **RightSize Bench**, the experiment that
+decides which kind of model should do it.
 
-Three arms now decide the request, all scored through the same simulator and
-pricing so their numbers are directly comparable:
+## RightSize Bench
+
+> A task is submitted with some inputs. What should it request? Does reading
+> the code help? Does an LLM help -- and does the *kind* of LLM matter?
+
+The bench answers that on **real, measured workloads**, with every
+contender limited to what a scheduler can actually see:
+
+| | |
+|---|---|
+| **workloads** | 12 families of real task code (pandas, polars, duckdb, numpy, sklearn, TF-IDF, torch, JSON, image arrays, plain Python), each with code-level knobs -- streaming vs eager, column projection, float32 downcasts, `chunksize`, `mmap_mode`, `.toarray()`, dedup-before-join -- that decide how input bytes become resident memory. Each task runs at 3 input sizes, which is also its run history. Two families never appear in training (the OOD split). |
+| **labels** | measured, not modelled: every run executes in a pod and the kernel's `ru_maxrss` is the label. Library versions pinned exactly. |
+| **what an arm sees** | the task source, each input's format metadata (bytes; rows + schema for parquet; shape + dtype for npy; only a header for CSV/JSONL), and the task's own run history. Nothing else -- pinned by `test_features_cannot_see_the_answer`. |
+| **score** | memory GiB-hours reserved to get **every** run to SUCCEEDED, OOM-killed attempts and retries at 2x included (plus one run of delay per OOM), relative to an oracle that asks for the cheapest cell that fits. Dollars under node-packed and Fargate pricing are reported alongside. |
+
+The contenders, each with one risk knob tuned on the validation split
+against the same objective:
+
+| arm | kind | decides by |
+|---|---|---|
+| `static` | status quo | one safe request for everything |
+| `vpa` | simple algorithm | max peak this task has been seen to use x margin |
+| `size-rule` | simple algorithm | power law in input bytes per format; rescales history by size |
+| `gbt` / `gbt-dist` | classical ML | quantile GBTs over every scheduler-visible feature; `-dist` reads 19 quantiles as a distribution and decodes by expected cost |
+| `zeroshot-27b` / `zeroshot` | hosted LLM, no training | the `qwen38-27b` (vLLM) and `qwen35-397b` llm-service apps, prompted |
+| `sft` | **autoregressive** LLM | Qwen3-1.7B + LoRA writes `{"memory": "3Gi", "cpu": 1}`; greedy+margin, or 8 samples read as a distribution |
+| `jev` / `jev-pointer` / `jev-num` | **Jev-style decision model** | the same torso + LoRA with the LM head replaced by a decision head that scores every grid cell in one forward pass (a linear readout; a Strands-Decider-style pointer over the option tokens; or the readout plus the GBT's numeric features), temperature-calibrated, decoded by expected cost |
+
+`sft` and `jev*` share torso, LoRA, prompt, data and training steps: the
+output head is the only variable.
+
+```bash
+CFG=.flyte/config.yaml
+uv run flyte --config $CFG deploy bench.py bench_env
+uv run flyte --config $CFG factory deploy bench_factory.py
+uv run flyte --config $CFG factory materialize rightsize-bench rt-bench-leaderboard \
+    --partition release=v1 \
+    --partition arm=static,vpa,size-rule,gbt,gbt-dist,zeroshot-27b,sft,jev,jev-pointer,jev-num --wait
+# then re-run a stratified sample in real pods under each arm's request
+uv run flyte --config $CFG factory materialize rightsize-bench rt-bench-live --partition release=v1 \
+    --partition arm=static,size-rule,gbt,gbt-dist,sft,jev --wait
+```
+
+```
+rt-bench-runs [release] ─► rt-bench-corpus [release] ─┬─► rt-bench-arm [release, arm] ─► rt-bench-scorecard ─┐
+  generate_bench_runs        measure_bench:           │     fit_bench_arm: CPU / hosted / A10G               │ .all("arm")
+                             thousands of runs, in     │                                                      ▼
+                             real pods                 └──────────────────────────────► rt-bench-live   rt-bench-leaderboard
+```
+
+### Results (v2: 14,234 measured runs)
+
+Memory regret = GiB-hours reserved to get every run to SUCCEEDED (OOM retries
+included) over the oracle's, minus 1. Unseen = two workload families no arm
+trained on. Full tables, v1, live validation: research_log/round-17; page:
+`../benchmarks/rightsize-bench.html`.
+
+| arm | test | OOM | unseen families | per decision |
+|---|---|---|---|---|
+| static safe request | 255.6% | 8.9% | 231.8% | -- |
+| size rule (power law in input bytes) | 118.7% | 23.0% | 81.3% | -- |
+| quantile GBT, decoded by expected cost | 34.0% | 2.5% | 84.9% | ~1 ms CPU |
+| zero-shot 27B LLM (hosted) | 154.5% | 9.7% | 192.6% | ~630 tokens, ~93 s |
+| SFT 1.7B, autoregressive (8 samples) | 39.1% | 2.2% | 91.5% | 2,087 ms on a T4 |
+| Jev-style decision model, 1.7B | 33.2% | 3.2% | 90.8% | 126 ms, 0 tokens |
+| **Jev-style decision model, 4B** | **25.8%** | 3.0% | 86.6% | 256 ms, 0 tokens |
+| **GBT x decision model, pooled** | **20.8%** | **1.7%** | **79.0%** | both |
+
+- The 4B decision model, reading only the prompt, wastes 24% less than the
+  tuned GBT and has the lowest Brier score of any single model (0.265; ECE 0.004).
+- Same torso, data and steps: the decision head beats generating the answer,
+  at 1/9-1/17 the latency.
+- Decoding by expected cost is 11-23 points better than argmax; the risk knob
+  needs no retraining.
+- Live: 600 real pods under the arms' requests; the simulator was never
+  optimistic (0 of 550 "fits" OOMed); labels reproduce to 0.91-1.06x.
+- Open: unseen workload families (79-91% for the best arms, up to 113% for
+  other learned arms).
+
+Code: `resource_tuner/bench/` (module docstrings explain each piece);
+results and every run link: [research_log/round-17](research_log/2026-10-15-round-17-rightsize-bench.md).
+
+## The earlier arms (rounds 1-16)
+
+Three arms preceded the bench, all scored through an analytic simulator
+(labels from footprint formulas, not measurement) -- which is why the bench
+exists:
 
 | arm | how it decides | trained by | code |
 |---|---|---|---|
@@ -12,7 +98,7 @@ pricing so their numbers are directly comparable:
 | **GBT baseline** | regresses a high quantile per resource, then buckets | quantile loss | `training/ml_baseline.py` |
 | **decision model** | **chooses a grid cell directly** (3 heads: memory / CPU / GPU) | cost-weighted cross-entropy | `training/decision_model.py` |
 
-The decision arm is the newest and is wired as a **Union factory** (see
+The decision arm is wired as a **Union factory** (see
 [Decision arm](#decision-arm-a-factory-over-the-action-grid) below); the LLM
 arm keeps its OnArtifact trigger chain unchanged.
 
