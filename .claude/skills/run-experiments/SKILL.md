@@ -16,8 +16,8 @@ Any experimentation against a factory — cluster runs, training, evals,
 synthetic-data generation, trigger/dark-mode exercises — entails updating
 the research log in **the corresponding factory directory**:
 
-- `resource-tuner-model-factory/research_log/`
-- `basic-model-factory/research_log/`
+- `model-factory-resource-tuner/research_log/`
+- `model-factory-basic/research_log/`
 - (new factories: create `<factory>/research_log/` with a README copied
   from an existing one before the first experiment lands)
 

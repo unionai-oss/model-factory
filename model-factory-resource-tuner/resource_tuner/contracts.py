@@ -1,0 +1,117 @@
+"""Artifact contracts for the resource-tuner factory.
+
+Same rule as model-factory-basic: artifacts are the interface between
+stations; names and schemas here are load-bearing.
+"""
+
+from __future__ import annotations
+
+# ── artifact registry ───────────────────────────────────────────────────
+ARTIFACT_TASK_CORPUS = "tuning-task-corpus"
+ARTIFACT_SYNTHETIC = "synthetic-task-corpus"  # oracle-verified teacher tasks
+ARTIFACT_TUNER_CHECKPOINT = "tuner-checkpoint"
+ARTIFACT_EVAL_REPORT = "tuner-eval-report"
+ARTIFACT_PROMOTED = "promoted-tuner"
+# A/B attribution: tuned proposals vs a hard-coded prior on real pods —
+# the PRD's auditable savings record, prototype-sized. JSON File.
+ARTIFACT_AB_REPORT = "tuning-ab-report"
+AB_REPORT_KEYS = [
+    "n_tasks",
+    "prior",
+    "prior_oom_rate",
+    "tuned_oom_rate",
+    "prior_fit_rate",
+    "tuned_fit_rate",
+    "prior_median_overprovision_pct",
+    "tuned_median_overprovision_pct",
+    "episodes",
+]
+
+# tuning-task-corpus: parquet File with exactly these columns.
+#
+# The docs are DATA, not comments, because the artifact card renders this
+# schema table into every published corpus version — a consumer reading
+# the card in the console gets the same column meanings the code enforces,
+# and a column added without a description shows up as undocumented
+# instead of unexplained.
+CORPUS_COLUMN_DOCS: dict[str, str] = {
+    "task_id": "stable id for the workload within its corpus version",
+    "family": "data_engineering | data_science | ml_training | batch_inference | etl",
+    "source_code": "the rendered flyte task the policy sees",
+    "harness_code": "the same workload as a plain function, for episode pods",
+    "input_profile": "human-readable input description shown to the policy",
+    "params_json": "sampled template params (ground truth generator state); "
+    "archetype rows also carry `label_source` = measured | fitted",
+    "generator": 'provenance: "template" or the teacher model that wrote it',
+    "prior_json": 'author-declared prior (JSON kwargs; "" = cold start)',
+    "history_json": 'past runs [{resources, peak, ok}]; "" = none',
+    "true_peak_memory_mib": "LABEL: peak RSS the workload actually reaches "
+    "(analytic for templates, pod-measured for teacher rows)",
+    "true_cpu_cores": "LABEL: sustained parallel CPU demand",
+    "true_gpu_mem_mib": "LABEL: VRAM the task needs; 0 = CPU task",
+    "duration_s": "how long the workload holds its footprint",
+    "split": '"train" | "heldout" — heldout is the eval split, never train on it',
+}
+CORPUS_COLUMNS = list(CORPUS_COLUMN_DOCS)
+
+# tuner-checkpoint-intermediate: same Dir shape as tuner-checkpoint, but
+# published mid-training by publish_intermediate_checkpoint. A separate
+# artifact name on purpose: the eval-on-new-checkpoint trigger binds to
+# tuner-checkpoint, so intermediates never fire dark evals.
+ARTIFACT_TUNER_CHECKPOINT_INTERMEDIATE = "tuner-checkpoint-intermediate"
+
+# ml-baseline-model: Dir with ml_baseline.joblib + manifest.json — the
+# fitted quantile-GBT estimator, versioned so the tune service can serve
+# it as a fallback / A/B arm against the LLM checkpoint.
+ARTIFACT_ML_BASELINE = "ml-baseline-model"
+
+# tuner-checkpoint: Dir with a PEFT adapter + tokenizer + manifest.json.
+CHECKPOINT_MANIFEST_KEYS = ["base_model", "profile", "reward_stage", "max_steps", "final_metrics"]
+
+# tuner-eval-report: JSON File with at least these keys.
+EVAL_REPORT_KEYS = [
+    "base_model",
+    "reward_stage",  # which reward trained the checkpoint (the arm key)
+    "n_contexts",
+    "schema_validity",  # % proposals that parse + bounds-check
+    "success_rate",  # % episodes where the task fit in the proposal
+    "median_overprovision_pct",  # waste on successful episodes
+    "baseline_success_rate",  # rule-based baseline on the same contexts
+    "baseline_median_overprovision_pct",
+    "policy_cost_per_task_hr",  # the business metric ($, pricing.py)
+    "baseline_cost_per_task_hr",
+    "dollars_saved_per_1k_task_hrs",
+    "cluster_episodes",  # how many episodes ran on the real cluster
+    "auto_gate_passed",
+]
+
+
+def publish(
+    obj,
+    name: str,
+    description: str = "",
+    kind: str = "data",
+    attrs: dict | None = None,
+    card=None,
+):
+    """Publish an offloaded asset as a versioned artifact (team hand-off).
+
+    `card` is a rendered `flyte.artifacts.Card` (see `shared/cards.py`) —
+    the contents documentation that travels WITH the artifact instead of
+    being re-derived by every consumer that downloads it. `attrs` are the
+    same facts as flat strings, for filtering artifacts without opening
+    the card. Both are optional: a publish never fails for lack of
+    documentation.
+    """
+    import flyte.artifacts as artifacts
+
+    return artifacts.new(
+        obj,
+        artifacts.Metadata(
+            name=name,
+            description=description,
+            kind=kind,
+            attrs=attrs or None,
+            card=card,
+        ),
+    )

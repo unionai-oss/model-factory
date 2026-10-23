@@ -1,7 +1,7 @@
 # model-factory
 
-Monorepo of model-factory subprojects (`basic-model-factory/`,
-`decision-model-factory/`, `resource-tuner-model-factory/`), each
+Monorepo of model-factory subprojects (`model-factory-basic/`,
+`model-factory-decision/`, `model-factory-resource-tuner/`), each
 self-contained (own `pyproject.toml`, `uv.lock`, `.flyte/config.yaml`, tests,
 docs). Run commands from inside the subproject directory. Cluster:
 demo.hosted.unionai.cloud.
@@ -32,7 +32,7 @@ cannot satisfy).
 - **An artifact's partition schema is immutable** once its first version is
   published. Declaring new dimensions on a name that already exists
   unpartitioned is rejected at `factory deploy`; publish under a new name.
-  This is why basic-model-factory uses `mf-*` and the resource-tuner's
+  This is why model-factory-basic uses `mf-*` and the resource-tuner's
   decision arm uses `rt-*`.
 - **A partition value injected into a same-named task parameter is typed.** A
   `factory.Daily` dimension arrives as a `datetime`, not a `str`.
@@ -68,7 +68,7 @@ cannot satisfy).
   finishes in seconds (9.1s for a 6-station graph), so it is cheap to leave
   armed -- **but only when it re-targets an existing partition**: a cron on a
   `Daily`-partitioned factory builds a *new* day every time it fires, i.e. a
-  full rebuild (decision-model-factory round 2 was retraining a GPU suite
+  full rebuild (model-factory-decision round 2 was retraining a GPU suite
   nightly). `factory.on` has no `auto_activate`; the off switch is not
   declaring the trigger. One `factory.on(cron, a, b)` makes one trigger per
   target and each re-runs shared upstream work: target only the endpoint. `factory.on(<source>)` needs a `factory.source` — an artifact
@@ -85,7 +85,7 @@ cannot satisfy).
 - Helper calls inside async flyte tasks only fail on the cluster, after
   everything upstream has already run. Pin cross-module call shapes with a
   local test instead (see
-  `resource-tuner-model-factory/tests/test_decision_model.py`).
+  `model-factory-resource-tuner/tests/test_decision_model.py`).
 
 ## Caching and reuse (learned across all three factories, 2026-10)
 
