@@ -117,9 +117,9 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     <h2>Summary</h2>
     <ul class="tldr">
       <li><b>Combining a tree model with a small LLM-based decision model is the best policy we found.</b> On the main test set it reserves 20.8% more memory than a perfect oracle would, with 1.7% of tasks killed for running out of memory on the first try. A single static request reserves 255.6% more.</li>
-      <li><b>A Jev-style decision model reads the task's code and beats a tuned tree model.</b> Built on Qwen3-4B, it reserves 25.8% more than the oracle, against 34.0% for gradient-boosted trees. It also produces the best-calibrated probabilities in the benchmark.</li>
+      <li><b>A Jev-style decision model reads the task's code and beats a tuned tree model.</b> Built on Qwen3-4B, it reserves 25.8% more than the oracle, against 34.0% for gradient-boosted trees. Its probabilities are also the most accurate of any single model (lowest Brier score).</li>
       <li><b>Choosing from a list beats writing the answer.</b> On the same base model, data and training, a head that scores every request option at once beats a model that generates the request as text, and it answers 9 to 17 times faster.</li>
-      <li><b>Unseen code is still hard for everyone.</b> On two workload families no model trained on, every approach reserves 79% to 91% more than the oracle.</li>
+      <li><b>Unseen code is still hard for everyone.</b> On two workload families no model trained on, even the best approaches reserve 79% to 91% more than the oracle.</li>
     </ul>
   </section>
 
@@ -364,13 +364,13 @@ rt-bench-live [release]          live_validate          arms' requests → real 
     </div>
     <div class="cols">
       <div class="stat"><span class="n">11–23 pts</span><span class="l">worse memory regret on test when the same decision models pick their single most likely cell (argmax) instead of the lowest expected cost, with 3 to 4 times the OOMs</span></div>
-      <div class="stat"><span class="n">0.004</span><span class="l">expected calibration error of the 4B pointer head's OOM probability, the best in the benchmark (trees: 0.039)</span></div>
+      <div class="stat"><span class="n">0.004</span><span class="l">expected calibration error of the 4B pointer head's OOM probability. Every decision model is under 0.006, against 0.039 for the trees.</span></div>
     </div>
   </section>
 
   <section>
     <h2>The decision model scales</h2>
-    <p>The same pointer head on Qwen3-4B, trained on one T4, is the best single model in the benchmark. On test it reserves 25.8% more than the oracle, against 34.0% for the trees and 33.2% for the 1.7B decision model, and it has the best calibration. It answers in 256 ms without generating any tokens. On unseen families it is level with the trees (86.6% against 84.9%). On v1, with half the training data, the 4B model had beaten the trees on unseen families by 6.7 points; with more in-distribution data it became more confident on familiar code, not more accurate on new code.</p>
+    <p>The same pointer head on Qwen3-4B, trained on one T4, is the best single model in the benchmark. On test it reserves 25.8% more than the oracle, against 34.0% for the trees and 33.2% for the 1.7B decision model, and it has the lowest Brier score of any single model (0.265). It answers in 256 ms without generating any tokens. On unseen families it is level with the trees (86.6% against 84.9%). On v1, with half the training data, the 4B model had beaten the trees on unseen families by 6.7 points; with more in-distribution data it became more confident on familiar code, not more accurate on new code.</p>
   </section>
 
   <section>

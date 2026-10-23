@@ -131,10 +131,11 @@ val 1,138 / test 2,316 / OOD 2,323 -- twice v1's training data.
   126 ms per decision vs 1,135 / 2,087 ms on a T4 (9-17x), with zero
   generated tokens vs ~14.
 - **The 4B decision model is the best single model in the bench:** 25.8%
-  in-distribution, 24% less waste than the trees (34.0%), and the best
-  calibrated (Brier 0.265, ECE 0.004). On unseen families it is level with the
+  in-distribution, 24% less waste than the trees (34.0%), and the lowest
+  Brier score of any single model (0.265; ECE 0.004, behind the linear head's
+  0.0026). On unseen families it is level with the
   trees (86.6% vs 84.9%). Unseen families stay the open problem for every arm
-  (79-91%).
+  (79-91% for the best arms, up to 113% for other learned arms).
 - **Pooled, v2 gets the bench's best number: 20.8% memory regret at a 1.7%
   first-attempt OOM rate** -- 37% less waste than either member alone -- and
   79.0% on unseen families.
@@ -345,8 +346,8 @@ to answer at all -- versus zero generated tokens for a decision head.
    (34%).
 2. A Jev-style decision model -- an LLM torso with its LM head replaced by a
    pointer head over the request grid -- reads the code and beats that bar
-   in-distribution (1.7B: 33.2%; 4B: **25.8%**), is the best-calibrated model
-   in the bench, and beats the autoregressive version of itself on quality at
+   in-distribution (1.7B: 33.2%; 4B: **25.8%**), has the lowest Brier score of
+   any single model, and beats the autoregressive version of itself on quality at
    1/9-1/17 the serving cost.
 3. Calibrated probabilities are the product: decoding by expected cost is
    11-23 points better than argmax, and the same predictions re-decode under
@@ -354,7 +355,7 @@ to answer at all -- versus zero generated tokens for a decision head.
 4. Pooling the trees and the decision model is the best policy found:
    **20.8% memory regret at a 1.7% first-attempt OOM rate** on v2.
 5. The simulator was never optimistic in 600 live pods.
-6. Still open: unseen workload families (79-91% for every arm); a decision
+6. Still open: unseen workload families (79-91% for the best arms); a decision
    model fed more in-distribution data became more confident there, not more
    correct. Next: rotate held-out families into validation for calibration
    under shift, ensembles of decision heads, and live validation on v2.

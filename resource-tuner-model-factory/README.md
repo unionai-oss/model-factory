@@ -73,14 +73,15 @@ trained on. Full tables, v1, live validation: research_log/round-17; page:
 | **GBT x decision model, pooled** | **20.8%** | **1.7%** | **79.0%** | both |
 
 - The 4B decision model, reading only the prompt, wastes 24% less than the
-  tuned GBT and is the best-calibrated model (ECE 0.004).
+  tuned GBT and has the lowest Brier score of any single model (0.265; ECE 0.004).
 - Same torso, data and steps: the decision head beats generating the answer,
   at 1/9-1/17 the latency.
 - Decoding by expected cost is 11-23 points better than argmax; the risk knob
   needs no retraining.
 - Live: 600 real pods under the arms' requests; the simulator was never
   optimistic (0 of 550 "fits" OOMed); labels reproduce to 0.91-1.06x.
-- Open: unseen workload families (79-91% for every arm).
+- Open: unseen workload families (79-91% for the best arms, up to 113% for
+  other learned arms).
 
 Code: `resource_tuner/bench/` (module docstrings explain each piece);
 results and every run link: [research_log/round-17](research_log/2026-10-15-round-17-rightsize-bench.md).
