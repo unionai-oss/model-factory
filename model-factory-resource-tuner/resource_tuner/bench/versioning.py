@@ -18,20 +18,33 @@ import pathlib
 
 import flyte
 
-_HERE = pathlib.Path(__file__).parent
+_PKG = pathlib.Path(__file__).parent.parent  # resource_tuner/
 
 
 def _hash(*names: str) -> str:
+    """Names are modules: "workloads" (this package) or "bench_cpu/workloads"."""
     h = hashlib.sha256()
     for n in names:
-        h.update((_HERE / f"{n}.py").read_bytes())
+        h.update((_PKG / (n if "/" in n else f"bench/{n}")).with_suffix(".py").read_bytes())
     return h.hexdigest()[:16]
 
+
+#: What the shared LLM arms depend on, for every bench (train_llm_arm serves all three).
+_SHARED_LLM = ("llm_arms", "gpu_stations", "spec", "mem_spec", "registry", "common",
+               "bench_cpu/spec", "bench_cpu/features", "bench_cpu/scoring", "bench_cpu/grid",
+               "bench_gpu/spec", "bench_gpu/features", "bench_gpu/scoring", "bench_gpu/grid")
 
 #: What a corpus is made of: the code, how it is measured, how rows are labelled.
 CORPUS_VERSION = _hash("workloads", "measure", "dataset", "grid")
 #: What an arm's predictions and its scorecard depend on.
-ARMS_VERSION = _hash("arms", "llm_arms", "gpu_stations", "features", "prompting", "grid", "scoring", "dataset")
+ARMS_VERSION = _hash("arms", "features", "prompting", "grid", "scoring", "dataset", *_SHARED_LLM)
+
+CPU_CORPUS_VERSION = _hash("workloads", "measure", "bench_cpu/workloads", "bench_cpu/measure",
+                           "bench_cpu/dataset", "bench_cpu/grid")
+CPU_ARMS_VERSION = _hash("bench_cpu/arms", "bench_cpu/dataset", "bench_cpu/stations", "arms", *_SHARED_LLM)
+GPU_CORPUS_VERSION = _hash("workloads", "measure", "bench_cpu/measure", "bench_gpu/workloads",
+                           "bench_gpu/measure", "bench_gpu/dataset", "bench_gpu/grid")
+GPU_ARMS_VERSION = _hash("bench_gpu/arms", "bench_gpu/dataset", "bench_gpu/stations", "arms", *_SHARED_LLM)
 
 
 def corpus_cache() -> flyte.Cache:
@@ -40,3 +53,19 @@ def corpus_cache() -> flyte.Cache:
 
 def arms_cache() -> flyte.Cache:
     return flyte.Cache(behavior="override", version_override=f"arms-{ARMS_VERSION}")
+
+
+def cpu_corpus_cache() -> flyte.Cache:
+    return flyte.Cache(behavior="override", version_override=f"cpu-corpus-{CPU_CORPUS_VERSION}")
+
+
+def cpu_arms_cache() -> flyte.Cache:
+    return flyte.Cache(behavior="override", version_override=f"cpu-arms-{CPU_ARMS_VERSION}")
+
+
+def gpu_corpus_cache() -> flyte.Cache:
+    return flyte.Cache(behavior="override", version_override=f"gpu-corpus-{GPU_CORPUS_VERSION}")
+
+
+def gpu_arms_cache() -> flyte.Cache:
+    return flyte.Cache(behavior="override", version_override=f"gpu-arms-{GPU_ARMS_VERSION}")

@@ -38,9 +38,8 @@ import numpy as np
 # Module top, not inside zeroshot_predict: the code bundler only ships
 # statically-imported modules (pilot-board-3: "cannot import name 'llm_client'").
 from ..shared import llm_client
-from . import features, grid, prompting, scoring
-
-N_MEM, N_CPU = scoring.N_MEM, scoring.N_CPU
+from .registry import get_spec
+from .spec import BenchSpec
 
 
 @dataclass
@@ -60,6 +59,7 @@ class TrainConfig:
     head: str = "classify"  # decision head: "classify", "pointer" or "classify+num"
     max_train_rows: int = 0  # 0 = all
     seed: int = 0
+    bench: str = "mem"  # which RightSize bench's decisions (registry.SPECS)
 
 
 def _device() -> str:
@@ -107,8 +107,9 @@ LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", 
 # ── tokenization ────────────────────────────────────────────────────────
 
 
-def _prompt_ids(tok, row: dict, max_len: int) -> list[int]:
-    text = tok.apply_chat_template(prompting.messages(row), tokenize=False, add_generation_prompt=True,
+def _prompt_ids(tok, row: dict, max_len: int, spec: BenchSpec | None = None) -> list[int]:
+    spec = spec or get_spec()
+    text = tok.apply_chat_template(spec.messages(row), tokenize=False, add_generation_prompt=True,
                                    enable_thinking=False)
     ids = tok(text, add_special_tokens=False)["input_ids"]
     return ids[-max_len:]  # keep the end: the options and the answer slot
@@ -184,11 +185,12 @@ def _load(cfg: TrainConfig, causal: bool):
 # at a FIXED offset from the end: `option_offsets` finds them once.
 
 
-def option_offsets(tok) -> tuple[list[int], list[int]]:
-    """Offsets from the last prompt token to each memory / cpu option's last token."""
+def option_offsets(tok, spec: BenchSpec | None = None) -> tuple[list[int], list[int]]:
+    """Offsets from the last prompt token to each option's last token, per decision."""
+    spec = spec or get_spec()
     probe = {"task_code": "x = 1", "inputs_desc": "x: npy, 1 KiB, shape=(1,), dtype=uint8",
              "history_json": "[]"}
-    text = tok.apply_chat_template(prompting.messages(probe), tokenize=False, add_generation_prompt=True,
+    text = tok.apply_chat_template(spec.messages(probe), tokenize=False, add_generation_prompt=True,
                                    enable_thinking=False)
     enc = tok(text, add_special_tokens=False, return_offsets_mapping=True)
     spans = enc["offset_mapping"]
@@ -209,13 +211,14 @@ def option_offsets(tok) -> tuple[list[int], list[int]]:
             out.append(n - 1 - last_token_of(pos))
         return out
 
-    mem = offsets("memory: ", [grid.format_memory(m) for m in grid.MEMORY_GRID_MIB])
-    cpu = offsets("cpu: ", [f"{c:g}" for c in grid.CPU_GRID])
-    return mem, cpu
+    return offsets(f"{spec.a.key}: ", list(spec.a.options)), offsets(f"{spec.b.key}: ", list(spec.b.options))
 
 
-def _head_module(hidden: int, kind: str = "classify", offsets=None, num_stats=None):
+def _head_module(hidden: int, kind: str = "classify", offsets=None, num_stats=None, n_a: int = 17, n_b: int = 7):
+    """`n_a` / `n_b`: candidates in the primary / secondary decision."""
     import torch
+
+    N_MEM, N_CPU = n_a, n_b  # the readouts' widths (named for the memory bench)
 
     class Classify(torch.nn.Module):
         """LayerNorm + two linear readouts over the answer-slot hidden state."""
@@ -286,10 +289,11 @@ def _head_module(hidden: int, kind: str = "classify", offsets=None, num_stats=No
     return Classify()
 
 
-def numeric_matrix(rows: list[dict]) -> np.ndarray:
+def numeric_matrix(rows: list[dict], spec: BenchSpec | None = None) -> np.ndarray:
     """The GBT arm's feature vector for each row (scheduler-visible only)."""
-    names = features.feature_names()
-    return np.array([[features.row_features(r).get(n, 0.0) for n in names] for r in rows], dtype=np.float32)
+    spec = spec or get_spec()
+    names = spec.feature_names()
+    return np.array([[spec.row_features(r).get(n, 0.0) for n in names] for r in rows], dtype=np.float32)
 
 
 def _answer_states(model, ids, mask):
@@ -301,14 +305,15 @@ def _answer_states(model, ids, mask):
 def train_jev(train: list[dict], val: list[dict], cfg: TrainConfig, log=print):
     import torch
 
+    spec = get_spec(cfg.bench)
     torch.manual_seed(cfg.seed)
     tok, model = _load(cfg, causal=False)
-    offsets = option_offsets(tok) if cfg.head == "pointer" else None
-    num = numeric_matrix(train)
+    offsets = option_offsets(tok, spec) if cfg.head == "pointer" else None
+    num = numeric_matrix(train, spec)
     stats = (num.mean(0).tolist(), (num.std(0) + 1e-3).tolist())
-    head = _head_module(model.config.hidden_size, cfg.head, offsets, stats).to(_device())
-    items = [(_prompt_ids(tok, r, cfg.max_len), r["label_mem_idx"], r["label_cpu_idx"], num[i])
-             for i, r in enumerate(train)]
+    head = _head_module(model.config.hidden_size, cfg.head, offsets, stats,
+                        len(spec.a.options), len(spec.b.options)).to(_device())
+    items = [(_prompt_ids(tok, r, cfg.max_len, spec), *spec.labels(r), num[i]) for i, r in enumerate(train)]
     params = [{"params": [p for p in model.parameters() if p.requires_grad], "lr": cfg.lr_lora},
               {"params": head.parameters(), "lr": cfg.lr_head}]
     opt = torch.optim.AdamW(params, weight_decay=0.0)
@@ -348,10 +353,11 @@ def train_jev(train: list[dict], val: list[dict], cfg: TrainConfig, log=print):
 def jev_logits(tok, model, head, rows: list[dict], cfg: TrainConfig, batch_size: int = 16):
     import torch
 
-    ids_all = [_prompt_ids(tok, r, cfg.max_len) for r in rows]
-    num = numeric_matrix(rows)
-    mem = np.zeros((len(rows), N_MEM), dtype=np.float32)
-    cpu = np.zeros((len(rows), N_CPU), dtype=np.float32)
+    spec = get_spec(cfg.bench)
+    ids_all = [_prompt_ids(tok, r, cfg.max_len, spec) for r in rows]
+    num = numeric_matrix(rows, spec)
+    mem = np.zeros((len(rows), len(spec.a.options)), dtype=np.float32)
+    cpu = np.zeros((len(rows), len(spec.b.options)), dtype=np.float32)
     order = sorted(range(len(rows)), key=lambda k: len(ids_all[k]))
     with torch.no_grad():
         for s in range(0, len(order), batch_size):
@@ -388,13 +394,14 @@ def softmax(z: np.ndarray) -> np.ndarray:
 def train_sft(train: list[dict], cfg: TrainConfig, log=print):
     import torch
 
+    spec = get_spec(cfg.bench)
     torch.manual_seed(cfg.seed)
     tok, model = _load(cfg, causal=True)
     end = tok.convert_tokens_to_ids("<|im_end|>")
     items = []
     for r in train:
-        p = _prompt_ids(tok, r, cfg.max_len - 32)
-        t = tok(prompting.target_text(r["label_mem_idx"], r["label_cpu_idx"]), add_special_tokens=False)["input_ids"] + [end]
+        p = _prompt_ids(tok, r, cfg.max_len - 32, spec)
+        t = tok(spec.target(*spec.labels(r)), add_special_tokens=False)["input_ids"] + [end]
         items.append((p, t))
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=cfg.lr_lora, weight_decay=0.0)
@@ -443,7 +450,8 @@ def sft_generate(tok, model, rows: list[dict], cfg: TrainConfig, n: int = 1, bat
                  temperature: float = 1.0) -> list[list[str]]:
     import torch
 
-    ids_all = [_prompt_ids(tok, r, cfg.max_len - 32) for r in rows]
+    spec = get_spec(cfg.bench)
+    ids_all = [_prompt_ids(tok, r, cfg.max_len - 32, spec) for r in rows]
     outs: list[list[str]] = [[] for _ in rows]
     order = sorted(range(len(rows)), key=lambda k: len(ids_all[k]))
     tok.padding_side = "left"
@@ -461,16 +469,17 @@ def sft_generate(tok, model, rows: list[dict], cfg: TrainConfig, n: int = 1, bat
     return outs
 
 
-def samples_to_probs(texts: list[str], smoothing: float = 0.02) -> tuple[np.ndarray, int]:
-    """N sampled answers -> (P(cell), modal cpu cell)."""
-    counts = np.full(N_MEM, smoothing)
+def samples_to_probs(texts: list[str], smoothing: float = 0.02, spec: BenchSpec | None = None) -> tuple[np.ndarray, int]:
+    """N sampled answers -> (P(primary cell), modal secondary cell)."""
+    spec = spec or get_spec()
+    counts = np.full(len(spec.a.options), smoothing)
     cpus = Counter()
     for t in texts:
-        a = prompting.parse_answer(t)
+        a = spec.parse(t)
         if a:
             counts[a[0]] += 1
             cpus[a[1]] += 1
-    cpu = cpus.most_common(1)[0][0] if cpus else grid.cpu_index_covering(1)
+    cpu = cpus.most_common(1)[0][0] if cpus else spec.b.default_idx
     return counts / counts.sum(), cpu
 
 
@@ -493,9 +502,10 @@ def measure_latency(fn, rows: list[dict], n: int = 32) -> dict:
 
 
 def zeroshot_predict(rows: list[dict], teacher: str = "qwen35-397b", concurrency: int = 16, log=print,
-                     max_tokens: int = 1024) -> tuple[dict, dict]:
+                     max_tokens: int = 1024, spec: BenchSpec | None = None) -> tuple[dict, dict]:
     """Ask a hosted model. Unparseable answers fall back to the grid's
     middle -- recorded as a parse failure, never silently."""
+    spec = spec or get_spec()
     url = llm_client.wait_until_ready(llm_client.resolve_teacher_candidates(teacher), deadline_s=1800)
     model = llm_client.served_model(url)
     stats = {"teacher": teacher, "model": model, "parse_failures": 0, "errors": 0, "latency_ms": [],
@@ -509,7 +519,7 @@ def zeroshot_predict(rows: list[dict], teacher: str = "qwen35-397b", concurrency
         t0 = time.perf_counter()
         usage: dict = {}
         try:
-            text = llm_client.chat(url, prompting.messages(r), max_tokens=max_tokens, temperature=0.0,
+            text = llm_client.chat(url, spec.messages(r), max_tokens=max_tokens, temperature=0.0,
                                    timeout=600, model=model, usage=usage)
         except Exception as e:  # noqa: BLE001
             return r["run_id"], None, f"{type(e).__name__}: {e}", 0.0, usage
@@ -518,7 +528,7 @@ def zeroshot_predict(rows: list[dict], teacher: str = "qwen35-397b", concurrency
     preds = {}
     with ThreadPoolExecutor(concurrency) as pool:
         for i, (rid, text, err, ms, usage) in enumerate(pool.map(one, rows)):
-            ans = prompting.parse_answer(text) if text else None
+            ans = spec.parse(text) if text else None
             if usage:
                 stats["completion_tokens"].append(usage.get("completion_tokens", 0))
                 stats["prompt_tokens"].append(usage.get("prompt_tokens", 0))
@@ -528,8 +538,8 @@ def zeroshot_predict(rows: list[dict], teacher: str = "qwen35-397b", concurrency
                 stats["parse_failures"] += 1
             else:
                 stats["latency_ms"].append(ms)
-            m, c = ans or (grid.mem_index_covering(4096), grid.cpu_index_covering(1))
-            preds[rid] = {"mem_idx": m, "cpu_idx": c, "raw": (text or err)[-200:]}
+            m, c = ans or (spec.a.default_idx, spec.b.default_idx)
+            preds[rid] = spec.pred(m, c, raw=(text or err)[-200:])
             if i % 50 == 0:
                 # flush: this runs in a worker thread and stdout is block-buffered
                 # in a pod -- an unflushed progress line never reaches the logs
@@ -548,9 +558,11 @@ def config_dict(cfg: TrainConfig) -> dict:
     return asdict(cfg)
 
 
-def shift(preds: dict, k: int) -> dict:
-    """Greedy predictions bumped up k memory cells -- a generative arm's margin knob."""
-    return {rid: {**p, "mem_idx": min(N_MEM - 1, p["mem_idx"] + k)} for rid, p in preds.items()}
+def shift(preds: dict, k: int, spec: BenchSpec | None = None) -> dict:
+    """Greedy predictions bumped up k primary cells -- a generative arm's margin knob."""
+    spec = spec or get_spec()
+    key, top = spec.a.pred_key, len(spec.a.options) - 1
+    return {rid: {**p, key: max(0, min(top, p[key] + k))} for rid, p in preds.items()}
 
 
 def dumps(o) -> str:

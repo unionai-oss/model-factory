@@ -1,4 +1,4 @@
-"""Images and task environments for RightSize Bench.
+"""Images and task environments for RightSizeMem Bench.
 
 The measurement image pins every library a workload imports to an exact
 version. A label is "what this code used under these library versions";

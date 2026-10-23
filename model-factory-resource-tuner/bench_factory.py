@@ -1,4 +1,4 @@
-"""Entrypoint for deploying RightSize Bench as a factory.
+"""Entrypoint for deploying RightSizeMem Bench as a factory.
 
     CFG=.flyte/config.yaml
     uv run flyte --config $CFG deploy bench.py bench_env        # stations first

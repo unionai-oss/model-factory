@@ -1,4 +1,4 @@
-"""RightSize Bench stations: the Flyte tasks the factory wires together.
+"""RightSizeMem Bench stations: the Flyte tasks the factory wires together.
 
     rt-bench-runs        generate_bench_runs   code + inputs, unmeasured
     rt-bench-corpus      measure_bench         every run executed and measured
@@ -63,7 +63,7 @@ async def _read_rows(f: flyte.io.File) -> list[dict]:
 async def generate_bench_runs(release: str, tasks_per_family: int = 200, seed: int = 0) -> flyte.io.File:
     """Sample tasks from every family and expand each into its runs."""
     rows = dataset.generate_runs(tasks_per_family, seed=seed)
-    rep = Reporter("RightSize Bench: workloads", f"release {release}")
+    rep = Reporter("RightSizeMem Bench: workloads", f"release {release}")
     by = pd.DataFrame(rows).groupby(["family", "split"]).size().unstack(fill_value=0)
     rep.kv({"tasks": len({r["task_id"] for r in rows}), "runs": len(rows)})
     rep.table(["family", *by.columns], [[f, *map(str, v)] for f, v in zip(by.index, by.values.tolist())])
@@ -145,7 +145,7 @@ async def measure_bench(runs: flyte.io.File, shard_size: int = 60) -> flyte.io.F
         json.dumps([{k: rows[i][k] for k in keep} for i in order[s : s + shard_size]])
         for s in range(0, len(order), shard_size)
     ]
-    rep = Reporter("RightSize Bench: measurement", f"{len(rows)} runs in {len(shards)} shards")
+    rep = Reporter("RightSizeMem Bench: measurement", f"{len(rows)} runs in {len(shards)} shards")
     await rep.flush()
     measured: dict[str, dict] = {}
     lost = _collect(await asyncio.gather(*(measure_shard(s) for s in shards), return_exceptions=True), measured)
@@ -279,7 +279,7 @@ async def fit_bench_arm(corpus: flyte.io.File, arm: str, llm_model: str = "Qwen/
     """
     rows = await _read_rows(corpus)
     splits = _usable_by_split(rows)
-    rep = Reporter(f"RightSize Bench: arm {arm}", ", ".join(f"{k}={len(v)}" for k, v in splits.items()))
+    rep = Reporter(f"RightSizeMem Bench: arm {arm}", ", ".join(f"{k}={len(v)}" for k, v in splits.items()))
     await rep.flush()
     if arm in CPU_ARMS:
         pred_rows, meta = _fit_cpu_arm(arm, splits)
@@ -328,7 +328,7 @@ async def score_bench_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str
     preds, meta = await _read_arm(arm_dir)
     card = {"arm": arm, "meta": meta, "variants": {}}
     subset_ids = {r["run_id"] for r in hosted_subsample(_usable_by_split(rows))}
-    rep = Reporter(f"RightSize Bench: scorecard {arm}")
+    rep = Reporter(f"RightSizeMem Bench: scorecard {arm}")
     for variant, p in _preds_by_variant(preds).items():
         card["variants"][variant] = scoring.score_slices(rows, p)
         card["variants"][variant]["subset=hosted"] = scoring.score([r for r in rows if r["run_id"] in subset_ids], p)
@@ -370,7 +370,7 @@ async def bench_leaderboard(scorecards: list[flyte.io.File],
             meta[variant] = c["meta"]
         fronts.update(c.get("frontier", {}))
     order = [v for v in HEADLINE if v in board] + sorted(v for v in board if v not in HEADLINE)
-    rep = Reporter("RightSize Bench: leaderboard", f"{len(order)} decision rules, {len(cards)} arms")
+    rep = Reporter("RightSizeMem Bench: leaderboard", f"{len(order)} decision rules, {len(cards)} arms")
     for split in ("test", "ood"):
         key = f"split={split}"
         rows = [(v, board[v].get(key, {})) for v in order if board[v].get(key, {}).get("n")]
@@ -495,7 +495,7 @@ async def live_validate(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir], run
     sem = asyncio.Semaphore(concurrency)
     jobs = [_live_one(r, v, p[r["run_id"]]["mem_idx"], p[r["run_id"]]["cpu_idx"], sem)
             for v, p in sorted(decisions.items()) for r in sample if r["run_id"] in p]
-    rep = Reporter("RightSize Bench: live validation",
+    rep = Reporter("RightSizeMem Bench: live validation",
                    f"{len(sample)} runs x {len(decisions)} decision rules = {len(jobs)} real pods")
     await rep.flush()
     results = await asyncio.gather(*jobs)
@@ -597,7 +597,7 @@ async def fit_bench_ensemble(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir]
         preds, _ = await _read_arm(d)
         variants.update(_preds_by_variant(preds))
     preds, meta = build_ensemble(rows, variants)
-    rep = Reporter("RightSize Bench: ensemble", f"{meta['anchor']} x {meta['llm_member']}, w={meta['w_anchor']}")
+    rep = Reporter("RightSizeMem Bench: ensemble", f"{meta['anchor']} x {meta['llm_member']}, w={meta['w_anchor']}")
     rep.kv({k: str(v) for k, v in meta.items()})
     await rep.flush()
     meta["arm"] = "ensemble"
