@@ -37,27 +37,34 @@ Conventions:
 | 2026-10-02 | [round-16-decision-arm-and-factory](2026-10-02-round-16-decision-arm-and-factory.md) | Third arm: a multi-head **decision model** that picks a grid cell directly, trained with a cost-asymmetry loss; the arm suite is a Union **factory** fanning out over an `under_penalty` partition with the corpus as a `factory.source` (LLM path untouched). The knob is monotone across all 3 arms (fit 54%→71%→89%) but only the paranoid arm beats the rule baseline on fit, and at +5% cost — 3 dead runs first (1M rows OOM the station, `Reporter` API, `baseline_proposal` arity) |
 | 2026-10-23 | [round-18-rightsize-cpu-gpu](2026-10-23-round-18-rightsize-cpu-gpu.md) | RightSize Bench renamed **RightSizeMem**; **RightSizeCPU** (peak cores in Union's 15 s monitoring window, cgroup-measured) and **RightSizeGPU** (peak GPU memory -> device on the T4/L4/L40S ladder, mean utilization; NVML at DCGM's 30 s cadence) small releases, one factory materialization each. CPU: zero-shot 27B 79%/93% within ±25%, code-rule 81%/95% (fails the GIL), 1.7B decision head 71%/83% from 116 rows. GPU: no arm above 55% within ±20% at 62 training rows; utilization saturates (88% of runs 90-100%). Factory deploy pins station versions (rsg-small-3 re-ran old code) |
 | 2026-10-24 | [round-19-rightsize-cpu-gpu-full](2026-10-23-round-19-rightsize-cpu-gpu-full.md) | Full releases (880 CPU / 640 GPU runs; 3-run shards, `full-*` sizing, 4B decision arm). **CPU ordering flips**: 4B decision head 89.6% / 88.7% within ±25% (test / unseen), trees 89.6% / 76.2%, zero-shot 27B falls to 74.6% / 83.8% and still fails phased code (8%). **GPU memory stays near 50%** (gbt-dist 50.5% test, SFT 37.3% unseen); 26 encoder runs unmeasurable (outputs accumulate on device); utilization still saturated |
-| 2026-10-25 | [round-20-rightsize-big-and-combined](2026-10-24-round-20-rightsize-big-and-combined.md) | In progress. **big** releases at ~10^4 runs, plus a combined memory+CPU+GPU bench with a GRPO-style RL arm. CPU big-1 (rsc-big-1, 23 h): 1.7B decision head 97.9% within ±25% on test, but unseen families stay at 84-86% (4B 86.1%, 27B zero-shot 83.7%, gbt-dist 68.4%), no better than full-1. Combined shakedown (rsa-full-3): RL head argmax 12.6% test regret vs 23.6% supervised. **Combined big-1 (rsa-big-1)**: with 10,500 supervised runs the decision model reaches 9.7% and RL argmax 8.0% (lead 11 -> 1.7 points); on unseen families RL is worse (37.3% vs 34.1%) and `rules` is best (32.5%). GPU big (rsg-big-1 sft timed out at 8 h; rsg-big-3) still running |
+| 2026-10-26 | [round-20-rightsize-big-and-combined](2026-10-24-round-20-rightsize-big-and-combined.md) | **big** releases at ~10^4 runs, plus a combined memory+CPU+GPU bench with a GRPO-style RL arm. CPU big-1 (rsc-big-1, 23 h): 1.7B decision head 97.9% within ±25% on test, but unseen families stay at 84-86% (4B 86.1%, 27B zero-shot 83.7%, gbt-dist 68.4%), no better than full-1. Combined shakedown (rsa-full-3): RL head argmax 12.6% test regret vs 23.6% supervised. **Combined big-1 (rsa-big-1)**: with 10,500 supervised runs the decision model reaches 9.7% and RL argmax 8.0% (lead 11 -> 1.7 points); on unseen families RL is worse (37.3% vs 34.1%) and `rules` is best (32.5%). **GPU big-1 (rsg-big-3)**: gbt-dist 71.3% within ±20% on test, 4B decision model 50.5% on unseen (trees 25.7%); accuracy decoding never leaves the T4 (6.4% OOM), argmax reads cost 13-16% |
 
-## Standing results — RightSizeCPU / RightSizeGPU full-1 (as of 2026-10-24)
+## Standing results — RightSizeCPU / RightSizeGPU big-1 (as of 2026-10-26)
 
-Test n=134 / 104, unseen n=160 / 160. From
-[rsc-full-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-full-1)
-and [rsg-full-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-full-1).
+Test n=1,634 / 1,413, unseen n=1,800 / 2,411 (zeroshot-27b: ~300 per
+split). From
+[rsc-big-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-big-1)
+and [rsg-big-3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big-3).
 
 | arm | CPU: peak within ±25% (test / unseen) | GPU: peak memory within ±20% (test / unseen) |
 |---|---|---|
-| static | 40.3% / 31.2% | 9.9% / 19.0% |
-| vpa | 67.9% / 59.4% | 36.6% / 34.8% |
-| code-rule (CPU) / size-rule (GPU) | 72.4% / 84.4% | 36.6% / 34.8% |
-| gbt-dist | 88.8% / 76.2% | **50.5%** / 32.3% |
-| zeroshot-27b | 74.6% / 83.8% | 34.7% / 31.6% |
-| sft-greedy (1.7B) | 85.1% / 74.4% | 40.6% / **37.3%** |
-| jev-pointer (1.7B) | 86.6% / 85.0% | 42.6% / 34.2% |
-| **jev-pointer-4b** | **89.6% / 88.7%** | 42.6% / 27.8% |
+| static | 31.0% / 26.7% | 8.7% / 10.3% |
+| vpa | 64.6% / 60.6% | 35.3% / 33.1% |
+| code-rule (CPU) / size-rule (GPU) | 73.6% / 79.4% | 37.1% / 34.8% |
+| gbt-dist | 94.6% / 68.4% | **71.3%** / 25.7% |
+| zeroshot-27b | 68.4% / 83.7% | 37.5% / 37.3% |
+| sft-greedy (1.7B) | 94.9% / 75.2% | 58.5% / 44.5% |
+| jev-pointer (1.7B) | **97.9%** / 83.9% | 63.3% / 45.0% |
+| jev-pointer-4b | 97.6% / **86.1%** | 64.9% / **50.5%** |
 
-Details and caveats: [round-19](2026-10-23-round-19-rightsize-cpu-gpu-full.md);
-small releases in [round-18](2026-10-23-round-18-rightsize-cpu-gpu.md).
+Combined bench (memory + CPU + GPU, mean regret vs the oracle, test /
+unseen, [rsa-big-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-big-1)):
+rules 34.0% / **32.5%**, gbt-dist 14.1% / 33.2%, jev-pointer 9.7% / 34.1%,
+**rl-pointer-argmax 8.0%** / 37.3%.
+
+Details and caveats: [round-20](2026-10-24-round-20-rightsize-big-and-combined.md);
+full releases in [round-19](2026-10-23-round-19-rightsize-cpu-gpu-full.md),
+small in [round-18](2026-10-23-round-18-rightsize-cpu-gpu.md).
 
 ## Standing results — RightSizeMem Bench (as of 2026-10-17; called RightSize Bench then)
 

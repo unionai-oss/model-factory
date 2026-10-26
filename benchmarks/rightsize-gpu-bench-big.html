@@ -1,0 +1,538 @@
+<title>RightSizeGPU Bench Big</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column, same tokens as the RightSizeMem Bench report. Definitions and methodology come first; each result is a claim, a chart drawn from the bench's own numbers, and a "how to read this" note. */
+:root {
+  --bg: #f5f6f9;
+  --panel: #ffffff;
+  --ink: #161823;
+  --muted: #5d6273;
+  --rule: #dcdfe8;
+  --tint: #eef0fb;
+  --accent: #4d65ff;     /* decision model */
+  --warm: #c9760a;       /* autoregressive LLM */
+  --tree: #1f9b6a;       /* classical ML */
+  --rule-c: #8a8fa0;     /* rules */
+  --bad: #d4383b;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+    --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --bad: #ff6b6b;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+  --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --bad: #ff6b6b;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 980px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 72px; }
+header { display: grid; gap: 14px; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(40px, 7vw, 64px); line-height: 1; margin: 0; letter-spacing: -.01em; }
+.lede { font-size: 19px; max-width: 64ch; margin: 0; text-wrap: pretty; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 22px; font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; }
+.status { justify-self: start; font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; color: var(--warm); border: 1px solid color-mix(in srgb, var(--warm) 45%, transparent); border-radius: 999px; padding: 3px 12px; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; }
+nav.toc a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--rule); }
+nav.toc a:hover { color: var(--accent); border-color: var(--accent); }
+section { padding-block: 36px 8px; display: grid; gap: 14px; min-width: 0; }
+.part { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-top: 28px; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.15; margin: 0; text-wrap: balance; }
+h3 { font-family: var(--font-display); font-weight: 600; font-size: 20px; line-height: 1.2; margin: 10px 0 0; }
+p { margin: 0; max-width: 70ch; }
+.muted { color: var(--muted); }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 18px 12px; min-width: 0; }
+.figure svg { display: block; width: 100%; height: auto; }
+.caption { font-size: 13px; color: var(--muted); margin-top: 8px; max-width: none; }
+.howto { background: var(--tint); border-radius: 6px; padding: 14px 16px; display: grid; gap: 6px; font-size: 14.5px; }
+.howto .t { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.howto ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; max-width: none; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+table.num td { white-space: nowrap; }
+table.text td, table.text th { text-align: left; white-space: normal; }
+table.text td:first-child { white-space: nowrap; font-family: var(--font-mono); font-size: 13px; }
+td.best { font-weight: 600; }
+td.heat { color: var(--ink); }
+.kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.stat { display: grid; gap: 4px; align-content: start; }
+.stat .n { font-family: var(--font-display); font-size: 34px; font-weight: 600; line-height: 1.05; }
+.stat .l { font-size: 14px; color: var(--muted); }
+code, .mono { font-family: var(--font-mono); font-size: .9em; }
+ul, ol { margin: 0; padding-left: 22px; display: grid; gap: 6px; max-width: 70ch; }
+dl.defs { display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 10px 22px; margin: 0; }
+dl.defs dt { font-weight: 600; }
+dl.defs dd { margin: 0; color: var(--ink); min-width: 0; }
+@media (max-width: 620px) { dl.defs { grid-template-columns: 1fr; gap: 2px 0; } dl.defs dd { margin-bottom: 10px; } }
+pre.block { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; color: var(--ink); white-space: pre; overflow-x: auto; margin: 0; }
+.steps { counter-reset: s; display: grid; gap: 10px; padding: 0; list-style: none; max-width: 72ch; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 30px 1fr; gap: 10px; }
+.steps li::before { content: counter(s); font-family: var(--font-mono); font-size: 13px; color: var(--accent); border: 1px solid var(--rule); border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; }
+.tldr { display: grid; gap: 8px; padding: 0; list-style: none; }
+.tldr li { padding-left: 16px; border-left: 3px solid var(--accent); }
+footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); display: grid; gap: 6px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 520px) { .lede { font-size: 17px; } h2 { font-size: 24px; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Union model factory · resource right-sizing · round 20 · October 2026</div>
+    <h1>RightSizeGPU Bench</h1>
+    <p class="lede">A GPU task has to pick its GPU before it runs. If the GPU is too small, the run dies with a CUDA out-of-memory error and is retried on a bigger one. If it is too big, the run pays for memory it never touches. This benchmark measures how well different approaches predict a PyTorch task's peak GPU memory and GPU utilization from its code, its inputs and its earlier runs. This page reports the big release, at the scale of the RightSizeMem bench.</p>
+    <span class="status">Big release (big-1) · 10,000 runs measured · 78× the small release</span>
+    <div class="facts">
+      <span><b>10,000</b> runs, <b>9,566</b> usable</span>
+      <span><b>8</b> families of PyTorch code, <b>2</b> never shown in training</span>
+      <span><b>9</b> approaches, <b>12</b> decision rules</span>
+      <span><b>11.7 h</b> of measurement on T4s and L40Ss</span>
+    </div>
+    <nav class="toc" aria-label="Sections">
+      <a href="#summary">Summary</a><a href="#terms">Terms</a><a href="#ladder">Device ladder</a><a href="#dataset">Dataset</a><a href="#measure">Measurement</a><a href="#boundary">What approaches see</a><a href="#arms">Approaches</a><a href="#decoding">Decoding</a><a href="#scoring">Scoring</a><a href="#runs">How it ran</a><a href="#results">Results</a><a href="#scale">What scale changed</a><a href="#limits">Assumptions and limits</a>
+    </nav>
+  </header>
+
+  <section id="summary">
+    <h2>Summary</h2>
+    <ul class="tldr">
+      <li><b>With 5,000 training runs, memory accuracy finally moves.</b> On the 104-run full release, no approach was much above 50% within ±20% of the measured peak. Here, gradient-boosted trees read as a distribution reach <b>71.3%</b> on 1,413 test runs, and the 4B decision model reaches 64.9%.</li>
+      <li><b>On unseen families the models that read code lead, and the trees collapse.</b> The 4B decision model scores <b>50.5%</b> on the two held-out families, and the fine-tuned 1.7B models 45–47%. The trees fall to 25–26%, below a rule on input size (34.8%).</li>
+      <li><b>For dollars, read the models by argmax.</b> Decoding for accuracy almost never asks for more than a T4, so every run that needs a bigger GPU fails once. The trees' point prediction has the lowest cost (8.4% over the oracle); the decision model by argmax has 13.1%.</li>
+      <li><b>Utilization is easy to predict and hard to use.</b> 78% of runs average 90% or more by NVML's measure. The trained approaches are 94–97% within 10 points, and the zero-shot 27B 56%.</li>
+      <li><b>About 5% of runs need more than a T4.</b> 9,066 of 9,566 usable runs fit the cheapest GPU. The rest are where the money is lost.</li>
+    </ul>
+  </section>
+
+  <div class="part">Part 1 · Definitions</div>
+  <section id="terms">
+    <h2>Terms used on this page</h2>
+    <dl class="defs">
+      <dt>Task, run</dt><dd>A <b>task</b> is one piece of PyTorch code, such as training a small GPT-style model. A <b>run</b> is that task executed once on a particular input file. Each task runs twice, on inputs of different sizes, and the second run sees the first as history.</dd>
+      <dt>Peak GPU memory <span class="muted">(first label)</span></dt><dd>The most GPU memory in use at any moment of the run, in GiB, as NVML reports it (what <span class="mono">DCGM_FI_DEV_FB_USED</span> shows). It includes the CUDA context, weights, gradients, optimizer state, activations, and what PyTorch's allocator holds in reserve.</dd>
+      <dt>GPU utilization <span class="muted">(second label)</span></dt><dd>The share of time a kernel was running (<span class="mono">DCGM_FI_DEV_GPU_UTIL</span>), averaged over the run, in 10-point buckets.</dd>
+      <dt>Grid, cell</dt><dd>Memory predictions are one of 12 sizes: 1, 1.5, 2, 3, 4, 6, 8, 10, 12, 15, 22 and 44 GiB. The last three are the usable memory of a T4, an L4 and an L40S.</dd>
+      <dt>Oracle</dt><dd>Knows each run's peak in advance and picks the smallest cell that covers it, so it runs on the cheapest GPU that fits.</dd>
+      <dt>Within ±20% <span class="muted">(headline)</span></dt><dd>The predicted peak is within 20% of the measured peak, or within 0.5 GiB for small peaks. Higher is better.</dd>
+      <dt>Within one cell</dt><dd>The oracle's cell or a neighbour.</dd>
+      <dt>OOM</dt><dd>Share of runs whose first GPU was too small (a CUDA out-of-memory error).</dd>
+      <dt>GPU regret</dt><dd>Dollars to get every run to finish, including failed attempts and a delay penalty per OOM, divided by the oracle's dollars, minus 1. Lower is better. See <a href="#scoring">Scoring</a>.</dd>
+      <dt>Fills the device</dt><dd>A run whose peak reached at least 95% of the GPU's memory and still succeeded. cuDNN and PyTorch's allocator grow into free memory, so the peak is the GPU's size, not the task's need. These runs are not scored.</dd>
+      <dt>Test, unseen</dt><dd><b>Test</b>: runs of new tasks from the 6 training families. <b>Unseen</b>: runs from two families held out of training, a two-tower recommender (<span class="mono">recsys_train</span>) and nearest-neighbour search (<span class="mono">knn_search</span>).</dd>
+    </dl>
+  </section>
+
+  <div class="part">Part 2 · Methodology</div>
+  <section id="ladder">
+    <h2>The device ladder</h2>
+    <p>A memory prediction becomes a GPU: the cheapest single-GPU instance on the demo.hosted cluster whose usable memory covers it. Prices are on-demand, per GPU-hour, in us-east-1.</p>
+    <div class="figure table-wrap"><table class="num">
+      <thead><tr><th>GPU</th><th>instance</th><th>usable memory</th><th>$ / hour</th><th>usable runs that need it</th></tr></thead>
+      <tbody>
+        <tr><td>NVIDIA T4</td><td>g4dn.xlarge</td><td>15 GiB</td><td>$0.526</td><td>9,066 (94.8%)</td></tr>
+        <tr><td>NVIDIA L4</td><td>g6.2xlarge</td><td>22 GiB</td><td>$0.978</td><td>203 (2.1%)</td></tr>
+        <tr><td>NVIDIA L40S</td><td>g6e.2xlarge</td><td>44 GiB</td><td>$2.242</td><td>297 (3.1%)</td></tr>
+      </tbody>
+    </table>
+    <p class="caption">An A10G (g5.2xlarge, 22 GiB, $1.212) is on the cluster but never the cheapest choice: an L4 has the same memory for less.</p></div>
+  </section>
+
+  <section id="dataset">
+    <h2>The dataset: real PyTorch code</h2>
+    <p>Every workload is generated from one of 8 <b>families</b> of PyTorch task code. Within a family, a generator varies the choices an ML engineer reasons about when sizing a GPU (width, depth, batch, sequence length, precision, what is kept on the GPU, block sizes), and the size of the input file. Each task is a complete Flyte task.</p>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>family</th><th>driver</th><th>what the code does</th></tr></thead>
+      <tbody>
+        <tr><td>mlp_tabular</td><td>params</td><td>Train a regression MLP on a parquet table; width, depth, batch, mixed precision, optimizer, dataset on the GPU or not</td></tr>
+        <tr><td>cnn_train</td><td>activations</td><td>Train a convolutional classifier; image side, channels, blocks, batch, precision, channels-last</td></tr>
+        <tr><td>gpt_train</td><td>activations</td><td>Train a GPT-style language model; width, layers, sequence length, vocabulary, checkpointing, optimizer</td></tr>
+        <tr><td>encoder_infer</td><td>data</td><td>Embed a corpus with a transformer encoder; width, depth, batch, fp16, outputs kept on the GPU or moved off</td></tr>
+        <tr><td>loader_bound</td><td>input_bound</td><td>A tiny CNN fed by a CPU data loader, sometimes with per-pixel Python augmentation that starves the GPU</td></tr>
+        <tr><td>blocked_gemm</td><td>blocks</td><td>All-pairs similarity computed in blocks; block size, dimension, fp16</td></tr>
+        <tr><td>recsys_train <span class="muted">(unseen)</span></td><td>params</td><td>A two-tower recommender; table sizes up to 4M rows, embedding dimension, sparse or dense optimizer</td></tr>
+        <tr><td>knn_search <span class="muted">(unseen)</span></td><td>blocks</td><td><span class="mono">cdist</span> + <span class="mono">topk</span> nearest neighbours; query chunk, dimension, k, dtype</td></tr>
+      </tbody>
+    </table></div>
+    <p>The big release has 625 tasks per family and 2 runs per task: 10,000 runs. Runs loop for 60, 90 or 120 seconds (median wall time 94 s), so each covers at least two of DCGM's 30-second samples. Tasks are split by a hash of their id: 70% of the 6 training families' tasks to train, 10% to validation, 20% to test; the 2 held-out families go entirely to unseen.</p>
+    <div class="figure table-wrap"><table class="num">
+      <thead><tr><th>release</th><th>runs</th><th>usable</th><th>train</th><th>val</th><th>test</th><th>unseen</th><th>excluded</th></tr></thead>
+      <tbody>
+        <tr><td>small-1</td><td>128</td><td>126</td><td>60</td><td>12</td><td>22</td><td>32</td><td>2</td></tr>
+        <tr><td>full-1</td><td>640</td><td>—</td><td>—</td><td>—</td><td>104</td><td>160</td><td>—</td></tr>
+        <tr><td><b>big-1</b></td><td>10,000</td><td>9,566</td><td>5,021</td><td>721</td><td>1,413</td><td>2,411</td><td>434</td></tr>
+      </tbody>
+    </table>
+    <p class="caption">big-1 excluded 219 runs that filled the device, 165 runs that ran out of memory on the T4 and whose L40S re-measurement was lost (see <a href="#runs">How it ran</a>), and 50 runs that ran out of memory even on the 44 GiB L40S.</p></div>
+  </section>
+
+  <section id="measure">
+    <h2>How each run was measured</h2>
+    <ol class="steps">
+      <li><span><b>Pass 1, T4.</b> 1,667 shards of 6 runs each on T4 pods (g4dn.xlarge). Each run is a fresh Python interpreter that imports the task's module and calls it; a sampler reads NVML's <span class="mono">memory.used</span> and <span class="mono">utilization.gpu</span> every 0.5 seconds. 7.6 hours.</span></li>
+      <li><span><b>Pass 2, L40S.</b> Runs that hit a CUDA OOM on the T4 are re-measured on an L40S, in 184 shards. 4.1 hours; 42 of those shards ran past their time limit and were lost.</span></li>
+      <li><span><b>Labels.</b> The memory label is the smallest of the 12 cells that covers the peak; the utilization label is the 10-point bucket of the mean.</span></li>
+    </ol>
+  </section>
+
+  <section id="boundary">
+    <h2>What every approach is allowed to see</h2>
+    <p>What a scheduler has at submission: the task's source code, each input file's metadata (bytes, format, shape, dtype), and the task's earlier runs (peak GPU memory, mean utilization, device and wall time). No approach sees the generator's hidden choices, the family or the driver. The LLMs read these as a prompt that ends with the two option lists (<span class="mono">gpu_memory</span>, <span class="mono">gpu_util</span>) and a JSON answer format; the trees read the same information as about 70 numbers, including 40 PyTorch API tokens, the sizes of <span class="mono">Linear</span> layers, the batch slice, and the history.</p>
+  </section>
+
+  <section id="arms">
+    <h2>The approaches compared</h2>
+    <p>Nine approaches in four kinds. Each makes two decisions per run: a memory cell and a utilization bucket. Every setting is tuned on validation for the share within ±20%. Four are read out two ways, which gives 12 rows.</p>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>approach</th><th>kind</th><th>what is learned</th><th>trained</th><th>one decision takes</th></tr></thead>
+      <tbody>
+        <tr><td><span class="kind" style="background:var(--rule-c)"></span>static</td><td>rule</td><td>one quantile</td><td>—</td><td>&lt; 0.01 ms</td></tr>
+        <tr><td><span class="kind" style="background:var(--rule-c)"></span>vpa</td><td>rule</td><td>one margin</td><td>—</td><td>&lt; 0.01 ms</td></tr>
+        <tr><td><span class="kind" style="background:var(--rule-c)"></span>size rule</td><td>rule</td><td>a power law in input bytes</td><td>—</td><td>0.01 ms</td></tr>
+        <tr><td><span class="kind" style="background:var(--tree)"></span>gbt</td><td>classical ML</td><td>quantile + utilization trees</td><td>CPU pod</td><td>9 ms</td></tr>
+        <tr><td><span class="kind" style="background:var(--tree)"></span>gbt-dist</td><td>classical ML</td><td>19 quantile models + utilization</td><td>CPU pod</td><td>10 ms</td></tr>
+        <tr><td><span class="kind" style="background:var(--warm)"></span>zero-shot 27B</td><td>LLM, generates text</td><td>nothing</td><td>—</td><td>hosted, shared</td></tr>
+        <tr><td><span class="kind" style="background:var(--warm)"></span>SFT 1.7B</td><td>LLM, generates text</td><td>≈17M LoRA weights</td><td>4.1 h, one T4</td><td>1.7 s greedy, 3.1 s for 8 samples</td></tr>
+        <tr><td><span class="kind" style="background:var(--accent)"></span>decision 1.7B</td><td>decision model</td><td>≈17M LoRA + pointer head</td><td>3.9 h, one T4</td><td>180 ms, 0 tokens</td></tr>
+        <tr><td><span class="kind" style="background:var(--accent)"></span>decision 4B</td><td>decision model</td><td>≈33M LoRA + pointer head</td><td>5.7 h, one T4</td><td>391 ms, 0 tokens</td></tr>
+      </tbody>
+    </table>
+    <p class="caption">Times are from rsg-big-1 and rsg-big-3. Training times include decoding the evaluation splits. The LLM times are medians on a T4, one decision at a time.</p></div>
+
+    <h3>Rules</h3>
+    <dl class="defs">
+      <dt>static</dt><dd>One request for every run: a quantile of training peaks, tuned on validation. big-1 chose the 0.75 quantile, 5.9 GiB, so every run asks for 6 GiB on a T4. Utilization: the training median (95%).</dd>
+      <dt>vpa</dt><dd>The largest peak this task has used, times a margin tuned on validation (big-1: 1.0×), rounded up to a cell. With no history, the static request. Utilization: the last observed value.</dd>
+      <dt>size rule</dt><dd>Peak memory as a power law of total input bytes, fitted as a quantile of the training runs (big-1: the median). With history, the nearest past run rescaled by the input-size ratio, times a margin (1.0×).</dd>
+    </dl>
+
+    <h3>Gradient-boosted trees</h3>
+    <dl class="defs">
+      <dt>Model</dt><dd>scikit-learn <span class="mono">HistGradientBoostingRegressor</span> with the pinball loss (300 rounds, learning rate 0.06, 31 leaves) on log₂ of peak GiB. <b>gbt</b> fits quantiles 0.5 to 0.95 and keeps the one best on validation (big-1: the median), then rounds up to a cell. <b>gbt-dist</b> fits all 19 quantiles from 0.05 to 0.95 and turns them into a probability per cell through a piecewise-linear CDF. Utilization is a separate median-regression model.</dd>
+    </dl>
+
+    <h3>zero-shot 27B</h3>
+    <p>A hosted 27B Qwen model (<span class="mono">qwen38-27b</span> on the cluster's shared vLLM) at temperature 0. The system prompt lists the device ladder with prices and explains the OOM retry. The last JSON object in its answer is parsed and rounded up to an option. Scored on a sample of about 300 runs per split.</p>
+
+    <h3>SFT 1.7B: fine-tuned to write the answer</h3>
+    <dl class="defs">
+      <dt>Architecture</dt><dd>Qwen3-1.7B (28 layers, hidden size 2,048) with LoRA adapters (rank 16, α 32, dropout 0.05) on all seven projections of every layer; about 17M trained weights. The output is the model's own language-model head.</dd>
+      <dt>Training</dt><dd>Next-token cross-entropy on the oracle's answer, <span class="mono">{"gpu_memory": "6GiB", "gpu_util": "90-100%"}</span>, with the prompt masked out and logits computed only for the answer window. 3 epochs over 5,129 training runs, effective batch 16 (8 × 2 accumulation), AdamW at 2×10⁻⁴ with warm-up and cosine decay, fp16 with a loss scaler and gradient checkpointing on one T4. The loss fell to 0.04 per answer token.</dd>
+      <dt>Inference</dt><dd><b>Greedy:</b> generate about 22 tokens and parse; a tuned margin of k cells (big-1 chose 0). No answer failed to parse. <b>8 samples:</b> generate 8 answers at temperature 1 and count each memory cell as a probability, then decode. Greedy and 8-sample decoding of about 4,600 evaluation runs is what pushed this arm past its first 8-hour limit.</dd>
+    </dl>
+
+    <h3>Decision 1.7B and 4B: the pointer head</h3>
+    <div class="figure"><pre class="block">… ### Options
+gpu_memory: 1GiB, 1.5GiB, 2GiB, … , 15GiB, 22GiB, 44GiB    each option's last token → hidden states k₁ … k₁₂
+gpu_util:   0-10%, 10-20%, … , 90-100%                                              →               k′₁ … k′₁₀
+Answer with JSON only: … &lt;assistant turn&gt;                  the prompt's last token  → hidden state  a
+                     │
+        Qwen3 + LoRA, language-model head removed
+                     │
+score(j) = ⟨ W_q · LN(a) , W_k · LN(k_j) ⟩ / √256        one W_q, W_k pair per decision
+P(cell = j) = softmax( score / T )                         T fitted on validation</pre></div>
+    <dl class="defs">
+      <dt>Architecture</dt><dd>The same Qwen3 and LoRA adapters, loaded without the language-model head. Each option's token sits at a fixed distance from the end of the prompt, because prompts are cut from the left to 2,048 tokens. A shared LayerNorm and a query and key projection (to 256 dimensions) per decision score every option against the answer slot in one forward pass.</dd>
+      <dt>Training</dt><dd>Cross-entropy on the memory cell plus 0.3 × cross-entropy on the utilization bucket. <b>1.7B:</b> 3 epochs, about 960 optimizer steps, adapters at 2×10⁻⁴ and head at 10⁻³; the loss went 1.78 → 1.28 → 0.85 across epochs. <b>4B</b> (36 layers, hidden size 2,560): micro-batches of 4 with 4 accumulation steps to fit a 16 GB T4, 2 epochs (about 640 steps); loss 1.63 → 1.05.</dd>
+      <dt>Calibration</dt><dd>One temperature fitted on validation by negative log-likelihood (1.7B: T = 0.99).</dd>
+      <dt>Inference</dt><dd>One forward pass gives 12 memory probabilities and 10 utilization probabilities. No tokens are generated: 180 ms per decision for the 1.7B and 391 ms for the 4B on a T4.</dd>
+    </dl>
+
+    <h3 id="decoding">Decoding: two read-outs</h3>
+    <p>gbt-dist, SFT with 8 samples and the decision models end with a probability for each of the 12 cells. The <b>decoded</b> rows pick the cell most likely to be within ±20% of the peak (ties go up). The <b>argmax</b> rows pick the single most likely cell. The two behave differently at the top of the ladder: the 22 and 44 GiB cells are wide, and a within-±20% window rarely gathers enough probability there, so the accuracy decoder almost never leaves the T4. Argmax does.</p>
+  </section>
+
+  <section id="scoring">
+    <h2>Scoring: memory accuracy first, dollars alongside</h2>
+    <ol class="steps">
+      <li><span><b>If the peak fits</b> the chosen GPU, the run pays one nominal task-hour at that GPU's price, plus 5% for start-up.</span></li>
+      <li><span><b>If it does not fit</b>, the run dies with a CUDA OOM at the point its peak was measured, and is retried on the next GPU up, up to 4 attempts.</span></li>
+      <li><span><b>Each OOM</b> adds a delay penalty of one oracle-priced run.</span></li>
+      <li><span><b>GPU regret</b> = total dollars ÷ the oracle's dollars − 1.</span></li>
+    </ol>
+    <div class="howto"><span class="t">Worked example</span>
+      <p>A run peaks at 18 GiB, 3% of the way in. The oracle picks an L4: $0.978 × 1.05 = $1.03.</p>
+      <ul>
+        <li>Predicting 12 GiB picks a T4. It dies at 3% ($0.04), the retry on an L4 costs $1.03, and the OOM penalty another $1.03: 104% over the oracle.</li>
+        <li>Predicting 30 GiB picks an L40S: $2.35, 129% over.</li>
+        <li>For a run that peaks at 3 GiB, predicting 4 GiB or 12 GiB both pick a T4 and cost the oracle's $0.55. Dollars only separate approaches on the 5% of runs above 15 GiB, which is why accuracy is the headline.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="runs">
+    <h2>How the experiment ran</h2>
+    <p>The benchmark is one <b>Union factory</b>, <span class="mono">rightsize-gpu-bench</span>. Each approach is a value of the <span class="mono">arm</span> partition, trained and scored on its own.</p>
+    <div class="figure"><pre class="block">rt-gpubench-runs [release]           generate_gpu_runs    task code + input specs, deterministic from a seed
+      │
+rt-gpubench-corpus [release]         measure_gpu_bench    pass 1: 1,667 T4 shards · pass 2: 184 L40S shards
+      ├──────────────┬──────── … ──────┐   one instance per arm
+rt-gpubench-arm [release, arm]       fit_gpu_arm          CPU pod · hosted 27B · one T4 per LLM arm
+rt-gpubench-scorecard [release, arm] score_gpu_arm        every split and slice
+      └──────────────┴── .all("arm") ──┘
+rt-gpubench-leaderboard [release]    gpu_leaderboard      all arms side by side</pre></div>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>run</th><th>what</th><th>outcome</th></tr></thead>
+      <tbody>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-bigpilot-1">rsg-bigpilot-1</a></td><td>big-pilot, 32 runs</td><td>Succeeded. Two encoder runs with gradients enabled ran out of memory on the L40S, which led to a fix that detaches their outputs.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big-1">rsg-big-1</a></td><td>big-1: 10,000 runs, 9 approaches</td><td>Failed after 27.7 h. Measurement succeeded (11.7 h, with 42 of 184 L40S shards timed out) and 8 approaches trained, but SFT ran past its 8-hour limit while decoding.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big-2">rsg-big-2</a></td><td>Relaunch with the limit raised in the shared training code</td><td>Aborted after 2 minutes: that file is part of every LLM approach's cache key, so all three started retraining.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big-3">rsg-big-3</a></td><td>Relaunch with the limit raised at the GPU bench's call site</td><td>Succeeded in 8.4 h. The corpus and both decision models came from cache; only SFT retrained. The results on this page.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <div class="part">Part 3 · Results</div>
+  <section id="results">
+    <h2>Most runs fit a T4; every family has a tail</h2>
+    <div class="figure"><svg id="spread" viewBox="0 0 900 320" role="img" aria-label="Peak GPU memory by family on a log scale, with the memory of each GPU marked"></svg>
+      <p class="caption">Usable runs, all splits. Bar: 10th to 90th percentile of peak GPU memory, log scale. Dot: median. Tick: largest peak. Right column: runs above 15 GiB, which need more than a T4.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>Every family's median is under 6 GiB, so a T4 holds most runs. But every family except the MLP and the data-loader one has runs past the T4 line, up to 42.6 GiB.</li>
+        <li>blocked_gemm has the widest spread: its block size alone moves the peak from about 1 GiB to over 21 GiB at the 90th percentile.</li>
+      </ul>
+    </div>
+    <div class="figure"><svg id="util" viewBox="0 0 900 250" role="img" aria-label="Number of runs by mean GPU utilization bucket"></svg>
+      <p class="caption">Usable runs by mean GPU utilization, in the 10-point buckets approaches predict. 78% are at 90–100%; most of the low end is the data-loader family (median 20%).</p></div>
+  </section>
+
+  <section>
+    <h2>The leaderboard</h2>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--rule-c)"></span>rule</span>
+      <span><span class="kind" style="background:var(--tree)"></span>classical ML</span>
+      <span><span class="kind" style="background:var(--warm)"></span>autoregressive LLM</span>
+      <span><span class="kind" style="background:var(--accent)"></span>decision model</span>
+    </div>
+    <div class="figure"><svg id="board" viewBox="0 0 900 500" role="img" aria-label="Share of runs with peak GPU memory predicted within plus or minus 20 percent, test and unseen families"></svg>
+      <p class="caption">Solid bar: test split (1,413 runs scored on memory). Outline: unseen families (2,411). The zero-shot 27B row is a sample of about 295 runs per split. Higher is better; the oracle scores 100%.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>On test, the trees read as a distribution lead (71.3%), then the 4B and 1.7B decision models (64.9%, 63.3%) and SFT (58–61%). The rules and the 27B sit at 35–38%.</li>
+        <li>On unseen families the order flips. The trees drop 45 points, to 25.7%; the decision 4B drops 14, to 50.5%. Code-reading models carry what they learned about batch, width and precision to new code; trees keyed on familiar features do not.</li>
+        <li>With 1,413 and 2,411 runs, a share near 60% has a 95% interval of about ±2.5 and ±2 points.</li>
+      </ul>
+    </div>
+    <div class="figure table-wrap"><table id="boardtable" class="num"></table></div>
+    <div class="howto"><span class="t">Columns</span>
+      <ul>
+        <li><b>±20%</b>: the headline. <b>1 cell</b>: the oracle's cell or a neighbour. <b>MAE</b>: GiB. <b>device</b>: share of runs whose first GPU is the oracle's.</li>
+        <li><b>OOM</b> and <b>$ regret</b>: the cost side (lower is better). <b>util ±10</b>: utilization within 10 points.</li>
+        <li>Bold marks the best value in each column.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>Accuracy decoding and dollars pull apart</h2>
+    <p>Static, gbt-dist and SFT with 8 samples have exactly the same OOM rate (6.4%) and regret (34.1%) on test: every one of them sends every run to a T4, so every run above 15 GiB fails once. The decision models decoded for accuracy are close behind (5.2% and 6.3% OOM). Their argmax rows ask for an L4 or L40S when the most likely cell is there, and cut the OOM rate to 1.7–2.9% and regret to 13–16%. The trees' single point prediction (gbt) has the lowest regret of all, 8.4%, with 94.0% of runs within one cell.</p>
+    <div class="howto"><span class="t">What this means</span>
+      <ul>
+        <li>The best read-out depends on what the prediction is for. For packing GPUs or sharing them, the accuracy decoder's memory number is the better one. For choosing which GPU to launch, argmax or a cost-aware decoder is better.</li>
+        <li>On unseen families the cost side is flatter (15–22% for every approach except the zero-shot 27B, at 25%), because fewer unseen runs need more than a T4.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>By family</h2>
+    <div class="figure table-wrap"><table id="famtable" class="num"></table>
+      <p class="caption">Share within ±20%, by family. Training families are scored on validation and test runs together; the two unseen families on all their runs. Cell shading is proportional to the value.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>knn_search is where the trees fail hardest (24–25%); the decision 4B gets 45% and SFT with 8 samples 48%.</li>
+        <li>No approach is above 80% on any family. GPU memory depends on choices spread through the code (batch, width, what stays on the device), and on allocator behaviour that the code does not state.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="scale">
+    <h2>What 15× more runs changed</h2>
+    <div class="figure table-wrap"><table id="scaletable" class="num"></table>
+      <p class="caption">Share within ±20%. full-1: 104 test and 158 unseen runs scored on memory. big-1: 1,413 and 2,411. The big profile also shortened the runs (60–120 s instead of 120–180 s).</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>Every trained approach gained 15–23 points on test. The rules and the zero-shot 27B, which do not train, stayed where they were.</li>
+        <li>On unseen families the code-reading models gained (the 4B from 27.8% to 50.5%), while the trees lost ground (32.3% to 25.7%).</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>What the big release supports</h2>
+    <ul>
+      <li><b>GPU memory is learnable from code, with data.</b> With 5,000 training runs, the best approaches land 63–71% of test runs within ±20% and 82–94% within one cell, up from about 50% on the 640-run full release.</li>
+      <li><b>On new code, a decision model that reads the source is the best choice</b> (50.5% for the 4B), and the trees are not (25.7%).</li>
+      <li><b>Choose the read-out by the use.</b> Accuracy decoding underserves the 5% of runs that need a bigger GPU; argmax and the trees' point prediction cost 8–16% over the oracle.</li>
+      <li><b>Not yet shown:</b> whether more families close the unseen gap, and whether a utilization label that measures how much of the GPU is used (SM activity) would separate approaches better.</li>
+    </ul>
+  </section>
+
+  <section id="limits">
+    <h2>Assumptions and limits</h2>
+    <ul>
+      <li><b>165 runs that needed more than a T4 have no measurement</b>, because their L40S shards timed out. The tail above 15 GiB is undercounted; with them, the OOM cost of T4-only decoding would be slightly higher.</li>
+      <li><b>Measured on a T4</b> (and an L40S for the large runs). Peak memory carries over to other GPUs approximately; utilization does not.</li>
+      <li><b>One nominal task-hour per run</b> in the cost model, and on-demand list prices for single-GPU shapes.</li>
+      <li><b>Runs are 60–120 seconds</b>, covering 2–4 DCGM samples.</li>
+      <li><b>The trees' 40 code tokens</b> were written by the person who wrote the generator, which makes that baseline generous.</li>
+      <li><b>Unseen families are only two.</b></li>
+    </ul>
+  </section>
+
+  <footer>
+    <div>Short version: <a href="https://claude.ai/artifact/6hkCMHaTb4uVofC27LniLb">RightSizeGPU Bench Abstract (big-1)</a>. Earlier release: <a href="https://claude.ai/artifact/VTKpd9U7jW3JS3YLBqj9cw">RightSizeGPU Bench (small-1)</a>. Sibling benchmarks: <a href="https://claude.ai/artifact/BHvwdVkkGvAP8yWyHWo8Xc">RightSizeMem</a>, <a href="https://claude.ai/artifact/EVom2ZzCJdA8eV4tW9VCAP">RightSizeCPU (big-1)</a>, and the combined <a href="https://claude.ai/artifact/AGe3ANw4KKjGfVfFDcFeqM">RightSize Bench</a>.</div>
+    <div>Source: <span class="mono">model-factory-resource-tuner/resource_tuner/bench_gpu/</span> · research log <span class="mono">research_log/2026-10-24-round-20-rightsize-big-and-combined.md</span> · cluster project <span class="mono">resource-tuner-model-factory</span> on demo.hosted.unionai.cloud.</div>
+    <div>Reproduce: <span class="mono">flyte factory materialize rightsize-gpu-bench rt-gpubench-leaderboard --partition release=big-1 --partition arm=static,vpa,size-rule,gbt,gbt-dist,zeroshot-27b,sft,jev-pointer,jev-pointer-4b</span></div>
+  </footer>
+</div>
+
+<script>
+const ARMS = {"static": {"test_mem_within_margin": 0.087, "test_mem_within_one_cell": 0.2273, "test_mem_exact": 0.1164, "test_mem_mae_gib": 4.8208, "test_device_exact": 0.936, "test_oom_rate": 0.064, "test_gpu_regret": 0.3415, "test_util_within_10": 0.803, "test_util_mae": 14.342, "test_n_mem_scored": 1413, "ood_mem_within_margin": 0.1029, "ood_mem_within_one_cell": 0.2924, "ood_mem_exact": 0.1166, "ood_mem_mae_gib": 4.1365, "ood_device_exact": 0.9546, "ood_oom_rate": 0.0454, "ood_gpu_regret": 0.2189, "ood_util_within_10": 0.8582, "ood_util_mae": 9.0357, "ood_n_mem_scored": 2411, "cold": 0.0888, "warm": 0.0853, "fam": {"blocked_gemm": 0.146, "cnn_train": 0.078, "encoder_infer": 0.035, "gpt_train": 0.17, "knn_search": 0.107, "loader_bound": 0.005, "mlp_tabular": 0.101, "recsys_train": 0.098}}, "vpa": {"test_mem_within_margin": 0.3531, "test_mem_within_one_cell": 0.5785, "test_mem_exact": 0.4807, "test_mem_mae_gib": 3.3571, "test_device_exact": 0.9539, "test_oom_rate": 0.0413, "test_gpu_regret": 0.2292, "test_util_within_10": 0.8981, "test_util_mae": 8.1641, "test_n_mem_scored": 1413, "ood_mem_within_margin": 0.3314, "ood_mem_within_one_cell": 0.5561, "ood_mem_exact": 0.3783, "ood_mem_mae_gib": 3.0023, "ood_device_exact": 0.9571, "ood_oom_rate": 0.034, "ood_gpu_regret": 0.1641, "ood_util_within_10": 0.9283, "ood_util_mae": 5.7064, "ood_n_mem_scored": 2411, "cold": 0.0888, "warm": 0.6286, "fam": {"blocked_gemm": 0.245, "cnn_train": 0.361, "encoder_infer": 0.357, "gpt_train": 0.397, "knn_search": 0.24, "loader_bound": 0.371, "mlp_tabular": 0.394, "recsys_train": 0.427}}, "size-rule": {"test_mem_within_margin": 0.3708, "test_mem_within_one_cell": 0.6026, "test_mem_exact": 0.4793, "test_mem_mae_gib": 2.8871, "test_device_exact": 0.9539, "test_oom_rate": 0.0413, "test_gpu_regret": 0.2292, "test_util_within_10": 0.8981, "test_util_mae": 8.1641, "test_n_mem_scored": 1413, "ood_mem_within_margin": 0.3484, "ood_mem_within_one_cell": 0.5832, "ood_mem_exact": 0.3819, "ood_mem_mae_gib": 2.5657, "ood_device_exact": 0.9571, "ood_oom_rate": 0.034, "ood_gpu_regret": 0.1641, "ood_util_within_10": 0.9283, "ood_util_mae": 5.7064, "ood_n_mem_scored": 2411, "cold": 0.1234, "warm": 0.6286, "fam": {"blocked_gemm": 0.245, "cnn_train": 0.402, "encoder_infer": 0.413, "gpt_train": 0.368, "knn_search": 0.241, "loader_bound": 0.384, "mlp_tabular": 0.407, "recsys_train": 0.46}}, "gbt": {"test_mem_within_margin": 0.603, "test_mem_within_one_cell": 0.9401, "test_mem_exact": 0.7424, "test_mem_mae_gib": 1.3882, "test_device_exact": 0.9683, "test_oom_rate": 0.0179, "test_gpu_regret": 0.0838, "test_util_within_10": 0.9738, "test_util_mae": 2.2811, "test_n_mem_scored": 1413, "ood_mem_within_margin": 0.2497, "ood_mem_within_one_cell": 0.627, "ood_mem_exact": 0.3135, "ood_mem_mae_gib": 2.722, "ood_device_exact": 0.9583, "ood_oom_rate": 0.036, "ood_gpu_regret": 0.1628, "ood_util_within_10": 0.8643, "ood_util_mae": 8.3427, "ood_n_mem_scored": 2411, "cold": 0.57, "warm": 0.6373, "fam": {"blocked_gemm": 0.569, "cnn_train": 0.557, "encoder_infer": 0.516, "gpt_train": 0.589, "knn_search": 0.25, "loader_bound": 0.661, "mlp_tabular": 0.693, "recsys_train": 0.249}}, "gbt-dist": {"test_mem_within_margin": 0.7127, "test_mem_within_one_cell": 0.8981, "test_mem_exact": 0.5682, "test_mem_mae_gib": 1.3511, "test_device_exact": 0.936, "test_oom_rate": 0.064, "test_gpu_regret": 0.3415, "test_util_within_10": 0.9738, "test_util_mae": 2.2811, "test_n_mem_scored": 1413, "ood_mem_within_margin": 0.2572, "ood_mem_within_one_cell": 0.5788, "ood_mem_exact": 0.2454, "ood_mem_mae_gib": 3.184, "ood_device_exact": 0.9546, "ood_oom_rate": 0.0454, "ood_gpu_regret": 0.2189, "ood_util_within_10": 0.8643, "ood_util_mae": 8.3427, "ood_n_mem_scored": 2411, "cold": 0.663, "warm": 0.7645, "fam": {"blocked_gemm": 0.691, "cnn_train": 0.669, "encoder_infer": 0.617, "gpt_train": 0.739, "knn_search": 0.241, "loader_bound": 0.71, "mlp_tabular": 0.779, "recsys_train": 0.274}}, "zeroshot-27b": {"test_mem_within_margin": 0.3754, "test_mem_within_one_cell": 0.5367, "test_mem_exact": 0.2967, "test_mem_mae_gib": 3.0812, "test_device_exact": 0.9467, "test_oom_rate": 0.0533, "test_gpu_regret": 0.2619, "test_util_within_10": 0.56, "test_util_mae": 14.9896, "test_n_mem_scored": 293, "ood_mem_within_margin": 0.3729, "ood_mem_within_one_cell": 0.5033, "ood_mem_exact": 0.3233, "ood_mem_mae_gib": 3.756, "ood_device_exact": 0.9533, "ood_oom_rate": 0.0467, "ood_gpu_regret": 0.2518, "ood_util_within_10": 0.57, "ood_util_mae": 19.6743, "ood_n_mem_scored": 295, "cold": 0.121, "warm": 0.6691, "fam": {"blocked_gemm": 0.167, "cnn_train": 0.326, "encoder_infer": 0.54, "gpt_train": 0.449, "knn_search": 0.262, "loader_bound": 0.54, "mlp_tabular": 0.22, "recsys_train": 0.486}}, "sft-greedy": {"test_mem_within_margin": 0.5853, "test_mem_within_one_cell": 0.8602, "test_mem_exact": 0.7142, "test_mem_mae_gib": 1.9362, "test_device_exact": 0.9663, "test_oom_rate": 0.0282, "test_gpu_regret": 0.1374, "test_util_within_10": 0.9552, "test_util_mae": 3.029, "test_n_mem_scored": 1413, "ood_mem_within_margin": 0.4455, "ood_mem_within_one_cell": 0.6942, "ood_mem_exact": 0.4706, "ood_mem_mae_gib": 2.2936, "ood_device_exact": 0.9644, "ood_oom_rate": 0.0336, "ood_gpu_regret": 0.154, "ood_util_within_10": 0.9279, "ood_util_mae": 5.7153, "ood_n_mem_scored": 2411, "cold": 0.4938, "warm": 0.6806, "fam": {"blocked_gemm": 0.614, "cnn_train": 0.517, "encoder_infer": 0.599, "gpt_train": 0.399, "knn_search": 0.417, "loader_bound": 0.667, "mlp_tabular": 0.668, "recsys_train": 0.475}}, "sft-sampled": {"test_mem_within_margin": 0.6065, "test_mem_within_one_cell": 0.8299, "test_mem_exact": 0.6233, "test_mem_mae_gib": 1.9123, "test_device_exact": 0.936, "test_oom_rate": 0.064, "test_gpu_regret": 0.3415, "test_util_within_10": 0.9518, "test_util_mae": 3.0489, "test_n_mem_scored": 1413, "ood_mem_within_margin": 0.4703, "ood_mem_within_one_cell": 0.6885, "ood_mem_exact": 0.4504, "ood_mem_mae_gib": 2.0844, "ood_device_exact": 0.9546, "ood_oom_rate": 0.0454, "ood_gpu_regret": 0.2189, "ood_util_within_10": 0.9283, "ood_util_mae": 5.707, "ood_n_mem_scored": 2411, "cold": 0.509, "warm": 0.7081, "fam": {"blocked_gemm": 0.662, "cnn_train": 0.53, "encoder_infer": 0.593, "gpt_train": 0.45, "knn_search": 0.479, "loader_bound": 0.664, "mlp_tabular": 0.696, "recsys_train": 0.461}}, "jev-pointer-argmax": {"test_mem_within_margin": 0.569, "test_mem_within_one_cell": 0.8815, "test_mem_exact": 0.7163, "test_mem_mae_gib": 1.9945, "test_device_exact": 0.9628, "test_oom_rate": 0.0165, "test_gpu_regret": 0.1314, "test_util_within_10": 0.9525, "test_util_mae": 3.2152, "test_n_mem_scored": 1413, "ood_mem_within_margin": 0.3895, "ood_mem_within_one_cell": 0.5925, "ood_mem_exact": 0.3969, "ood_mem_mae_gib": 2.5598, "ood_device_exact": 0.9579, "ood_oom_rate": 0.034, "ood_gpu_regret": 0.1634, "ood_util_within_10": 0.9279, "ood_util_mae": 5.722, "ood_n_mem_scored": 2411, "cold": 0.4757, "warm": 0.6662, "fam": {"blocked_gemm": 0.532, "cnn_train": 0.483, "encoder_infer": 0.575, "gpt_train": 0.473, "knn_search": 0.276, "loader_bound": 0.677, "mlp_tabular": 0.618, "recsys_train": 0.507}}, "jev-pointer": {"test_mem_within_margin": 0.6327, "test_mem_within_one_cell": 0.8547, "test_mem_exact": 0.5771, "test_mem_mae_gib": 1.5614, "test_device_exact": 0.9483, "test_oom_rate": 0.0517, "test_gpu_regret": 0.2812, "test_util_within_10": 0.9525, "test_util_mae": 3.2152, "test_n_mem_scored": 1413, "ood_mem_within_margin": 0.45, "ood_mem_within_one_cell": 0.6019, "ood_mem_exact": 0.3196, "ood_mem_mae_gib": 2.2964, "ood_device_exact": 0.9579, "ood_oom_rate": 0.0421, "ood_gpu_regret": 0.1934, "ood_util_within_10": 0.9279, "ood_util_mae": 5.722, "ood_n_mem_scored": 2411, "cold": 0.5132, "warm": 0.7572, "fam": {"blocked_gemm": 0.614, "cnn_train": 0.625, "encoder_infer": 0.628, "gpt_train": 0.527, "knn_search": 0.378, "loader_bound": 0.728, "mlp_tabular": 0.661, "recsys_train": 0.525}}, "jev-pointer-4b-argmax": {"test_mem_within_margin": 0.5711, "test_mem_within_one_cell": 0.8402, "test_mem_exact": 0.6853, "test_mem_mae_gib": 2.0239, "test_device_exact": 0.9628, "test_oom_rate": 0.0289, "test_gpu_regret": 0.1551, "test_util_within_10": 0.9421, "test_util_mae": 3.5721, "test_n_mem_scored": 1413, "ood_mem_within_margin": 0.4226, "ood_mem_within_one_cell": 0.6302, "ood_mem_exact": 0.4281, "ood_mem_mae_gib": 2.3645, "ood_device_exact": 0.9619, "ood_oom_rate": 0.0336, "ood_gpu_regret": 0.1521, "ood_util_within_10": 0.9279, "ood_util_mae": 5.7172, "ood_n_mem_scored": 2411, "cold": 0.466, "warm": 0.6806, "fam": {"blocked_gemm": 0.609, "cnn_train": 0.483, "encoder_infer": 0.575, "gpt_train": 0.431, "knn_search": 0.341, "loader_bound": 0.656, "mlp_tabular": 0.611, "recsys_train": 0.508}}, "jev-pointer-4b": {"test_mem_within_margin": 0.649, "test_mem_within_one_cell": 0.8168, "test_mem_exact": 0.5393, "test_mem_mae_gib": 1.8609, "test_device_exact": 0.9366, "test_oom_rate": 0.0634, "test_gpu_regret": 0.3362, "test_util_within_10": 0.9421, "test_util_mae": 3.5721, "test_n_mem_scored": 1413, "ood_mem_within_margin": 0.5052, "ood_mem_within_one_cell": 0.6395, "ood_mem_exact": 0.3888, "ood_mem_mae_gib": 2.2196, "ood_device_exact": 0.9546, "ood_oom_rate": 0.0454, "ood_gpu_regret": 0.2189, "ood_util_within_10": 0.9279, "ood_util_mae": 5.7172, "ood_n_mem_scored": 2411, "cold": 0.5049, "warm": 0.7991, "fam": {"blocked_gemm": 0.686, "cnn_train": 0.618, "encoder_infer": 0.658, "gpt_train": 0.527, "knn_search": 0.447, "loader_bound": 0.683, "mlp_tabular": 0.686, "recsys_train": 0.566}}} ;
+const FAM = {"mlp_tabular": [0.52, 1.44, 5.94, 13.7, 1250, 0], "loader_bound": [0.47, 0.92, 2.67, 8.43, 1250, 0], "encoder_infer": [0.74, 1.78, 10.81, 42.57, 1188, 78], "blocked_gemm": [1.15, 5.02, 21.46, 42.52, 1141, 156], "gpt_train": [1.7, 4.67, 13.7, 40.61, 1192, 118], "cnn_train": [0.93, 3.02, 12.82, 36.37, 1134, 36], "recsys_train": [0.77, 2.85, 10.42, 30.04, 1181, 69], "knn_search": [0.98, 2.58, 10.1, 32.19, 1230, 43]} ;
+const UTIL = [420, 272, 250, 134, 155, 110, 65, 138, 541, 7481] ;
+const FULL = {"static": [0.099, 0.1899], "vpa": [0.3663, 0.3481], "size-rule": [0.3663, 0.3481], "gbt": [0.4554, 0.2911], "gbt-dist": [0.505, 0.3228], "zeroshot-27b": [0.3465, 0.3165], "sft-greedy": [0.4059, 0.3734], "sft-sampled": [0.4158, 0.3481], "jev-pointer-argmax": [0.4158, 0.3544], "jev-pointer": [0.4257, 0.3418], "jev-pointer-4b-argmax": [0.3366, 0.2595], "jev-pointer-4b": [0.4257, 0.2785]} ;
+const LABEL = {
+  "static": "static request", "vpa": "history max × margin", "size-rule": "size rule",
+  "gbt": "trees (gbt)", "gbt-dist": "trees, distribution", "zeroshot-27b": "zero-shot 27B",
+  "sft-greedy": "SFT 1.7B, greedy", "sft-sampled": "SFT 1.7B, 8 samples",
+  "jev-pointer-argmax": "decision 1.7B, argmax", "jev-pointer": "decision 1.7B, decoded",
+  "jev-pointer-4b-argmax": "decision 4B, argmax", "jev-pointer-4b": "decision 4B, decoded"
+};
+const ORDER = Object.keys(LABEL);
+const KIND = a => a.startsWith("jev") ? "dec" : a.startsWith("sft") || a.startsWith("zeroshot") ? "llm" : a.startsWith("gbt") ? "tree" : "rule";
+const COLOR = { rule: "var(--rule-c)", tree: "var(--tree)", llm: "var(--warm)", dec: "var(--accent)" };
+const NS = "http://www.w3.org/2000/svg", MONO = "IBM Plex Mono, monospace";
+const pct = x => (x * 100).toFixed(1) + "%";
+const sw = a => `<span class="kind" style="background:${COLOR[KIND(a)]}"></span>${LABEL[a]}`;
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+// family spread, log scale
+(function () {
+  const svg = document.getElementById("spread"), L = 150, R = 110, T = 30, rowH = 34;
+  const fams = Object.keys(FAM), W = 900 - L - R, lo = Math.log2(0.25), hi = Math.log2(64);
+  const x = g => L + W * (Math.log2(g) - lo) / (hi - lo);
+  svg.setAttribute("viewBox", `0 0 900 ${T + rowH * fams.length + 34}`);
+  const H = rowH * fams.length;
+  [0.25, 0.5, 1, 2, 4, 8, 16, 32, 64].forEach(g => {
+    el("line", { x1: x(g), x2: x(g), y1: T, y2: T + H, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(g), y: T + H + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, g);
+  });
+  el("text", { x: L + W / 2, y: T + H + 32, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, svg, "peak GPU memory (GiB, log scale)");
+  [[15, "T4 15"], [22, "L4 22"], [44, "L40S 44"]].forEach(([g, t]) => {
+    el("line", { x1: x(g), x2: x(g), y1: T - 6, y2: T + H, stroke: "var(--bad)", "stroke-dasharray": "4 4", "stroke-width": 1.3 }, svg);
+    el("text", { x: x(g), y: T - 12, "text-anchor": "middle", "font-size": 11, fill: "var(--bad)", "font-family": MONO }, svg, t);
+  });
+  el("text", { x: 900 - 8, y: T - 12, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, "> 15 GiB");
+  fams.forEach((f, i) => {
+    const [p10, p50, p90, mx, n, over] = FAM[f], y = T + i * rowH + rowH / 2;
+    const unseen = f === "recsys_train" || f === "knn_search";
+    el("text", { x: L - 10, y: y + 4, "text-anchor": "end", "font-size": 13, fill: unseen ? "var(--muted)" : "var(--ink)" }, svg, f + (unseen ? " (unseen)" : ""));
+    el("rect", { x: x(p10), y: y - 6, width: Math.max(2, x(p90) - x(p10)), height: 12, rx: 2, fill: "var(--accent)", "fill-opacity": 0.35 }, svg);
+    el("line", { x1: x(p90), x2: x(mx), y1: y, y2: y, stroke: "var(--accent)", "stroke-width": 1 }, svg);
+    el("line", { x1: x(mx), x2: x(mx), y1: y - 6, y2: y + 6, stroke: "var(--accent)", "stroke-width": 1.5 }, svg);
+    el("circle", { cx: x(p50), cy: y, r: 4.5, fill: "var(--accent)" }, svg);
+    el("text", { x: 900 - 8, y: y + 4, "text-anchor": "end", "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, `${over} of ${n.toLocaleString("en-US")}`);
+  });
+})();
+
+// utilization histogram
+(function () {
+  const svg = document.getElementById("util"), L = 60, R = 20, T = 14, B = 44, W = 900 - L - R, H = 250 - T - B;
+  const max = 8000, bw = W / UTIL.length, y = v => T + H * (1 - v / max);
+  [0, 2000, 4000, 6000, 8000].forEach(v => {
+    el("line", { x1: L, x2: L + W, y1: y(v), y2: y(v), stroke: "var(--rule)" }, svg);
+    el("text", { x: L - 8, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, v.toLocaleString("en-US"));
+  });
+  UTIL.forEach((n, i) => {
+    el("rect", { x: L + i * bw + 6, y: y(n), width: bw - 12, height: Math.max(1, y(0) - y(n)), rx: 2, fill: "var(--tree)" }, svg);
+    el("text", { x: L + i * bw + bw / 2, y: y(n) - 5, "text-anchor": "middle", "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, n.toLocaleString("en-US"));
+    el("text", { x: L + i * bw + bw / 2, y: T + H + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, `${i * 10}–${i * 10 + 10}%`);
+  });
+  el("text", { x: L + W / 2, y: T + H + 36, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, svg, "mean GPU utilization");
+})();
+
+// leaderboard bars
+(function () {
+  const svg = document.getElementById("board"), L = 220, R = 60, T = 10, rowH = 39;
+  const W = 900 - L - R, x = v => L + W * v;
+  svg.setAttribute("viewBox", `0 0 900 ${T + rowH * ORDER.length + 30}`);
+  [0, 0.25, 0.5, 0.75, 1].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * ORDER.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * ORDER.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v * 100) + "%");
+  });
+  ORDER.forEach((a, i) => {
+    const d = ARMS[a], y = T + i * rowH, c = COLOR[KIND(a)];
+    el("text", { x: L - 10, y: y + 17, "text-anchor": "end", "font-size": 13, fill: "var(--ink)" }, svg, LABEL[a]);
+    el("rect", { x: L, y: y + 5, width: Math.max(1, x(d.test_mem_within_margin) - L), height: 13, rx: 2, fill: c }, svg);
+    el("rect", { x: L, y: y + 21, width: Math.max(1, x(d.ood_mem_within_margin) - L), height: 11, rx: 2, fill: "none", stroke: c, "stroke-width": 1.5 }, svg);
+    el("text", { x: x(d.test_mem_within_margin) + 6, y: y + 16, "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, pct(d.test_mem_within_margin));
+    el("text", { x: x(d.ood_mem_within_margin) + 6, y: y + 31, "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, pct(d.ood_mem_within_margin));
+  });
+})();
+
+// leaderboard table
+(function () {
+  const gib = v => v.toFixed(2);
+  const cols = [["test_mem_within_margin", "test ±20%", 1, pct], ["test_mem_within_one_cell", "test 1 cell", 1, pct], ["test_mem_mae_gib", "test MAE", -1, gib],
+    ["test_device_exact", "test device", 1, pct], ["test_oom_rate", "test OOM", -1, pct], ["test_gpu_regret", "test $ regret", -1, pct],
+    ["test_util_within_10", "test util ±10", 1, pct], ["ood_mem_within_margin", "unseen ±20%", 1, pct], ["ood_mem_mae_gib", "unseen MAE", -1, gib],
+    ["ood_gpu_regret", "unseen $ regret", -1, pct], ["ood_util_within_10", "unseen util ±10", 1, pct]];
+  const best = {};
+  cols.forEach(([k, , dir]) => { const vs = ORDER.map(a => ARMS[a][k]); best[k] = dir > 0 ? Math.max(...vs) : Math.min(...vs); });
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td>${sw(a)}</td>`;
+    cols.forEach(([k, , , f]) => { h += `<td class="${ARMS[a][k] === best[k] ? "best" : ""}">${f(ARMS[a][k])}</td>`; });
+    h += "</tr>";
+  });
+  document.getElementById("boardtable").innerHTML = h + "</tbody>";
+})();
+
+// by family
+(function () {
+  const fams = Object.keys(FAM);
+  let h = "<thead><tr><th>approach</th>" + fams.map(f => `<th>${f}${f === "recsys_train" || f === "knn_search" ? " <span class=\"muted\">(unseen)</span>" : ""}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td>${sw(a)}</td>`;
+    fams.forEach(f => {
+      const v = ARMS[a].fam[f];
+      h += `<td class="heat" style="background:color-mix(in srgb, var(--accent) ${Math.round(v * 34)}%, transparent)">${Math.round(v * 100)}%</td>`;
+    });
+    h += "</tr>";
+  });
+  document.getElementById("famtable").innerHTML = h + "</tbody>";
+})();
+
+// full-1 vs big-1
+(function () {
+  let h = "<thead><tr><th>approach</th><th>full-1 test</th><th>big-1 test</th><th>full-1 unseen</th><th>big-1 unseen</th></tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td>${sw(a)}</td><td>${pct(FULL[a][0])}</td><td>${pct(ARMS[a].test_mem_within_margin)}</td><td>${pct(FULL[a][1])}</td><td>${pct(ARMS[a].ood_mem_within_margin)}</td></tr>`;
+  });
+  document.getElementById("scaletable").innerHTML = h + "</tbody>";
+})();
+</script>

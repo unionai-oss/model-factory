@@ -111,7 +111,7 @@ are left out of its gradient (they do not move its reward).
 | [rsc-big-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-big-1) | **RightSizeCPU big-1**: 9,900 runs in pinned pairs; 9 arms | succeeded in 23.1 h: 1,238 shards measured in 17.6 h (4-9 pods at a time), 9,900/9,900 runs ok; arms + scoring 5.5 h. Results below |
 | [rsg-big-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big-1) | **RightSizeGPU big-1**: 10,000 runs; 9 arms | **FAILED** at `rt-gpubench-arm[big-1, sft]`: `max_runtime of 8h0m0s exceeded`. Training finished (~980 steps, 5,129 train runs); decoding ~4,800 eval runs greedy + 8 samples (batch 2) did not. Corpus and the other 8 arms succeeded. 42 of 184 L40S re-measure shards TIMED_OUT (their runs are missing from the corpus) |
 | [rsg-big-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big-2) | relaunch with `train_llm_arm`'s max_runtime raised to 14 h in `bench/gpu_stations.py` | **aborted** after 2 min: that file is in every LLM arm's cache version (`_SHARED_LLM`), so all three LLM arms started retraining (~10 T4-hours). Fix: revert it, override the timeout at the GPU bench's call site (`train_llm_arm.override(timeout=...)` in `bench_gpu/stations.py`) |
-| [rsg-big-3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big-3) | relaunch with the call-site override | jev-pointer and jev-pointer-4b cache-hit within minutes; sft retraining; running |
+| [rsg-big-3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big-3) | relaunch with the call-site override | succeeded in 8.4 h: jev-pointer and jev-pointer-4b cache-hit within minutes, sft retrained (4.1 h training + decoding, 8.3 h station), corpus reused from rsg-big-1. Results below |
 | [rsa-big-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-big-1) | **combined bench big-1**: v2 + CPU big-1 + GPU big-1 corpora, 5 arms + RL | succeeded in 8.4 h: supervised decision model 5.7 h (10,500 train runs), RL 2.7 h (370 steps), zeroshot 69 min. Results below |
 
 ## RightSizeCPU big-1 (rsc-big-1)
@@ -213,6 +213,65 @@ Findings (shakedown scale; to be re-tested on big-1):
 5. **zeroshot-27b** is the worst learned arm (44.4%) and produced
    unparseable answers on 183 of its ~600 prompts (counted as the
    fallback request).
+
+## RightSizeGPU big-1 (rsg-big-3; corpus from rsg-big-1)
+
+Measurement (rsg-big-1): 1,667 six-run T4 shards in 7.6 h, then 184 L40S
+re-measure shards for the runs that CUDA-OOMed the T4, in 4.1 h. Of
+10,000 runs, 9,566 are usable: 5,021 train / 721 val / 1,413 test /
+2,411 OOD (knn_search, recsys_train). Excluded: 219 runs whose peak
+filled the device, 165 runs that OOMed the T4 and whose L40S re-measure
+shard timed out, and 50 that OOMed even the L40S (> 44 GiB). Median peak
+2.4 GiB (p90 11.2, max 42.6); 94.8% of usable runs fit a T4, 2.1% need
+an L4, 3.1% an L40S. Median mean utilization 95% (78% of runs >= 90%;
+loader_bound median 20%). Median wall 94 s.
+
+| arm | test mem ±20% | within 1 cell | test GPU regret | test OOM | test util ±10 | OOD mem ±20% | OOD regret |
+|---|---|---|---|---|---|---|---|
+| static | 8.7% | 22.7% | 34.1% | 6.4% | 80.3% | 10.3% | 21.9% |
+| vpa | 35.3% | 57.9% | 22.9% | 4.1% | 89.8% | 33.1% | 16.4% |
+| size-rule | 37.1% | 60.3% | 22.9% | 4.1% | 89.8% | 34.8% | 16.4% |
+| gbt | 60.3% | **94.0%** | **8.4%** | 1.8% | **97.4%** | 25.0% | 16.3% |
+| **gbt-dist** | **71.3%** | 89.8% | 34.1% | 6.4% | 97.4% | 25.7% | 21.9% |
+| zeroshot-27b (~295) | 37.5% | 53.7% | 26.2% | 5.3% | 56.0% | 37.3% | 25.2% |
+| sft-greedy | 58.5% | 86.0% | 13.7% | 2.8% | 95.5% | 44.5% | 15.4% |
+| sft-sampled | 60.7% | 83.0% | 34.1% | 6.4% | 95.2% | 47.0% | 21.9% |
+| jev-pointer-argmax | 56.9% | 88.2% | 13.1% | **1.7%** | 95.2% | 38.9% | 16.3% |
+| jev-pointer | 63.3% | 85.5% | 28.1% | 5.2% | 95.2% | 45.0% | 19.3% |
+| jev-pointer-4b-argmax | 57.1% | 84.0% | 15.5% | 2.9% | 94.2% | 42.3% | **15.2%** |
+| **jev-pointer-4b** | 64.9% | 81.7% | 33.6% | 6.3% | 94.2% | **50.5%** | 21.9% |
+
+1. **Memory accuracy finally moves with data** (full-1, 104 test runs ->
+   1,413): gbt-dist 50.5% -> 71.3%, jev-pointer 42.6% -> 63.3%, 4B
+   42.6% -> 64.9%, sft-greedy 40.6% -> 58.5%. The rules and the 27B stay
+   at 35-38%.
+2. **Unseen families: the code readers lead, trees collapse.** 4B 50.5%,
+   sft-sampled 47.0%, jev-pointer 45.0%; gbt-dist falls from 71.3% to
+   25.7% (24% on knn_search), below size-rule (34.8%).
+3. **The accuracy decoder never leaves the T4.** gbt-dist, sft-sampled and
+   static score the identical 6.4% OOM / 34.1% regret: within-±20%
+   decoding never picks the wide 22 / 44 GiB cells, so every run above
+   15 GiB OOMs once. Argmax reads do pick them (jev argmax 1.7% OOM, 13.1%
+   regret; gbt 8.4%). For dollars, read the GPU arms by argmax or by the
+   cost decoder (the frontier), not by the accuracy decoder.
+4. **Utilization is no longer saturated but still easy**: 78% of runs are
+   >= 90% busy; trees and the trained LLMs are 94-97% within 10 points,
+   the 27B 56%.
+5. Arm metadata: jev-pointer 3.9 h training (5,129 runs), T = 0.99, 180
+   ms/decision on a T4; 4B 5.7 h, 391 ms; sft 4.1 h, greedy 1.7 s / 8
+   samples 3.1 s per decision, 22.5 generated tokens, margin k = 0, no
+   parse failures. Knobs: static q 0.75 (5.9 GiB), size-rule q 0.5
+   margin 1.0, vpa margin 1.0, gbt q 0.5.
+
+Pages: [RightSizeGPU Bench (big-1)](https://claude.ai/artifact/J2FcFNpDNFQ6bgWSQqBaoJ),
+[abstract](https://claude.ai/artifact/6hkCMHaTb4uVofC27LniLb)
+(`benchmarks/rightsize-gpu-bench-big*.html`).
+
+Correction (2026-10-26): the rsg-big-1 ledger row and the combined-bench
+section say the runs of the 42 timed-out L40S shards are "missing from
+the corpus". They are in it, as 165 censored rows (CUDA OOM on the T4, no
+L40S measurement), and are excluded from scoring like the 50 runs that
+OOMed the L40S itself.
 
 ## Combined bench big-1 (rsa-big-1: v2 + CPU big-1 + GPU big-1)
 

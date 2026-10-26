@@ -151,7 +151,7 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         <tr><td><b>all</b></td><td></td><td><b>19,106</b></td><td><b>2,697</b></td><td><b>5,363</b></td><td><b>6,534</b></td><td></td></tr>
       </tbody>
     </table>
-    <p class="caption">Usable runs only. The GPU corpus is the one published by rsg-big-1. Runs in its 42 timed-out L40S re-measure shards, and runs whose outputs filled the device, are not in it. A GPU task's host memory and cores come with its GPU instance, so those two axes are not scored on GPU runs.</p></div>
+    <p class="caption">Usable runs only. The GPU corpus is the one published by rsg-big-1. It excludes runs whose peak filled the device, 165 runs that ran out of memory on the T4 and whose L40S re-measure shard timed out, and 50 that ran out of memory even on the L40S. A GPU task's host memory and cores come with its GPU instance, so those two axes are not scored on GPU runs.</p></div>
     <p>The decision models train on a balanced sample of 3,500 runs per source (10,500 in all), so that the memory corpus, the largest of the three, does not dominate. The trees and rules use all 19,106 training runs.</p>
   </section>
 
@@ -390,14 +390,14 @@ rt-allbench-leaderboard [release]           all_leaderboard</pre></div>
       <li><b>Prices are list prices</b>: an m6i.xlarge dominant share for CPU pods and on-demand GPU instance prices. Spot discounts and bin-packing are not modelled.</li>
       <li><b>A GPU task's host memory and cores are not scored.</b> They come with the instance, so the request for them costs nothing either way.</li>
       <li><b>Memory-bench runs have no per-second CPU series.</b> Their throttling is modelled from mean cores, which understates bursts.</li>
-      <li><b>The GPU corpus is missing the runs of 42 timed-out L40S shards</b> from rsg-big-1, which removes some of the largest GPU workloads.</li>
+      <li><b>165 GPU runs that needed more than a T4 have no measurement</b>, because their L40S re-measure shards timed out in rsg-big-1. The GPU tail above 15 GiB is undercounted.</li>
       <li><b>The zero-shot 27B is scored on 300 runs per split</b> (about ±5 points), and 23% of its answers were unparseable.</li>
       <li><b>One training seed per arm.</b> The 1.7-point test gap between RL and the supervised model has not been checked against seed-to-seed variation.</li>
     </ul>
   </section>
 
   <footer>
-    <div>Short version: <a href="https://claude.ai/artifact/LJceQj2Na4jwmmdPhyYx1u">RightSize Bench Abstract (big-1)</a>. Single-axis benches: <a href="https://claude.ai/artifact/BHvwdVkkGvAP8yWyHWo8Xc">RightSizeMem</a>, <a href="https://claude.ai/artifact/EVom2ZzCJdA8eV4tW9VCAP">RightSizeCPU (big-1)</a>, <a href="https://claude.ai/artifact/VTKpd9U7jW3JS3YLBqj9cw">RightSizeGPU (small-1)</a>.</div>
+    <div>Short version: <a href="https://claude.ai/artifact/LJceQj2Na4jwmmdPhyYx1u">RightSize Bench Abstract (big-1)</a>. Single-axis benches: <a href="https://claude.ai/artifact/BHvwdVkkGvAP8yWyHWo8Xc">RightSizeMem</a>, <a href="https://claude.ai/artifact/EVom2ZzCJdA8eV4tW9VCAP">RightSizeCPU (big-1)</a>, <a href="https://claude.ai/artifact/J2FcFNpDNFQ6bgWSQqBaoJ">RightSizeGPU (big-1)</a>.</div>
     <div>Source: <span class="mono">model-factory-resource-tuner/resource_tuner/bench_all/</span> · research log <span class="mono">research_log/2026-10-24-round-20-rightsize-big-and-combined.md</span> · cluster project <span class="mono">resource-tuner-model-factory</span> on demo.hosted.unionai.cloud.</div>
     <div>Reproduce: <span class="mono">flyte factory materialize rightsize-all-bench rt-allbench-leaderboard --partition release=big-1 --partition arm=static,rules,gbt-dist,zeroshot-27b,jev-pointer</span></div>
   </footer>
