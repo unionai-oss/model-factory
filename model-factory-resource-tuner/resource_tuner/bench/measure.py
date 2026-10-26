@@ -96,6 +96,8 @@ def write_input(spec: dict, directory: Path, seed: int) -> Path:
             n = min(step, shape[0] - i)
             if dtype == np.uint8:
                 out[i : i + n] = rng.integers(0, 256, (n, *shape[1:]), dtype=np.uint8)
+            elif np.issubdtype(dtype, np.integer):  # ids: [0, spec["high"]), e.g. token ids < vocab
+                out[i : i + n] = rng.integers(0, int(spec.get("high", 2**15)), (n, *shape[1:]), dtype=dtype)
             else:
                 out[i : i + n] = rng.standard_normal((n, *shape[1:])).astype(dtype)
         out.flush()

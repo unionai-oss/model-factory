@@ -1,4 +1,4 @@
-"""RightSize Bench as a Union factory.
+"""RightSizeMem Bench as a Union factory.
 
     flyte factory deploy bench_factory.py
     flyte factory materialize rightsize-bench rt-bench-leaderboard \
@@ -39,6 +39,8 @@ import flyte
 from flyte.remote import Task
 from flyteplugins.union import factory
 
+#: Deployed name, kept from before the bench was renamed RightSizeMem: the
+#: factory and its rt-bench-* artifacts carry rounds 17's published versions.
 FACTORY_NAME = "rightsize-bench"
 
 ARTIFACT_RUNS = "rt-bench-runs"
@@ -75,7 +77,7 @@ def build_graph() -> factory.Factory:
         ARTIFACT_RUNS,
         partitions={PARTITION_RELEASE: str},
         kind="data",
-        description="RightSize Bench workloads: real task code + input specs, one row per run",
+        description="RightSizeMem Bench workloads: real task code + input specs, one row per run",
     ).using(generate, release=factory.partition(PARTITION_RELEASE), tasks_per_family=TASKS_PER_FAMILY)
 
     corpus = factory.build(
@@ -128,7 +130,7 @@ def build_graph() -> factory.Factory:
         FACTORY_NAME,
         board,
         live_check,
-        description="RightSize Bench: rules vs GBT vs autoregressive LLMs vs a Jev-style decision model",
+        description="RightSizeMem Bench: rules vs GBT vs autoregressive LLMs vs a Jev-style decision model",
     )
 
 

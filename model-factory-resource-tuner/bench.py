@@ -1,4 +1,4 @@
-"""Deploy unit for RightSize Bench stations.
+"""Deploy unit for RightSizeMem Bench stations.
 
     CFG=.flyte/config.yaml
     uv run flyte --config $CFG deploy bench.py bench_env

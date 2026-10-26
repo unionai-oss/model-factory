@@ -1,4 +1,11 @@
-"""RightSize Bench: a measured, head-to-head benchmark for resource right-sizing.
+"""RightSizeMem Bench: a measured, head-to-head benchmark for memory right-sizing.
+
+One of three RightSize benches: RightSizeMem (this package: the memory
+request), RightSizeCPU (``resource_tuner.bench_cpu``: peak CPU) and
+RightSizeGPU (``resource_tuner.bench_gpu``: GPU memory and utilization).
+This package also holds what the three share: ``spec`` / ``registry``
+(what differs per bench), ``llm_arms`` and ``gpu_stations`` (the LLM
+arms and their trainer), and ``common`` (station plumbing).
 
 Every workload in the bench is real, executable code; every label is the peak
 memory and CPU the code actually used when it ran in a pod. Arms -- simple

@@ -1,4 +1,4 @@
-"""RightSize Bench: the properties the leaderboard's honesty rests on.
+"""RightSizeMem Bench: the properties the leaderboard's honesty rests on.
 
 The load-bearing tests:
 - `test_features_cannot_see_the_answer` -- the information boundary. No

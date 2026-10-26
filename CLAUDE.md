@@ -41,6 +41,18 @@ cannot satisfy).
   itself fails resolving the artifact its parameter is bound to, which is
   expected — the image is built by then. Bootstrap order is
   stations → app env → factory → materialize target → materialize endpoint.
+- **`flyte factory deploy` pins station task versions.** The graph's
+  `Task.get(name, auto_version="latest")` resolves once, at factory deploy:
+  redeploying stations alone changes nothing a materialization runs, and
+  `--rebuild <artifact> --downstream` then re-runs the *old* code
+  (rsg-small-3 re-fit every arm on the pre-change version). Redeploy
+  stations, then the factory. A task called from inside a station runs from
+  that station's code bundle, not the latest deploy of its own env.
+- **Existing partitions are not re-run**, even after a code change:
+  re-materializing a release whose arm artifacts exist reuses all of them
+  (rsg-small-2 launched nothing). `--rebuild <artifact> --downstream`
+  rebuilds that artifact and everything built from it; `--plan` does not
+  show the effect of `--rebuild`.
 - **An app env's spec is compiled into the factory's graph**, so changing the
   app env means redeploying the factory too. A failed serve redeploy leaves
   the previous revision serving, so verify a serve step via the app's

@@ -1,0 +1,511 @@
+<title>RightSize Bench Big</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column, same tokens as the single-axis RightSize reports. Definitions and methodology come first; each result is a claim, a chart drawn from the bench's own numbers, and a "how to read this" note. */
+:root {
+  --bg: #f5f6f9;
+  --panel: #ffffff;
+  --ink: #161823;
+  --muted: #5d6273;
+  --rule: #dcdfe8;
+  --tint: #eef0fb;
+  --accent: #4d65ff;     /* decision model */
+  --warm: #c9760a;       /* autoregressive LLM */
+  --tree: #1f9b6a;       /* classical ML */
+  --rule-c: #8a8fa0;     /* rules */
+  --bad: #d4383b;
+  --rl: #9a4fd0;        /* RL-tuned decision model */
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+    --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --bad: #ff6b6b;
+    --rl: #c48bf2;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+  --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --bad: #ff6b6b;
+  --rl: #c48bf2;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 980px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 72px; }
+header { display: grid; gap: 14px; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(40px, 7vw, 64px); line-height: 1; margin: 0; letter-spacing: -.01em; }
+.lede { font-size: 19px; max-width: 64ch; margin: 0; text-wrap: pretty; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 22px; font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; }
+.status { justify-self: start; font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; color: var(--warm); border: 1px solid color-mix(in srgb, var(--warm) 45%, transparent); border-radius: 999px; padding: 3px 12px; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; }
+nav.toc a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--rule); }
+nav.toc a:hover { color: var(--accent); border-color: var(--accent); }
+section { padding-block: 36px 8px; display: grid; gap: 14px; min-width: 0; }
+.part { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-top: 28px; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.15; margin: 0; text-wrap: balance; }
+h3 { font-family: var(--font-display); font-weight: 600; font-size: 20px; line-height: 1.2; margin: 10px 0 0; }
+p { margin: 0; max-width: 70ch; }
+.muted { color: var(--muted); }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 18px 12px; min-width: 0; }
+.figure svg { display: block; width: 100%; height: auto; }
+.caption { font-size: 13px; color: var(--muted); margin-top: 8px; max-width: none; }
+.howto { background: var(--tint); border-radius: 6px; padding: 14px 16px; display: grid; gap: 6px; font-size: 14.5px; }
+.howto .t { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.howto ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; max-width: none; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+table.num td { white-space: nowrap; }
+table.text td, table.text th { text-align: left; white-space: normal; }
+table.text td:first-child { white-space: nowrap; font-family: var(--font-mono); font-size: 13px; }
+td.best { font-weight: 600; }
+td.heat { color: var(--ink); }
+.kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.stat { display: grid; gap: 4px; align-content: start; }
+.stat .n { font-family: var(--font-display); font-size: 34px; font-weight: 600; line-height: 1.05; }
+.stat .l { font-size: 14px; color: var(--muted); }
+code, .mono { font-family: var(--font-mono); font-size: .9em; }
+ul, ol { margin: 0; padding-left: 22px; display: grid; gap: 6px; max-width: 70ch; }
+dl.defs { display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 10px 22px; margin: 0; }
+dl.defs dt { font-weight: 600; }
+dl.defs dd { margin: 0; color: var(--ink); min-width: 0; }
+@media (max-width: 620px) { dl.defs { grid-template-columns: 1fr; gap: 2px 0; } dl.defs dd { margin-bottom: 10px; } }
+pre.block { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; color: var(--ink); white-space: pre; overflow-x: auto; margin: 0; }
+.steps { counter-reset: s; display: grid; gap: 10px; padding: 0; list-style: none; max-width: 72ch; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 30px 1fr; gap: 10px; }
+.steps li::before { content: counter(s); font-family: var(--font-mono); font-size: 13px; color: var(--accent); border: 1px solid var(--rule); border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; }
+.tldr { display: grid; gap: 8px; padding: 0; list-style: none; }
+.tldr li { padding-left: 16px; border-left: 3px solid var(--accent); }
+footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); display: grid; gap: 6px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 520px) { .lede { font-size: 17px; } h2 { font-size: 24px; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Union model factory · resource right-sizing · round 20 · October 2026</div>
+    <h1>RightSize Bench</h1>
+    <p class="lede">A task's resource request is three guesses made before it runs: how much memory, how many CPU cores, and whether it needs a GPU and which one. This benchmark scores approaches on the whole request at once, in dollars, against the cheapest request that would have worked. It joins the three single-axis benches (RightSizeMem, RightSizeCPU, RightSizeGPU) into one corpus and one cost model, and adds a decision model trained with reinforcement learning on that cost.</p>
+    <span class="status">big-1 · 33,700 measured runs · 8 decision rules</span>
+    <div class="facts">
+      <span><b>33,700</b> usable runs from <b>3</b> benches</span>
+      <span><b>5,363</b> test and <b>6,534</b> unseen-family runs scored</span>
+      <span><b>17 × 16 × 13</b> possible requests</span>
+      <span><b>8.4 h</b> end to end (5.7 h supervised, 2.7 h RL)</span>
+    </div>
+    <nav class="toc" aria-label="Sections">
+      <a href="#summary">Summary</a><a href="#terms">Terms</a><a href="#dataset">Dataset</a><a href="#request">The request</a><a href="#cost">Cost model</a><a href="#boundary">What approaches see</a><a href="#arms">Approaches</a><a href="#rl">RL training</a><a href="#runs">How it ran</a><a href="#results">Results</a><a href="#sources">By source</a><a href="#curve">RL curve</a><a href="#scale">What scale changed</a><a href="#limits">Assumptions and limits</a>
+    </nav>
+  </header>
+
+  <section id="summary">
+    <h2>Summary</h2>
+    <ul class="tldr">
+      <li><b>RL against the cost model gives the lowest regret on familiar code, by a small margin.</b> The RL-tuned 1.7B decision model, read by argmax, costs 8.0% more than the oracle on test runs. The supervised model it started from costs 9.7% more when decoded cost-aware, and trees cost 14.1% more.</li>
+      <li><b>The RL gain shrank with more data.</b> On the smaller shakedown corpus (4,325 training runs), RL cut regret from 23.6% to 12.6%. With 10,500 training runs, the supervised model caught up and RL's lead is 1.7 points, all of it on the CPU and GPU rows.</li>
+      <li><b>On unseen task families, RL does worse than the model it started from</b> (37.3% against 34.1%), and a hand-written rule is the best approach for the first time (32.5%). Reading the code's declared pool sizes transfers to new code; the learned CPU heads do not.</li>
+      <li><b>After RL, argmax is the right read-out.</b> The RL policy already leans toward over-asking where under-asking is expensive, so the cost-aware decoder on top of it over-provisions (19.2%).</li>
+      <li><b>Every approach except the static request and the zero-shot 27B gets the GPU question right on every run:</b> each GPU task gets a GPU, and no CPU task gets one.</li>
+    </ul>
+  </section>
+
+  <div class="part">Part 1 · Definitions</div>
+  <section id="terms">
+    <h2>Terms used on this page</h2>
+    <dl class="defs">
+      <dt>request</dt><dd>One choice on each of three axes: a memory cell, a CPU cell, and a GPU cell or "none". Each axis uses its own bench's grid.</dd>
+      <dt>oracle</dt><dd>The request each run's measurements say is right: the smallest memory cell that holds the measured peak, the CPU cell that covers the busiest 15 seconds, and the GPU cell that holds the peak device memory (or no GPU for a CPU task).</dd>
+      <dt>regret</dt><dd>A run's cost under the approach's request, divided by its cost under the oracle's, minus 1, averaged over runs. 0% is the oracle; 100% is twice its cost. Each run counts once, however much it costs. Lower is better.</dd>
+      <dt>first attempt ok</dt><dd>Share of runs whose first attempt succeeds: no host OOM, no CUDA OOM, and a GPU when the task needs one. Throttling does not count as a failure.</dd>
+      <dt>all axes right</dt><dd>Memory fits and is at most one cell above the oracle, CPU is within ±25% of the busiest 15 seconds, and the GPU choice lands on the oracle's device. A GPU task is scored on the GPU choice only.</dd>
+      <dt>source</dt><dd>Which bench a run came from: <span class="mono">mem</span> (RightSizeMem), <span class="mono">cpu</span> (RightSizeCPU) or <span class="mono">gpu</span> (RightSizeGPU). No approach is told the source.</dd>
+      <dt>test / unseen</dt><dd>Test runs are new tasks from task families the approaches trained on. Unseen runs (OOD) come from families held out of training on each bench.</dd>
+      <dt>argmax / decoded</dt><dd>Two ways to turn a model's probabilities into one request. Argmax takes the most likely cell on each axis. Decoded uses each bench's cost-aware decoder (see <a href="#decoding">Decoding</a>).</dd>
+    </dl>
+  </section>
+
+  <section id="dataset">
+    <h2>The dataset: three measured corpora, one schema</h2>
+    <p>Every run is real task code executed in a pod and measured, collected by the three single-axis benches. The combined bench reads their published corpora as factory sources and rewrites them to one schema. A run keeps the labels its bench measured, and the axes its bench did not measure are left unscored.</p>
+    <div class="figure table-wrap"><table class="num">
+      <thead><tr><th>source</th><th>bench release</th><th>train</th><th>val</th><th>test</th><th>unseen</th><th>labels</th></tr></thead>
+      <tbody>
+        <tr><td>mem</td><td>RightSizeMem v2</td><td>8,457</td><td>1,138</td><td>2,316</td><td>2,323</td><td style="text-align:left">peak RSS → memory; mean cores → CPU</td></tr>
+        <tr><td>cpu</td><td>RightSizeCPU big-1</td><td>5,628</td><td>838</td><td>1,634</td><td>1,800</td><td style="text-align:left">peak RSS → memory; busiest 15 s → CPU</td></tr>
+        <tr><td>gpu</td><td>RightSizeGPU big-1</td><td>5,021</td><td>721</td><td>1,413</td><td>2,411</td><td style="text-align:left">peak device memory → GPU</td></tr>
+        <tr><td><b>all</b></td><td></td><td><b>19,106</b></td><td><b>2,697</b></td><td><b>5,363</b></td><td><b>6,534</b></td><td></td></tr>
+      </tbody>
+    </table>
+    <p class="caption">Usable runs only. The GPU corpus is the one published by rsg-big-1. It excludes runs whose peak filled the device, 165 runs that ran out of memory on the T4 and whose L40S re-measure shard timed out, and 50 that ran out of memory even on the L40S. A GPU task's host memory and cores come with its GPU instance, so those two axes are not scored on GPU runs.</p></div>
+    <p>The decision models train on a balanced sample of 3,500 runs per source (10,500 in all), so that the memory corpus, the largest of the three, does not dominate. The trees and rules use all 19,106 training runs.</p>
+  </section>
+
+  <section id="request">
+    <h2>The request: three grids</h2>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>axis</th><th>cells</th><th>values</th><th>how it is priced</th></tr></thead>
+      <tbody>
+        <tr><td>memory</td><td>17</td><td>256Mi to 64Gi, in half powers of two (RightSizeMem's ladder)</td><td>Dominant share of an m6i.xlarge (4 vCPU, 16 GiB, $0.192/h): price × max(cores ÷ 4, GiB ÷ 16)</td></tr>
+        <tr><td>cpu</td><td>16</td><td>0.25 to 8 cores (RightSizeCPU's steps)</td><td>Same dominant-share price as memory</td></tr>
+        <tr><td>gpu</td><td>13</td><td>none, or 12 GPU memory cells from 1 to 44 GiB (RightSizeGPU's)</td><td>The cheapest device that holds the cell: T4 (15 GiB, $0.526/h), L4 (22 GiB, $0.978/h), L40S (44 GiB, $2.242/h). The GPU instance's price covers its host memory and cores.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section id="cost">
+    <h2>One cost model for all three axes</h2>
+    <p>Each axis fails the way it fails on its own bench, all in one simulation. The cost is the dollars it takes to get the run to SUCCEEDED, including retries and lateness.</p>
+    <ol class="steps">
+      <li><span><b>Memory below the peak:</b> the pod is OOM-killed when the run reaches its peak, then retried with double the memory.</span></li>
+      <li><span><b>CPU below the busiest window:</b> the run is throttled. Its measured per-second CPU series is replayed under the limit, and each second at u cores takes max(1, u ÷ limit) seconds. Memory-bench runs have no series, so their mean cores are used instead.</span></li>
+      <li><span><b>GPU too small:</b> a CUDA OOM at the peak, then a retry on the next device up. <b>No GPU for a GPU task:</b> it fails at start (no CUDA device), and the platform retries it on a T4. <b>A GPU for a CPU task:</b> it runs, at the GPU instance's price for the whole run.</span></li>
+      <li><span><b>Delay costs something:</b> each retry adds one oracle cost, and each hour late adds one oracle hourly price. Every attempt also pays 0.02 h of start-up.</span></li>
+    </ol>
+    <div class="howto"><span class="t">Worked example</span>
+      <p>A one-hour CPU task needs 4Gi of memory and a steady 2 cores. The oracle asks for 4Gi and 2 cores: a dominant share of 0.5, so $0.096/h, or about $0.098 with start-up.</p>
+      <ul>
+        <li>Asking for 8Gi and 2 cores costs the same. Memory is still not the dominant share, so the extra memory is free here (0% regret).</li>
+        <li>Asking for 4 cores doubles the share: about 100% regret.</li>
+        <li>Asking for 1 core halves the price, but the run takes 2 hours, and the hour late costs one oracle hour: about 99% regret.</li>
+        <li>Asking for 2Gi kills the run at its peak (here half-way through), and the retry runs at 4Gi. Together with the retry penalty that is about 151% regret.</li>
+        <li>Asking for a T4 runs it on a $0.526/h GPU instance: about 450% regret. This is the most expensive mistake a request for a CPU task can make.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="boundary">
+    <h2>What every approach is allowed to see</h2>
+    <p>The same information as each single-axis bench: the task's source code, the metadata of this run's inputs (file sizes, formats, row counts, shapes, dtypes), and what earlier runs of the same task measured. That last part is peak memory, peak and mean cores, peak GPU memory and GPU utilization, whichever that task's bench recorded. Nothing tells an approach which bench a run came from, or its task family. Whether a task needs a GPU has to be read from the code. A test pins this boundary: none of the features or prompt fields can see the run's own measurements.</p>
+  </section>
+
+  <div class="part">Part 2 · Approaches</div>
+  <section id="arms">
+    <h2>The approaches compared</h2>
+    <p>Six approaches in five kinds. Every one makes the whole request for every run, and every tunable setting is chosen on validation by mean regret. The two decision models are each read out two ways, which gives the 8 rows on the leaderboard.</p>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>approach</th><th>kind</th><th>what is learned</th><th>trained</th><th>one decision takes</th></tr></thead>
+      <tbody>
+        <tr><td><span class="kind" style="background:var(--rule-c)"></span>static</td><td>rule</td><td>two quantiles</td><td>—</td><td>&lt; 0.01 ms</td></tr>
+        <tr><td><span class="kind" style="background:var(--rule-c)"></span>rules</td><td>rule</td><td>three margins and a GPU quantile</td><td>—</td><td>0.01 ms</td></tr>
+        <tr><td><span class="kind" style="background:var(--tree)"></span>gbt-dist</td><td>classical ML</td><td>3 × 19 quantile models + a GPU classifier, 300 trees each</td><td>CPU pod</td><td>100 ms</td></tr>
+        <tr><td><span class="kind" style="background:var(--warm)"></span>zero-shot 27B</td><td>LLM, generates text</td><td>nothing</td><td>—</td><td>2.4 s, ~46 tokens</td></tr>
+        <tr><td><span class="kind" style="background:var(--accent)"></span>decision 1.7B</td><td>decision model, supervised</td><td>≈17M LoRA + three-head pointer</td><td>4.9 h, one T4</td><td>189 ms, 0 tokens</td></tr>
+        <tr><td><span class="kind" style="background:var(--rl)"></span>RL 1.7B</td><td>decision model, RL-tuned</td><td>the same weights, tuned further</td><td>+1.8 h, one T4</td><td>189 ms, 0 tokens</td></tr>
+      </tbody>
+    </table>
+    <p class="caption">Times are from rsa-big-1. The rules and trees were timed in a batch on the CPU pod (per decision). The decision models were timed one decision at a time on a T4 (median). The 27B time is the median round trip to the shared hosted model.</p></div>
+
+    <h3>Rules</h3>
+    <dl class="defs">
+      <dt>static</dt><dd>One request for every run: a training quantile of memory need and of CPU need (each 0.5, 0.75, 0.9 or 0.95, tuned on validation), and no GPU. big-1 chose the 0.9 quantile for memory and the median for CPU. It never asks for a GPU, so every GPU task fails at start and is retried on a T4.</dd>
+      <dt>rules</dt><dd>What a platform team would write. <b>GPU:</b> if the code mentions CUDA (<span class="mono">"cuda"</span>, <span class="mono">torch.cuda</span>, <span class="mono">.to(device)</span>, <span class="mono">device =</span>), ask for a GPU sized from the task's largest past GPU peak × a margin, or a training quantile of GPU peaks on a first run. <b>Memory:</b> the largest past peak × a margin, or the static cell. <b>CPU:</b> the largest past peak × a margin; with no history, the largest pool size the code declares (RightSizeCPU's code rule), else 1 core. big-1 chose margins of 1.5× for memory and 1.0× for CPU and GPU.</dd>
+    </dl>
+
+    <h3>Gradient-boosted trees (gbt-dist)</h3>
+    <dl class="defs">
+      <dt>Features</dt><dd>The union of the three benches' features: input metadata, each bench's code tokens and code numbers (declared pool sizes, work items, model sizes, batch sizes), four CUDA flags, and history over the unified schema.</dd>
+      <dt>Model</dt><dd>For each axis, 19 <span class="mono">HistGradientBoostingRegressor</span> quantile models (q = 0.05 to 0.95, pinball loss, 300 rounds, learning rate 0.06, 31 leaves) on log₂ of the need. The memory and CPU models train on the CPU-task rows and the GPU models on the GPU-task rows. A <span class="mono">HistGradientBoostingClassifier</span> predicts whether the task needs a GPU.</dd>
+      <dt>Inference</dt><dd>Each axis's 19 quantiles become a piecewise-linear CDF and then a probability for each cell. The GPU distribution is P(no GPU) = 1 − P(needs GPU), with the rest spread over the GPU cells. The request is then decoded per axis (see <a href="#decoding">Decoding</a>).</dd>
+    </dl>
+
+    <h3>zero-shot 27B</h3>
+    <dl class="defs">
+      <dt>Prompt</dt><dd>One system message for all three decisions: memory is a hard limit, CPU below the busiest 15 seconds throttles, unsized pools get one thread, GPU memory lands on the cheapest device that holds it (with its price), a GPU task with no GPU fails at start, and a GPU on a CPU task is paid for the whole run. Then the code, the inputs, the history, the three option lists, and <span class="mono">{"memory": …, "cpu": …, "gpu": …}</span> as the answer format.</dd>
+      <dt>Inference</dt><dd><span class="mono">qwen38-27b</span> on the cluster's shared vLLM, at temperature 0 with up to 1,024 tokens. The last JSON object with a usable memory answer is parsed, and each value is rounded up onto its grid. Unparseable answers fall back to 4Gi, 1 core and no GPU, and are counted: 206 of about 900 on big-1. It is scored on a 300-run sample of each split.</dd>
+    </dl>
+
+    <h3>Decision 1.7B: one forward pass, three pointer heads</h3>
+    <p>The same pointer decision model as the single-axis benches, with a third decision. It reads the same prompt as the 27B and generates nothing. It scores every option of every axis in one forward pass.</p>
+    <div class="figure"><pre class="block">… ### Options
+memory: 256Mi, 384Mi, 512Mi, … , 64Gi           each option's last token → hidden states  k₁ … k₁₇
+cpu:    0.25, 0.5, 0.75, 1, … , 8                                          →               k′₁ … k′₁₆
+gpu:    none, 1GiB, 2GiB, … , 44GiB                                        →               k″₁ … k″₁₃
+Answer with JSON only: … &lt;assistant turn&gt;       the prompt's last token  → hidden state   a
+                     │
+       Qwen3-1.7B + LoRA (rank 16, 28 layers), language-model head removed
+                     │
+score_axis(j) = ⟨ W_q,axis · LN(a) , W_k,axis · LN(k_j) ⟩ / √256     one W_q, W_k pair (2,048 → 256) per axis
+P(axis = j)   = softmax( score_axis / T_axis )                       T_axis fitted on validation</pre></div>
+    <dl class="defs">
+      <dt>Architecture</dt><dd>Qwen3-1.7B with LoRA adapters (rank 16, α 32, dropout 0.05) on all seven projections of every layer, loaded without its language-model head. Each option's token sits at a fixed distance from the end of the prompt, because prompts are cut from the left to 2,048 tokens and the options come last. The head is a shared LayerNorm plus one query projection and one key projection per axis. An option's score is the scaled dot product of the answer slot's projected state with that option token's.</dd>
+      <dt>Training</dt><dd>The sum of three cross-entropies against the oracle's cells, with an axis left out where it was not measured (memory and CPU on GPU runs). 2 epochs over the 10,500 balanced training runs: micro-batches of 8 with 2 accumulation steps, AdamW at 2×10⁻⁴ for the adapters and 10⁻³ for the head, 5% warm-up then cosine decay, fp16 with a loss scaler and gradient checkpointing on one T4. It took 4.9 h, with the loss going from 2.63 in epoch 1 to 1.32 in epoch 2.</dd>
+      <dt>Calibration</dt><dd>One temperature per axis, fitted on validation by the negative log-likelihood of the oracle's cell: 1.09 for memory, 1.04 for CPU and 0.94 for GPU.</dd>
+    </dl>
+
+    <h3 id="decoding">Decoding: from probabilities to one request</h3>
+    <p>gbt-dist and both decision models end with a probability for every cell of every axis. The <b>decoded</b> rows turn those into a request with each bench's own decoder:</p>
+    <ul>
+      <li><b>GPU first:</b> no GPU when P(none) is at least a threshold tuned on validation (0.3 for every arm on big-1). Otherwise, the GPU cell is chosen from the remaining probability by RightSizeGPU's decoder.</li>
+      <li><b>Memory:</b> RightSizeMem's Bayes decoder, the cell with the lowest expected cost once an OOM's retry is priced in. It leans toward over-asking.</li>
+      <li><b>CPU:</b> RightSizeCPU's decoder, the cell most likely to land within ±25% of the busiest window.</li>
+    </ul>
+    <p>The <b>argmax</b> rows take the most likely cell on each axis. For a supervised model, that is the cell most likely to be the label. It ignores that asking one cell too low can cost far more than asking one cell too high.</p>
+  </section>
+
+  <section id="rl">
+    <h2>RL 1.7B: training on the cost itself</h2>
+    <p>The supervised model learns to imitate the oracle's cells. Imitation cannot see two things the cost model cares about. First, the axes interact: on a GPU node, memory and CPU are free, while on a CPU node a GPU is the most expensive mistake there is. Second, asking low costs more than asking high, by an amount the label does not carry. The RL arm starts from the supervised model and maximizes the bench's own reward directly: minus the run's cost ratio under the same simulator that scores the leaderboard, capped at 20.</p>
+    <div class="figure"><pre class="block">for each batch of 8 prompts:                                   (6,000 training prompts, 1 epoch, 375 steps)
+    one forward pass  →  P(memory), P(cpu), P(gpu)  per prompt
+    sample K = 16 joint requests per prompt from the three heads     (no text is generated)
+    reward_k  = − min(cost(request_k) ÷ oracle cost, 20)          the leaderboard's simulator
+    advantage = (reward_k − mean over the 16) ÷ std over the 16      group-normalized, as in GRPO
+    loss      = − mean( advantage × Σ_axis log P(chosen cell) )
+                + 0.05 × KL( current policy ‖ supervised policy )
+    a GPU task's memory and CPU terms are left out (they do not change its reward)</pre></div>
+    <dl class="defs">
+      <dt>Method</dt><dd>GRPO (group-relative policy optimization) without generation. Each prompt's 16 sampled requests are a group, and each request's advantage is its reward relative to the rest of its group, so no value network is needed. Sampling 16 requests costs nothing beyond the one forward pass, because the policy is three categorical distributions, not a sequence of tokens.</dd>
+      <dt>Prompts</dt><dd>6,000 training runs, balanced across the three sources: half of them runs the supervised model did not train on, and half that it did.</dd>
+      <dt>Settings</dt><dd>AdamW at 3×10⁻⁵ for the adapters and 10⁻⁴ for the head, micro-batches of 8 with 2 accumulation steps, 5% warm-up then cosine decay, KL coefficient 0.05 against the supervised policy's distributions (computed once, before any update). 1.8 h of RL on one T4.</dd>
+      <dt>Read-out</dt><dd>The same calibration and decoding as the supervised model. The calibrated temperatures hit the calibrator's cap of 5.0 for memory and CPU (3.1 for GPU). The RL heads are sharp, and they are no longer trying to predict the label.</dd>
+    </dl>
+  </section>
+
+  <section id="runs">
+    <h2>How the experiment ran</h2>
+    <p>The benchmark is one <b>Union factory</b>, <span class="mono">rightsize-all-bench</span>. Its three corpora are <b>sources</b>, published by the single-axis benches' own factories. Each approach is a value of the <span class="mono">arm</span> partition. The RL station reads the supervised arm's saved model from that arm's artifact.</p>
+    <div class="figure"><pre class="block">rt-bench-corpus[v2]   rt-cpubench-corpus[big-1]   rt-gpubench-corpus[big-1]      sources
+          └─────────────────────┼────────────────────────────┘
+rt-allbench-corpus [release]                join_corpora       one schema, labels per axis
+          ├───────────┬── … ──┐   one per arm
+rt-allbench-arm [release, arm]              fit_all_arm        CPU pod · hosted 27B · T4 (train_all_policy)
+          │                                     │
+          │                    rt-allbench-rl   rl_all_policy      T4: supervised model → GRPO
+rt-allbench-scorecard [release, arm]        score_all_arm      every split, source and cold/warm slice
+          └───────────┴── .all("arm") ──┘
+rt-allbench-leaderboard [release]           all_leaderboard</pre></div>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>run</th><th>what</th><th>outcome</th></tr></thead>
+      <tbody>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-full-1">rsa-full-1</a></td><td>Shakedown on the full-1 corpora</td><td>Failed at the join: a cache version hashed a module the combined bench's code bundle does not ship. Fixed by computing versions on demand.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-full-2">rsa-full-2</a></td><td>Relaunch</td><td>Failed at gbt-dist: its metadata tried to serialize fitted trees. Fixed by keeping only JSON-safe settings.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-full-3">rsa-full-3</a></td><td>Shakedown: v2 + CPU full-1 + GPU full-1</td><td>Succeeded in about 8 h. 4,325 supervised training runs; 101 GPU test runs.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-big-1">rsa-big-1</a></td><td>big-1: v2 + CPU big-1 + GPU big-1</td><td>Succeeded in 8.4 h. The results on this page.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <div class="part">Part 3 · Results</div>
+  <section id="results">
+    <h2>The leaderboard</h2>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--rule-c)"></span>rule</span>
+      <span><span class="kind" style="background:var(--tree)"></span>classical ML</span>
+      <span><span class="kind" style="background:var(--warm)"></span>autoregressive LLM</span>
+      <span><span class="kind" style="background:var(--accent)"></span>decision model, supervised</span>
+      <span><span class="kind" style="background:var(--rl)"></span>decision model, RL-tuned</span>
+    </div>
+    <div class="figure"><svg id="board" viewBox="0 0 900 360" role="img" aria-label="Mean regret against the oracle for each decision rule, test and unseen families"></svg>
+      <p class="caption">Solid bar: test split (5,363 runs). Outline: unseen families (6,534 runs). The zero-shot 27B row is a 300-run sample of each split. Shorter is better; the oracle scores 0%.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>Each row is one decision rule. The bar is its mean regret: how much more than the oracle a run costs, on average.</li>
+        <li>On test runs the decision models lead: RL argmax 8.0%, supervised decoded 9.7%, trees 14.1%.</li>
+        <li>On unseen families the order changes. The rules (32.5%), trees (33.2%) and both decision models (34.0–37.3%) are within 5 points of each other, and the rules are best.</li>
+        <li>The two read-outs swap places after RL. Before RL, decoding beats argmax (9.7% vs 24.3%). After RL, argmax beats decoding (8.0% vs 19.2%).</li>
+      </ul>
+    </div>
+    <div class="figure table-wrap"><table id="boardtable" class="num"></table></div>
+    <div class="howto"><span class="t">Columns</span>
+      <ul>
+        <li><b>regret</b>: mean per-run regret against the oracle (lower is better). <b>geo</b>: the geometric mean, which damps the few very expensive mistakes.</li>
+        <li><b>$ regret</b>: total dollars ÷ the oracle's total − 1. Expensive runs (GPU runs) weigh more here.</li>
+        <li><b>first ok</b>, <b>all right</b>, <b>mem</b>, <b>cpu</b>, <b>gpu</b>: shares of runs, as defined in <a href="#terms">Terms</a> (higher is better).</li>
+        <li><b>$ / 1k</b>: dollars per 1,000 runs. The oracle pays $236 per 1,000 test runs and $289 per 1,000 unseen runs.</li>
+        <li>Bold marks the best value in each column.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="sources">
+    <h2>Where the regret comes from</h2>
+    <p>Splitting each split by the bench a run came from shows which axis each approach gets wrong.</p>
+    <div class="figure table-wrap"><table id="srctable" class="num"></table>
+      <p class="caption">Mean regret by source. Test: 2,316 mem, 1,634 cpu, 1,413 gpu runs. Unseen: 2,323 mem, 1,800 cpu, 2,411 gpu runs. Shading grows with regret, capped at 100%.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li><b>Memory rows are the hardest in-distribution slice</b> for every approach (16–25% for the learned ones). After RL, the supervised model decoded is slightly better there (16.3% vs 17.1%).</li>
+        <li><b>RL's gain is on the CPU and GPU rows.</b> CPU goes from −0.3% to −4.6%, and GPU goes from 10.4% to 7.6%. RL is the only approach that moved the GPU slice; the others all score 10.4–10.6% there.</li>
+        <li><b>Negative regret is possible on CPU rows.</b> The oracle asks for the cell that covers the busiest 15 seconds. Asking one cell lower throttles that window briefly, and that can cost less than the core-hours it saves. RL found this.</li>
+        <li><b>Unseen CPU rows are where learning fails.</b> The rules score 16.7% and the zero-shot 27B 14.7%, while every learned approach scores 52–96%. The rules read the declared pool size, which transfers to new code.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="curve">
+    <h2>The RL curve</h2>
+    <div class="figure"><svg id="curvesvg" viewBox="0 0 900 380" role="img" aria-label="Mean sampled regret and KL to the supervised policy over 370 RL steps"></svg>
+      <p class="caption">Each point averages the last 20 micro-batches (160 prompts × 16 sampled requests) at every 10th optimizer step. Top: the mean regret of the sampled requests, which is minus the reward minus 1. Bottom: KL divergence from the supervised policy, in nats, summed over the axes.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>The sampled requests start at about 13% regret (the first 50 steps) and end at about 6% (the last 50). The curve is noisy because each point covers only 160 prompts.</li>
+        <li>KL rises to about 2 nats in the first 250 steps and then holds. With a KL coefficient of 0.05, the policy is free to move a long way from the supervised model. That is consistent with the sharp heads and the loss on unseen families.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="scale">
+    <h2>What 2.4× more supervised data changed</h2>
+    <p>The same factory, code and settings ran on the full-1 corpora (rsa-full-3) and on the big-1 corpora (rsa-big-1). The CPU and GPU benches grew from about 900 to about 10,000 runs each, while the memory corpus stayed the same.</p>
+    <div class="figure table-wrap"><table id="scaletable" class="num"></table>
+      <p class="caption">Mean regret. The source mix changed between the two runs: CPU and GPU rows were 9% of full-3's test runs and are 57% of big-1's. So compare orderings rather than single values.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>The supervised decision model gained the most: 23.6% → 9.7% on test.</li>
+        <li>RL's lead over it shrank from 11.0 points to 1.7.</li>
+        <li>On unseen families, nobody improved by more than a point or two, except the rules, which went from 59.4% to 32.5% because the unseen CPU rows grew from 160 to 1,800.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>What this release supports</h2>
+    <ul>
+      <li><b>One decision model can size the whole request</b>, at 189 ms and no generated tokens per decision, for 9.7% regret supervised and 8.0% RL-tuned on familiar code.</li>
+      <li><b>RL on the bench's own cost model helps most when supervised data is scarce.</b> At 4,325 training runs it halved the regret; at 10,500 it is worth 1.7 points.</li>
+      <li><b>RL overfits to the families it trains on.</b> It is worse than its starting point on unseen families, and its probabilities are no longer calibrated. A tighter KL penalty, or RL prompts from more families, are the obvious next tries; neither was run.</li>
+      <li><b>For new code, the declared parallelism is the signal that transfers.</b> A learned approach that kept the rule's CPU answer where it has no history might combine the two; that was not tried.</li>
+    </ul>
+  </section>
+
+  <section id="limits">
+    <h2>Assumptions and limits</h2>
+    <ul>
+      <li><b>The oracle is the label, not the cost minimum.</b> It asks for the cell that covers the busiest 15 seconds, and a slightly smaller CPU request can cost less, which is how CPU-row regret goes negative.</li>
+      <li><b>Prices are list prices</b>: an m6i.xlarge dominant share for CPU pods and on-demand GPU instance prices. Spot discounts and bin-packing are not modelled.</li>
+      <li><b>A GPU task's host memory and cores are not scored.</b> They come with the instance, so the request for them costs nothing either way.</li>
+      <li><b>Memory-bench runs have no per-second CPU series.</b> Their throttling is modelled from mean cores, which understates bursts.</li>
+      <li><b>165 GPU runs that needed more than a T4 have no measurement</b>, because their L40S re-measure shards timed out in rsg-big-1. The GPU tail above 15 GiB is undercounted.</li>
+      <li><b>The zero-shot 27B is scored on 300 runs per split</b> (about ±5 points), and 23% of its answers were unparseable.</li>
+      <li><b>One training seed per arm.</b> The 1.7-point test gap between RL and the supervised model has not been checked against seed-to-seed variation.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <div>Short version: <a href="https://claude.ai/artifact/LJceQj2Na4jwmmdPhyYx1u">RightSize Bench Abstract (big-1)</a>. Single-axis benches: <a href="https://claude.ai/artifact/BHvwdVkkGvAP8yWyHWo8Xc">RightSizeMem</a>, <a href="https://claude.ai/artifact/EVom2ZzCJdA8eV4tW9VCAP">RightSizeCPU (big-1)</a>, <a href="https://claude.ai/artifact/J2FcFNpDNFQ6bgWSQqBaoJ">RightSizeGPU (big-1)</a>.</div>
+    <div>Source: <span class="mono">model-factory-resource-tuner/resource_tuner/bench_all/</span> · research log <span class="mono">research_log/2026-10-24-round-20-rightsize-big-and-combined.md</span> · cluster project <span class="mono">resource-tuner-model-factory</span> on demo.hosted.unionai.cloud.</div>
+    <div>Reproduce: <span class="mono">flyte factory materialize rightsize-all-bench rt-allbench-leaderboard --partition release=big-1 --partition arm=static,rules,gbt-dist,zeroshot-27b,jev-pointer</span></div>
+  </footer>
+</div>
+
+<script>
+const ARMS = {"static": {"test_regret": 0.8593, "test_geo_regret": 0.6669, "test_dollar_regret": 1.3128, "test_first_attempt_ok": 0.6813, "test_all_right": 0.019, "test_mem_right": 0.0618, "test_cpu_right": 0.2651, "test_gpu_right": 0.7365, "test_cost_per_1k_runs": 546.1152, "test_n": 5363, "test_src_mem": 0.5153, "test_src_cpu": 1.131, "test_src_gpu": 1.109, "ood_regret": 0.9405, "ood_geo_regret": 0.7725, "ood_dollar_regret": 1.2991, "ood_first_attempt_ok": 0.5574, "ood_all_right": 0.0066, "ood_mem_right": 0.0888, "ood_cpu_right": 0.2729, "ood_gpu_right": 0.631, "ood_cost_per_1k_runs": 665.3996, "ood_n": 6534, "ood_src_mem": 0.5848, "ood_src_cpu": 1.2162, "ood_src_gpu": 1.0773, "cold": 0.9273, "warm": 0.8077}, "rules": {"test_regret": 0.3399, "test_geo_regret": 0.1497, "test_dollar_regret": 0.2372, "test_first_attempt_ok": 0.948, "test_all_right": 0.3735, "test_mem_right": 0.1787, "test_cpu_right": 0.8408, "test_gpu_right": 0.9879, "test_cost_per_1k_runs": 292.1341, "test_n": 5363, "test_src_mem": 0.3606, "test_src_cpu": 0.5339, "test_src_gpu": 0.0818, "ood_regret": 0.3247, "ood_geo_regret": 0.1978, "ood_dollar_regret": 0.2138, "ood_first_attempt_ok": 0.9369, "ood_all_right": 0.4501, "ood_mem_right": 0.1841, "ood_cpu_right": 0.7473, "ood_gpu_right": 0.9842, "ood_cost_per_1k_runs": 351.2875, "ood_n": 6534, "ood_src_mem": 0.7186, "ood_src_cpu": 0.1672, "ood_src_gpu": 0.0626, "cold": 0.5608, "warm": 0.1723}, "gbt-dist": {"test_regret": 0.1406, "test_geo_regret": 0.0982, "test_dollar_regret": 0.2662, "test_first_attempt_ok": 0.9702, "test_all_right": 0.9206, "test_mem_right": 0.9466, "test_cpu_right": 0.9656, "test_gpu_right": 0.9836, "test_cost_per_1k_runs": 298.9734, "test_n": 5363, "test_src_mem": 0.2523, "test_src_cpu": 0.0139, "test_src_gpu": 0.1038, "ood_regret": 0.3321, "ood_geo_regret": 0.228, "ood_dollar_regret": 0.3197, "ood_first_attempt_ok": 0.8546, "ood_all_right": 0.4781, "ood_mem_right": 0.4087, "ood_cpu_right": 0.5559, "ood_gpu_right": 0.9829, "ood_cost_per_1k_runs": 381.9509, "ood_n": 6534, "ood_src_mem": 0.3236, "ood_src_cpu": 0.6912, "ood_src_gpu": 0.0721, "cold": 0.1635, "warm": 0.1231}, "zeroshot-27b": {"test_regret": 0.4913, "test_geo_regret": 0.2997, "test_dollar_regret": 0.7411, "test_first_attempt_ok": 0.87, "test_all_right": 0.2833, "test_mem_right": 0.2544, "test_cpu_right": 0.6798, "test_gpu_right": 0.8933, "test_cost_per_1k_runs": 385.0141, "test_n": 300, "test_src_mem": 0.347, "test_src_cpu": 0.6448, "test_src_gpu": 0.5016, "ood_regret": 0.4947, "ood_geo_regret": 0.3532, "ood_dollar_regret": 0.7857, "ood_first_attempt_ok": 0.7067, "ood_all_right": 0.27, "ood_mem_right": 0.2667, "ood_cpu_right": 0.7889, "ood_gpu_right": 0.7367, "ood_cost_per_1k_runs": 551.3839, "ood_n": 300, "ood_src_mem": 0.5197, "ood_src_cpu": 0.1467, "ood_src_gpu": 0.7182, "cold": 0.7072, "warm": 0.3074}, "jev-pointer-argmax": {"test_regret": 0.2428, "test_geo_regret": 0.146, "test_dollar_regret": 0.2286, "test_first_attempt_ok": 0.8905, "test_all_right": 0.8398, "test_mem_right": 0.8499, "test_cpu_right": 0.9461, "test_gpu_right": 0.986, "test_cost_per_1k_runs": 290.0996, "test_n": 5363, "test_src_mem": 0.4211, "test_src_cpu": 0.108, "test_src_gpu": 0.1064, "ood_regret": 0.4972, "ood_geo_regret": 0.3213, "ood_dollar_regret": 0.3239, "ood_first_attempt_ok": 0.76, "ood_all_right": 0.5626, "ood_mem_right": 0.4067, "ood_cpu_right": 0.8365, "ood_gpu_right": 0.9841, "ood_cost_per_1k_runs": 383.1686, "ood_n": 6534, "ood_src_mem": 0.5922, "ood_src_cpu": 0.9571, "ood_src_gpu": 0.0622, "cold": 0.2966, "warm": 0.202}, "jev-pointer": {"test_regret": 0.0967, "test_geo_regret": 0.052, "test_dollar_regret": 0.2619, "test_first_attempt_ok": 0.9545, "test_all_right": 0.8932, "test_mem_right": 0.9005, "test_cpu_right": 0.9747, "test_gpu_right": 0.9836, "test_cost_per_1k_runs": 297.9645, "test_n": 5363, "test_src_mem": 0.1627, "test_src_cpu": -0.003, "test_src_gpu": 0.1038, "ood_regret": 0.3412, "ood_geo_regret": 0.2174, "ood_dollar_regret": 0.3148, "ood_first_attempt_ok": 0.8191, "ood_all_right": 0.5983, "ood_mem_right": 0.4252, "ood_cpu_right": 0.9187, "ood_gpu_right": 0.9829, "ood_cost_per_1k_runs": 380.5377, "ood_n": 6534, "ood_src_mem": 0.3314, "ood_src_cpu": 0.7144, "ood_src_gpu": 0.0721, "cold": 0.1273, "warm": 0.0735}, "rl-pointer-argmax": {"test_regret": 0.0798, "test_geo_regret": 0.0281, "test_dollar_regret": 0.1869, "test_first_attempt_ok": 0.9472, "test_all_right": 0.8777, "test_mem_right": 0.8775, "test_cpu_right": 0.9699, "test_gpu_right": 0.9875, "test_cost_per_1k_runs": 280.2669, "test_n": 5363, "test_src_mem": 0.1708, "test_src_cpu": -0.0461, "test_src_gpu": 0.0763, "ood_regret": 0.3725, "ood_geo_regret": 0.2318, "ood_dollar_regret": 0.2941, "ood_first_attempt_ok": 0.8013, "ood_all_right": 0.5839, "ood_mem_right": 0.4031, "ood_cpu_right": 0.8836, "ood_gpu_right": 0.9845, "ood_cost_per_1k_runs": 374.5233, "ood_n": 6534, "ood_src_mem": 0.4159, "ood_src_cpu": 0.7326, "ood_src_gpu": 0.0619, "cold": 0.1264, "warm": 0.0444}, "rl-pointer": {"test_regret": 0.1918, "test_geo_regret": 0.1386, "test_dollar_regret": 0.2966, "test_first_attempt_ok": 0.9651, "test_all_right": 0.7483, "test_mem_right": 0.7997, "test_cpu_right": 0.8661, "test_gpu_right": 0.9836, "test_cost_per_1k_runs": 306.1621, "test_n": 5363, "test_src_mem": 0.3626, "test_src_cpu": 0.0258, "test_src_gpu": 0.1038, "ood_regret": 0.34, "ood_geo_regret": 0.2315, "ood_dollar_regret": 0.3139, "ood_first_attempt_ok": 0.8713, "ood_all_right": 0.5825, "ood_mem_right": 0.4339, "ood_cpu_right": 0.8598, "ood_gpu_right": 0.9829, "ood_cost_per_1k_runs": 380.2607, "ood_n": 6534, "ood_src_mem": 0.4812, "ood_src_cpu": 0.5166, "ood_src_gpu": 0.0721, "cold": 0.1993, "warm": 0.1861}} ;
+const CURVE = [[10, 0.2448, 0.006], [20, 0.1566, 0.218], [30, 0.1172, 0.423], [40, 0.1085, 0.63], [50, 0.0341, 1.272], [60, 0.1346, 1.37], [70, 0.1302, 0.931], [80, 0.0245, 1.555], [90, 0.0476, 1.188], [100, 0.0136, 1.29], [110, 0.064, 1.591], [120, 0.1719, 1.174], [130, 0.0673, 1.715], [140, 0.0518, 1.948], [150, 0.018, 2.062], [160, 0.0812, 2.168], [170, 0.0223, 1.442], [180, 0.0493, 1.815], [190, 0.1509, 1.291], [200, 0.0016, 1.66], [210, 0.0489, 1.3], [220, 0.0882, 1.609], [230, 0.0145, 1.386], [240, 0.0803, 1.385], [250, 0.026, 1.998], [260, 0.149, 2.681], [270, 0.1154, 1.354], [280, 0.1504, 1.687], [290, 0.0723, 1.614], [300, 0.0389, 2.19], [310, 0.0404, 2.122], [320, 0.0443, 1.794], [330, 0.051, 1.616], [340, 0.0959, 1.471], [350, 0.027, 2.522], [360, 0.1083, 2.189], [370, 0.034, 2.143]] ;
+const FULL = {"static": [0.3787, 0.4533], "rules": [0.3176, 0.594], "gbt-dist": [0.2374, 0.3329], "zeroshot-27b": [0.4442, 0.5189], "jev-pointer-argmax": [0.4712, 0.6944], "jev-pointer": [0.236, 0.3489], "rl-pointer-argmax": [0.126, 0.3353], "rl-pointer": [0.312, 0.4012]} ;
+const LABEL = {
+  "static": "static request", "rules": "rules (CUDA, history, pools)", "gbt-dist": "trees, distribution",
+  "zeroshot-27b": "zero-shot 27B", "jev-pointer-argmax": "decision 1.7B, argmax", "jev-pointer": "decision 1.7B, decoded",
+  "rl-pointer-argmax": "RL 1.7B, argmax", "rl-pointer": "RL 1.7B, decoded"
+};
+const ORDER = Object.keys(LABEL);
+const KIND = a => a.startsWith("rl") ? "rl" : a.startsWith("jev") ? "dec" : a.startsWith("zeroshot") ? "llm" : a.startsWith("gbt") ? "tree" : "rule";
+const COLOR = { rule: "var(--rule-c)", tree: "var(--tree)", llm: "var(--warm)", dec: "var(--accent)", rl: "var(--rl)" };
+const NS = "http://www.w3.org/2000/svg", MONO = "IBM Plex Mono, monospace";
+const pct = x => (x * 100).toFixed(1) + "%";
+const sw = a => `<span class="kind" style="background:${COLOR[KIND(a)]}"></span>${LABEL[a]}`;
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+// leaderboard bars: regret, lower is better
+(function () {
+  const svg = document.getElementById("board"), L = 220, R = 70, T = 10, rowH = 39, MAX = 1.0;
+  const W = 900 - L - R, x = v => L + W * Math.max(0, Math.min(v, MAX)) / MAX;
+  svg.setAttribute("viewBox", `0 0 900 ${T + rowH * ORDER.length + 30}`);
+  [0, 0.25, 0.5, 0.75, 1].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * ORDER.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * ORDER.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v * 100) + "%");
+  });
+  ORDER.forEach((a, i) => {
+    const d = ARMS[a], y = T + i * rowH, c = COLOR[KIND(a)];
+    el("text", { x: L - 10, y: y + 17, "text-anchor": "end", "font-size": 13, fill: "var(--ink)" }, svg, LABEL[a]);
+    el("rect", { x: L, y: y + 5, width: Math.max(1, x(d.test_regret) - L), height: 13, rx: 2, fill: c }, svg);
+    el("rect", { x: L, y: y + 21, width: Math.max(1, x(d.ood_regret) - L), height: 11, rx: 2, fill: "none", stroke: c, "stroke-width": 1.5 }, svg);
+    el("text", { x: x(d.test_regret) + 6, y: y + 16, "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, pct(d.test_regret));
+    el("text", { x: x(d.ood_regret) + 6, y: y + 31, "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, pct(d.ood_regret));
+  });
+})();
+
+// leaderboard table
+(function () {
+  const money = v => "$" + Math.round(v);
+  const cols = [["test_regret", "test regret", -1, pct], ["test_geo_regret", "test geo", -1, pct], ["test_dollar_regret", "test $ regret", -1, pct],
+    ["test_first_attempt_ok", "test first ok", 1, pct], ["test_all_right", "test all right", 1, pct], ["test_mem_right", "mem", 1, pct],
+    ["test_cpu_right", "cpu", 1, pct], ["test_gpu_right", "gpu", 1, pct], ["test_cost_per_1k_runs", "test $ / 1k", -1, money],
+    ["ood_regret", "unseen regret", -1, pct], ["ood_first_attempt_ok", "unseen first ok", 1, pct], ["ood_all_right", "unseen all right", 1, pct]];
+  const best = {};
+  cols.forEach(([k, , dir]) => { const vs = ORDER.map(a => ARMS[a][k]); best[k] = dir > 0 ? Math.max(...vs) : Math.min(...vs); });
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td>${sw(a)}</td>`;
+    cols.forEach(([k, , , f]) => { h += `<td class="${ARMS[a][k] === best[k] ? "best" : ""}">${f(ARMS[a][k])}</td>`; });
+    h += "</tr>";
+  });
+  document.getElementById("boardtable").innerHTML = h + "</tbody>";
+})();
+
+// regret by source, shaded
+(function () {
+  const cols = [["test_src_mem", "test · mem"], ["test_src_cpu", "test · cpu"], ["test_src_gpu", "test · gpu"],
+    ["ood_src_mem", "unseen · mem"], ["ood_src_cpu", "unseen · cpu"], ["ood_src_gpu", "unseen · gpu"], ["cold", "test · first run"], ["warm", "test · has history"]];
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td>${sw(a)}</td>`;
+    cols.forEach(([k]) => {
+      const v = ARMS[a][k], s = Math.round(Math.max(0, Math.min(v, 1)) * 40);
+      h += `<td class="heat" style="background:color-mix(in srgb, var(--bad) ${s}%, transparent)">${pct(v)}</td>`;
+    });
+    h += "</tr>";
+  });
+  document.getElementById("srctable").innerHTML = h + "</tbody>";
+})();
+
+// RL curve: sampled regret (top), KL (bottom)
+(function () {
+  const svg = document.getElementById("curvesvg"), L = 70, R = 30, W = 900 - L - R;
+  const maxStep = CURVE[CURVE.length - 1][0], x = s => L + W * s / maxStep;
+  const panels = [{ T: 14, H: 190, k: 1, max: 0.3, ticks: [0, 0.1, 0.2, 0.3], f: v => (v * 100) + "%", c: "var(--rl)", t: "sampled regret" },
+                  { T: 250, H: 90, k: 2, max: 3, ticks: [0, 1, 2, 3], f: v => v, c: "var(--muted)", t: "KL (nats)" }];
+  panels.forEach(p => {
+    const y = v => p.T + p.H * (1 - v / p.max);
+    p.ticks.forEach(v => {
+      el("line", { x1: L, x2: L + W, y1: y(v), y2: y(v), stroke: "var(--rule)" }, svg);
+      el("text", { x: L - 10, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, p.f(v));
+    });
+    el("text", { x: 16, y: p.T + p.H / 2, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)", transform: `rotate(-90 16 ${p.T + p.H / 2})` }, svg, p.t);
+    el("polyline", { points: CURVE.map(c => `${x(c[0])},${y(c[p.k])}`).join(" "), fill: "none", stroke: p.c, "stroke-width": 2 }, svg);
+    CURVE.forEach(c => el("circle", { cx: x(c[0]), cy: y(c[p.k]), r: 2.6, fill: p.c }, svg));
+  });
+  [0, 100, 200, 300, maxStep].forEach(s => el("text", { x: x(s), y: 362, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, s));
+  el("text", { x: L + W / 2, y: 378, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, svg, "optimizer step");
+})();
+
+// full-3 vs big-1
+(function () {
+  let h = "<thead><tr><th>approach</th><th>full-3 test</th><th>big-1 test</th><th>full-3 unseen</th><th>big-1 unseen</th></tr></thead><tbody>";
+  h += `<tr><td class="muted">supervised training runs · test · unseen</td><td>4,325 · 2,551</td><td>10,500 · 5,363</td><td>2,641</td><td>6,534</td></tr>`;
+  ORDER.forEach(a => {
+    h += `<tr><td>${sw(a)}</td><td>${pct(FULL[a][0])}</td><td>${pct(ARMS[a].test_regret)}</td><td>${pct(FULL[a][1])}</td><td>${pct(ARMS[a].ood_regret)}</td></tr>`;
+  });
+  document.getElementById("scaletable").innerHTML = h + "</tbody>";
+})();
+</script>

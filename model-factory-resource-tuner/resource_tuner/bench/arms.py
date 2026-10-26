@@ -195,14 +195,17 @@ def predict_gbt(state: dict, rows: list[dict]) -> dict:
             for i, r in enumerate(rows)}
 
 
-def quantiles_to_cell_probs(qs: np.ndarray, levels: np.ndarray) -> np.ndarray:
-    """Predicted quantiles of log2(required MiB) -> P(needed cell = j).
+def quantiles_to_cell_probs(qs: np.ndarray, levels: np.ndarray, edges: np.ndarray | None = None) -> np.ndarray:
+    """Predicted quantiles of log2(need) -> P(needed cell = j).
 
     Piecewise-linear CDF through (quantile value, level), with the tails
-    closed 1.5 doublings beyond the outermost predicted quantiles.
+    closed 1.5 doublings beyond the outermost predicted quantiles. `edges`
+    are log2 of the cells' upper bounds (default: the memory grid); every
+    RightSize bench decodes its gbt-dist arm through this.
     """
     qs = np.maximum.accumulate(np.asarray(qs, dtype=float))
-    edges = np.log2(np.array(grid.MEMORY_GRID_MIB, dtype=float))
+    if edges is None:
+        edges = np.log2(np.array(grid.MEMORY_GRID_MIB, dtype=float))
     x = np.concatenate([[qs[0] - 1.5], qs + np.arange(len(qs)) * 1e-6, [qs[-1] + 1.5]])
     y = np.concatenate([[0.0], levels, [1.0]])
     cdf_at_edges = np.interp(edges, x, y)

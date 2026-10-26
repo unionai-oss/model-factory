@@ -1,0 +1,542 @@
+<title>RightSizeCPU Bench</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column, same tokens as the RightSizeMem Bench report. Definitions and methodology come first; each result is a claim, a chart drawn from the bench's own numbers, and a "how to read this" note. */
+:root {
+  --bg: #f5f6f9;
+  --panel: #ffffff;
+  --ink: #161823;
+  --muted: #5d6273;
+  --rule: #dcdfe8;
+  --tint: #eef0fb;
+  --accent: #4d65ff;     /* decision model */
+  --warm: #c9760a;       /* autoregressive LLM */
+  --tree: #1f9b6a;       /* classical ML */
+  --rule-c: #8a8fa0;     /* rules */
+  --bad: #d4383b;
+  --d-threads: #4d65ff; --d-gil: #c9760a; --d-proc: #1f9b6a; --d-serial: #8a8fa0; --d-io: #d4383b; --d-phases: #9a4fd0;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+    --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --bad: #ff6b6b;
+    --d-threads: #7d8fff; --d-gil: #f0a23a; --d-proc: #43c693; --d-serial: #8f94a8; --d-io: #ff6b6b; --d-phases: #c48bf2;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+  --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --bad: #ff6b6b;
+  --d-threads: #7d8fff; --d-gil: #f0a23a; --d-proc: #43c693; --d-serial: #8f94a8; --d-io: #ff6b6b; --d-phases: #c48bf2;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 980px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 72px; }
+header { display: grid; gap: 14px; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(40px, 7vw, 64px); line-height: 1; margin: 0; letter-spacing: -.01em; }
+.lede { font-size: 19px; max-width: 64ch; margin: 0; text-wrap: pretty; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 22px; font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; }
+.status { justify-self: start; font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; color: var(--warm); border: 1px solid color-mix(in srgb, var(--warm) 45%, transparent); border-radius: 999px; padding: 3px 12px; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; }
+nav.toc a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--rule); }
+nav.toc a:hover { color: var(--accent); border-color: var(--accent); }
+section { padding-block: 36px 8px; display: grid; gap: 14px; min-width: 0; }
+.part { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-top: 28px; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.15; margin: 0; text-wrap: balance; }
+h3 { font-family: var(--font-display); font-weight: 600; font-size: 20px; line-height: 1.2; margin: 10px 0 0; }
+p { margin: 0; max-width: 70ch; }
+.muted { color: var(--muted); }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 18px 12px; min-width: 0; }
+.figure svg { display: block; width: 100%; height: auto; }
+.caption { font-size: 13px; color: var(--muted); margin-top: 8px; max-width: none; }
+.howto { background: var(--tint); border-radius: 6px; padding: 14px 16px; display: grid; gap: 6px; font-size: 14.5px; }
+.howto .t { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.howto ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; max-width: none; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+table.num td { white-space: nowrap; }
+table.text td, table.text th { text-align: left; white-space: normal; }
+table.text td:first-child { white-space: nowrap; font-family: var(--font-mono); font-size: 13px; }
+td.best { font-weight: 600; }
+td.heat { color: var(--ink); }
+.kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.stat { display: grid; gap: 4px; align-content: start; }
+.stat .n { font-family: var(--font-display); font-size: 34px; font-weight: 600; line-height: 1.05; }
+.stat .l { font-size: 14px; color: var(--muted); }
+code, .mono { font-family: var(--font-mono); font-size: .9em; }
+ul, ol { margin: 0; padding-left: 22px; display: grid; gap: 6px; max-width: 70ch; }
+dl.defs { display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 10px 22px; margin: 0; }
+dl.defs dt { font-weight: 600; }
+dl.defs dd { margin: 0; color: var(--ink); min-width: 0; }
+@media (max-width: 620px) { dl.defs { grid-template-columns: 1fr; gap: 2px 0; } dl.defs dd { margin-bottom: 10px; } }
+pre.block { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; color: var(--ink); white-space: pre; overflow-x: auto; margin: 0; }
+.steps { counter-reset: s; display: grid; gap: 10px; padding: 0; list-style: none; max-width: 72ch; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 30px 1fr; gap: 10px; }
+.steps li::before { content: counter(s); font-family: var(--font-mono); font-size: 13px; color: var(--accent); border: 1px solid var(--rule); border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; }
+.tldr { display: grid; gap: 8px; padding: 0; list-style: none; }
+.tldr li { padding-left: 16px; border-left: 3px solid var(--accent); }
+footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); display: grid; gap: 6px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 520px) { .lede { font-size: 17px; } h2 { font-size: 24px; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Union model factory · resource right-sizing · round 18 · October 2026</div>
+    <h1>RightSizeCPU Bench</h1>
+    <p class="lede">A task's CPU request is a guess made before it runs. Ask for fewer cores than the code uses and the kernel throttles it, so it runs slower; ask for more and the extra cores sit idle. This benchmark measures how well different approaches predict a task's peak CPU, as Union's own monitoring would see it, from the task's code and its input metadata.</p>
+    <span class="status">Initial results · small release (small-1) · a 4× larger release is running</span>
+    <div class="facts">
+      <span><b>220</b> measured runs</span>
+      <span><b>11</b> families of task code, <b>2</b> never shown in training</span>
+      <span><b>8</b> approaches, <b>10</b> decision rules</span>
+      <span><b>4.7</b> spot pod-hours of measurement</span>
+    </div>
+    <nav class="toc" aria-label="Sections">
+      <a href="#summary">Summary</a><a href="#terms">Terms</a><a href="#window">Why 15 seconds</a><a href="#dataset">Dataset</a><a href="#measure">Measurement</a><a href="#boundary">What approaches see</a><a href="#arms">Approaches</a><a href="#scoring">Scoring</a><a href="#runs">How it ran</a><a href="#results">Results</a><a href="#limits">Assumptions and limits</a>
+    </nav>
+  </header>
+
+  <section id="summary">
+    <h2>Summary</h2>
+    <ul class="tldr">
+      <li><b>Peak CPU is set by the code, not by the input size.</b> Two runs of the same task, on inputs up to 4× apart in size, agree to within 0.7% at the median. What decides the peak is a pool size written in the code, and whether that pool can actually run in parallel.</li>
+      <li><b>A zero-shot 27B model is the strongest approach on balance.</b> It predicts the peak within ±25% on 78.8% of test runs and 92.5% of runs from unseen families, with the lowest error (0.43 cores) and the lowest cost of throttling plus idle cores (15.4% over the oracle).</li>
+      <li><b>A one-line rule that reads the declared pool size scores well and fails in a predictable way.</b> It reaches 80.8% on test and 95.0% on unseen families, but only 25% on Python thread pools held back by the GIL and 0% on I/O-bound code.</li>
+      <li><b>A 1.7B decision model learns this from 116 training runs.</b> It reaches 71.2% on test and 82.5% on unseen families, ahead of the tree models on unseen code (47.5%).</li>
+      <li><b>These are small-sample results.</b> The test split has 52 runs, so a share near 75% has a 95% interval of about ±12 points. Read the ordering of approaches, not the decimals.</li>
+    </ul>
+  </section>
+
+  <div class="part">Part 1 · Definitions</div>
+  <section id="terms">
+    <h2>Terms used on this page</h2>
+    <dl class="defs">
+      <dt>Task, run</dt><dd>A <b>task</b> is one piece of code, such as a scikit-learn job that fits a random forest. A <b>run</b> is that task executed once on a particular set of input files. Each task in this release runs twice, on inputs of different sizes.</dd>
+      <dt>Cores, CPU request</dt><dd>CPU is measured in cores: 1 core is one CPU busy for the whole time, 2.5 cores is the work of two and a half CPUs. A task's CPU request, such as <span class="mono">cpu="2"</span>, is what it asks the cluster for. Here it also acts as the limit.</dd>
+      <dt>Throttling</dt><dd>When a task tries to use more cores than its limit, the Linux scheduler (CFS) pauses it until the next period. Nothing is killed. The work just takes longer: a second that wanted 4 cores under a 2-core limit takes 2 seconds.</dd>
+      <dt>Peak CPU <span class="muted">(the label)</span></dt><dd>The highest average core usage in any 15-second window of the run. This is the busiest value Union's task monitoring can show. See <a href="#window">Why 15 seconds</a>.</dd>
+      <dt>Mean CPU</dt><dd>Total CPU seconds divided by wall-clock seconds. A second, easier label. Peak and mean differ only for code with phases, such as a serial step followed by a parallel one.</dd>
+      <dt>Grid, cell</dt><dd>Predictions are chosen from a fixed list of 16 core counts, the way requests are written: 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8. One entry is a <b>cell</b>. The largest gap between neighbours is 25% (4 to 5).</dd>
+      <dt>Oracle</dt><dd>An imaginary approach that knows each run's measured peak in advance and asks for the smallest cell that covers it. Nothing can do better.</dd>
+      <dt>Within ±25% <span class="muted">(headline metric)</span></dt><dd>The share of runs whose predicted peak is within 25% of the measured peak, or within 0.25 core for small peaks (a task that peaks at 0.3 cores is not wrong at 0.5). Higher is better. Because no two grid cells are more than 25% apart, the oracle always scores 100%.</dd>
+      <dt>Under-predicted</dt><dd>The share of runs whose predicted peak is below the measured peak. These are the runs that would be throttled.</dd>
+      <dt>MAE</dt><dd>Mean absolute error between the predicted and measured peak, in cores. Lower is better.</dd>
+      <dt>CPU regret</dt><dd>What the prediction costs, compared with the oracle, when it is used as the CPU limit: core-seconds reserved, plus a penalty for each second the run finishes late because it was throttled. 0% equals the oracle. Full definition under <a href="#scoring">Scoring</a>.</dd>
+      <dt>Test split</dt><dd>Runs of tasks whose code no approach saw during training, from the same 9 families used in training.</dd>
+      <dt>Unseen families</dt><dd>Runs from two whole families left out of training: DuckDB SQL and pyarrow's CSV reader. Each uses a pool-size API (<span class="mono">SET threads</span>, <span class="mono">pa.set_cpu_count</span>) that no training family uses.</dd>
+      <dt>Driver</dt><dd>What an approach has to understand to get a run right. <b>threads</b>: an explicit pool size the library honours. <b>gil</b>: a Python thread pool whose parallelism depends on whether the work holds the GIL. <b>processes</b>: a process pool, possibly capped by how many chunks of work there are. <b>serial</b>: single-threaded code. <b>io</b>: waiting dominates. <b>phases</b>: a serial phase, then a parallel one.</dd>
+      <dt>GIL</dt><dd>CPython's global interpreter lock. Only one thread runs Python bytecode at a time, so 8 threads looping in pure Python use about 1 core. Libraries such as <span class="mono">zlib</span>, <span class="mono">hashlib</span> and NumPy release the lock while they work, so their threads do run in parallel.</dd>
+      <dt>Cold start, history</dt><dd>A run's <b>history</b> is the earlier runs of the same task, with their input sizes and measured CPU. The first run of each task has none (a <b>cold start</b>); the second sees the first.</dd>
+      <dt>Arm, decoding</dt><dd>An <b>arm</b> is one approach being compared. Arms that output a probability for each cell need a rule, called <b>decoding</b>, to turn it into one prediction. Here they pick the cell most likely to be within ±25% of the peak. <b>Argmax</b>, the alternative, picks the single most likely cell.</dd>
+    </dl>
+  </section>
+
+  <div class="part">Part 2 · Methodology</div>
+  <section id="window">
+    <h2>Why the label is a 15-second window</h2>
+    <p>A benchmark for right-sizing should predict what the platform will measure, so the label copies Union's own metrics pipeline (read from the <span class="mono">unionai/cloud</span> repository):</p>
+    <ul>
+      <li>The operator's Prometheus scrapes cAdvisor, the container metrics exporter, every <b>15 seconds</b>. The <span class="mono">kubernetes-cadvisor</span> job inherits the global <span class="mono">scrape_interval: 15s</span>.</li>
+      <li>The console's task CPU chart is <span class="mono">irate(container_cpu_usage_seconds_total[5m])</span>: the rate between the last two scrapes, which is a 15-second average.</li>
+    </ul>
+    <p>The benchmark therefore reads the same counter cAdvisor exports (the container cgroup's <span class="mono">cpu.stat</span>), once per second, and takes the busiest <b>sliding</b> 15-second average. Sliding, because the platform's scrapes land at an arbitrary moment in the run; the label is the worst any of those moments could see. Each workload loops for a time budget of 60, 75 or 90 seconds, so every run spans at least 4 windows (median 5.0) and its peak is a sustained window, not a start-up spike.</p>
+  </section>
+
+  <section id="dataset">
+    <h2>The dataset: real code, real parallelism</h2>
+    <p>Every workload is generated from one of 11 <b>families</b> of task code. Within a family, a random generator picks the code-level choices that decide how many cores the task can use, and the size of its input files. Each generated task is a complete Flyte task: imports, a <span class="mono">TaskEnvironment</span>, and an <span class="mono">@env.task</span> function.</p>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>family</th><th>driver</th><th>what the code does</th><th>code choices that change CPU</th></tr></thead>
+      <tbody>
+        <tr><td>numpy_blas</td><td>threads</td><td>Gram matrix, projection, SVD of a sample, or a linear solve on a feature matrix</td><td><span class="mono">OPENBLAS_NUM_THREADS</span> set to 1–8, or never set (one thread here); matrix width; float32 or float64</td></tr>
+        <tr><td>polars_groupby</td><td>threads</td><td>Lazy scan of a parquet file, then a group-by, window or sort</td><td><span class="mono">POLARS_MAX_THREADS</span>; number of keys; query shape</td></tr>
+        <tr><td>duckdb_sql <span class="muted">(unseen)</span></td><td>threads</td><td>SQL aggregate, window or self-join over parquet</td><td><span class="mono">SET threads = k</span>; query shape</td></tr>
+        <tr><td>sklearn_ensemble</td><td>threads</td><td>Fit a random forest, extra trees or histogram gradient boosting</td><td><span class="mono">n_jobs</span>; number of trees (4 trees on 8 jobs use 4 cores); <span class="mono">threadpool_limits</span> for boosting</td></tr>
+        <tr><td>pandas_serial</td><td>serial</td><td>Group-by, merge, row-wise apply or string operations</td><td>none: pandas runs on one core whatever the input</td></tr>
+        <tr><td>python_threadpool</td><td>gil</td><td>A <span class="mono">ThreadPoolExecutor</span> over chunks of a byte array</td><td>pool size 2–8; the work is pure Python (holds the GIL, about 1 core), or <span class="mono">zlib</span>, <span class="mono">hashlib</span> or a NumPy sort (release it)</td></tr>
+        <tr><td>process_pool</td><td>processes</td><td>Count words in a CSV with a <span class="mono">ProcessPoolExecutor</span></td><td>pool size; how many chunks the input is split into (3 chunks on 6 processes use 3 cores)</td></tr>
+        <tr><td>torch_cpu</td><td>threads</td><td>Train a small MLP on CPU</td><td><span class="mono">torch.set_num_threads</span>; layer width; batch size (small batches do not parallelize)</td></tr>
+        <tr><td>pyarrow_csv <span class="muted">(unseen)</span></td><td>threads</td><td>Parse a CSV with pyarrow, then a mean</td><td><span class="mono">pa.set_cpu_count</span>; <span class="mono">use_threads</span> on or off</td></tr>
+        <tr><td>io_bound</td><td>io</td><td>Threads that call a slow enrichment API per batch of JSON records</td><td>pool size up to 16; round-trip latency 5–200 ms (cores sit idle while waiting)</td></tr>
+        <tr><td>mixed_phases</td><td>phases</td><td>Per-row Python clean-up, then a BLAS Gram matrix</td><td>BLAS thread count; the share of the run spent in the serial phase (20–80%)</td></tr>
+      </tbody>
+    </table></div>
+    <h3>From tasks to runs</h3>
+    <p>This release has 10 tasks per family and 2 runs per task: 220 runs. Each run scales the task's input files by a factor between 0.5× and 2× of the family's base size, so a task's two runs are up to 4× apart. The range is narrower than RightSizeMem's (16×) because peak CPU barely moves with input size; preparation time and pod memory do. The first run of each task has no history; the second sees the first.</p>
+    <h3>Splits</h3>
+    <p>Tasks, not runs, are split, so both runs of a task land in the same split and no approach trains on code it is tested on. A hash of the task id sends 70% of tasks in the 9 training families to train, 10% to validation and 20% to test. The 2 held-out families go entirely to unseen. Validation is used only to tune each approach's settings; test and unseen are scored once.</p>
+    <div class="figure table-wrap"><table class="num">
+      <thead><tr><th>release</th><th>runs</th><th>measured</th><th>train</th><th>validation</th><th>test</th><th>unseen families</th></tr></thead>
+      <tbody><tr><td>small-1</td><td>220</td><td>220</td><td>116</td><td>12</td><td>52</td><td>40</td></tr></tbody>
+    </table></div>
+    <p class="muted">The validation split is small (12 runs) in this release, so settings tuned on it are noisy. The full release has 4× as many tasks.</p>
+  </section>
+
+  <section id="measure">
+    <h2>How each run was measured</h2>
+    <p>Each run executes alone in its own pod, so nothing else competes for its cores:</p>
+    <ol class="steps">
+      <li><span><b>Prepare.</b> A child process writes the run's input files to local disk.</span></li>
+      <li><span><b>Run.</b> The task's module is imported into a fresh Python interpreter and its function is called on those files. Importing the module, rather than executing it as a script, lets process pools pickle the task's helper functions.</span></li>
+      <li><span><b>Observe.</b> A sampler reads the container's cumulative CPU time from the cgroup's <span class="mono">cpu.stat</span> while the workload runs (with psutil as a fallback). The cumulative series is interpolated onto a 1-second grid before taking differences. Without that, a short final sampling interval produced spurious spikes of 20 cores in the pilot.</span></li>
+    </ol>
+    <p><b>Pods.</b> Each measurement pod has 9 CPUs and 14 GiB on spot capacity. Workloads size their own pools to at most 8 threads (16 for I/O waits), and the ninth core covers the harness and the Flyte runtime. BLAS and OpenMP are pinned to one thread unless the code sets them, and every prompt says so. The 220 runs were split into 37 shards of 6 runs. Four shards were reclaimed by spot twice each and finished on their third attempt. Measurement took 4.7 pod-hours.</p>
+    <p><b>From series to label.</b> The peak label is the smallest grid cell that covers the busiest 15-second window. The mean label is the smallest cell that covers CPU seconds ÷ wall-clock seconds.</p>
+  </section>
+
+  <section id="boundary">
+    <h2>What every approach is allowed to see</h2>
+    <p>Every approach gets the information a scheduler has when a run is submitted, and nothing more: the task's source code, each input file's metadata (only what its format exposes), and the task's earlier runs. No approach sees the generator's hidden choices, the family name or the driver. Here is a real prompt from this release, for a task that runs pure-Python work on a pool of 2 threads:</p>
+    <div class="figure"><pre class="block">### Task code
+```python
+import flyte
+from flyte.io import File
+import hashlib
+import os
+import time
+import zlib
+from concurrent.futures import ThreadPoolExecutor
+import numpy as np
+
+env = flyte.TaskEnvironment(name="python-threadpool", image=...with_pip_packages("numpy"))
+
+@env.task
+async def digest_blobs(blob: File) -> dict:
+    blob_path = await blob.download()
+    TIME_BUDGET_S = float(os.environ.get("TIME_BUDGET_S", "60"))
+    blob = np.load(blob_path)
+    def work(chunk):
+        total = 0
+        for b in chunk[:20_000].tolist():
+            total += (b * b) % 7
+        return total
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ...
+            results = list(pool.map(work, blob))
+```
+
+### This run's inputs
+blob: npy, 37.25 MiB, shape=(596, 65536), dtype=uint8
+
+### Earlier runs of this task
+- inputs blob: npy, 32.81 MiB, shape=(525, 65536), dtype=uint8 -> peak 1.01 cores (busiest 15 s), mean 1.00 cores, 60 s
+
+### Options
+peak_cpu: 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8
+mean_cpu: 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8
+
+Answer with JSON only: {"peak_cpu": "&lt;one peak_cpu option&gt;", "mean_cpu": "&lt;one mean_cpu option&gt;"}</pre></div>
+    <p class="muted">This run's measured peak was 1.00 cores: the code declares 2 threads, but the GIL lets only one run at a time. The system prompt explains the window, that unsized pools get one thread, and that a limit below the peak throttles. The non-LLM approaches receive the same information as numbers: 71 features, including input bytes and visible shapes, the presence of 44 CPU-relevant code tokens (such as <span class="mono">n_jobs=</span>, <span class="mono">ThreadPoolExecutor</span>, <span class="mono">use_threads=False</span>), the largest declared pool size, the smallest number of work items, and summaries of the history.</p>
+  </section>
+
+  <section id="arms">
+    <h2>The approaches compared</h2>
+    <p>Each approach has at most one setting, tuned the same way: try each value on validation and keep the one with the highest within-±25% share (ties broken by CPU regret).</p>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>approach</th><th>how it decides</th><th>tuned on validation</th></tr></thead>
+      <tbody>
+        <tr><td><span class="kind" style="background:var(--rule-c)"></span>static</td><td>One request for every run: a quantile of training peaks.</td><td>quantile 0.5 to 0.95</td></tr>
+        <tr><td><span class="kind" style="background:var(--rule-c)"></span>vpa</td><td>Like the Kubernetes Vertical Pod Autoscaler: the largest peak this task has been seen to use, times a margin. With no history it falls back to static.</td><td>margin 0.6× to 2×</td></tr>
+        <tr><td><span class="kind" style="background:var(--rule-c)"></span>code-rule</td><td>The simplest algorithm that reads code: the largest pool size the source declares (<span class="mono">n_jobs=</span>, <span class="mono">max_workers=</span>, <span class="mono">SET threads</span>, <span class="mono">set_num_threads</span>, and so on), else one core, times a factor. It cannot know about the GIL, a pool capped by its work items, or a serial phase.</td><td>factor 0.6× to 2×</td></tr>
+        <tr><td><span class="kind" style="background:var(--tree)"></span>gbt</td><td>Gradient-boosted trees predicting a quantile of log₂(peak) from the 71 numeric features, rounded up to a cell.</td><td>quantile 0.5 to 0.95</td></tr>
+        <tr><td><span class="kind" style="background:var(--tree)"></span>gbt-dist</td><td>The same trees fitted at 19 quantiles, read as a probability for each cell, then decoded to the cell most likely within ±25%.</td><td>none</td></tr>
+        <tr><td><span class="kind" style="background:var(--warm)"></span>zero-shot 27B</td><td>A hosted 27-billion-parameter model (qwen38-27b on vLLM) given the prompt above, at temperature 0, with no training.</td><td>none</td></tr>
+        <tr><td><span class="kind" style="background:var(--warm)"></span>SFT 1.7B</td><td>Qwen3-1.7B fine-tuned with LoRA to write the oracle's answer as JSON text. <b>Greedy</b>: one answer plus a margin of k cells. <b>8 samples</b>: 8 answers at temperature 1 counted as a probability for each cell, then decoded.</td><td>greedy margin k</td></tr>
+        <tr><td><span class="kind" style="background:var(--accent)"></span>decision 1.7B, pointer</td><td>Jev / Strands Decider style. The same Qwen3-1.7B and LoRA, with the language-model output replaced by a head that compares the model's state at the answer position with its state at each option written in the prompt ("2", "2.5", "3", …). One forward pass scores every option. Decoded to the cell most likely within ±25%; <b>argmax</b> is shown too.</td><td>softmax temperature</td></tr>
+      </tbody>
+    </table></div>
+    <h3>Training the LLM-based approaches</h3>
+    <p>The SFT and decision models share the base model (Qwen3-1.7B), the LoRA adapters, the prompt, the 116 training runs, and the training schedule (3 epochs, effective batch 16), the same recipe as RightSizeMem. Their target is the oracle's peak cell and mean cell. The decision model minimizes cross-entropy on the peak cell plus 0.3 × cross-entropy on the mean cell, and its softmax temperature is fitted on validation afterwards. Each model trained on one NVIDIA T4 GPU. The same code serves all three RightSize benches: a small spec per bench names its two decisions, their options, prompt, parser and decoder.</p>
+  </section>
+
+  <section id="scoring">
+    <h2>Scoring: accuracy first, cost alongside</h2>
+    <p>The headline is accuracy, because the task is to predict the peak. Cost is reported next to it, because it shows which mistakes matter. Each approach's predicted peak is used as the run's CPU limit and replayed against that run's own measured per-second series:</p>
+    <ol class="steps">
+      <li><span><b>Each second</b> that wanted u cores under a limit L takes max(1, u ÷ L) seconds. Throttling stretches the work and never kills it.</span></li>
+      <li><span><b>The run pays</b> L × its stretched duration, in core-seconds.</span></li>
+      <li><span><b>A late result costs something.</b> Each second of delay adds one oracle core-second per oracle core (the oracle's limit × seconds late).</span></li>
+      <li><span><b>CPU regret</b> = total core-seconds across all runs ÷ the oracle's total − 1.</span></li>
+    </ol>
+    <div class="howto"><span class="t">Worked example</span>
+      <p>A run uses a steady 4 cores for 60 seconds. The oracle asks for 4 and pays 4 × 60 = 240 core-seconds.</p>
+      <ul>
+        <li>Asking for 5 cores: 5 × 60 = 300 core-seconds, 25% over the oracle. The fifth core sits idle.</li>
+        <li>Asking for 3 cores: each second takes 1.33 s, so the run takes 80 s. 3 × 80 = 240, plus 20 s late × 4 = 80. Total 320, or 33% over.</li>
+        <li>Asking for 2 cores: 120 s. 2 × 120 = 240, plus 60 s late × 4 = 240. Total 480, or 100% over.</li>
+      </ul>
+    </div>
+    <p><b>Why cost is not the headline.</b> Throttling only stretches time, so for a run that sits at its peak only part of the time, asking for less than the peak is often cheaper in core-seconds than asking for the peak. A decoder that minimizes expected cost therefore predicts low on purpose, which is the opposite of the task. The <a href="#costvsacc">results</a> show this directly. Approaches that output probabilities are decoded for accuracy: the cell most likely to land within ±25% of the peak, with ties going to the larger cell, because an under-prediction throttles while an over-prediction only idles.</p>
+  </section>
+
+  <section id="runs">
+    <h2>How the experiment ran</h2>
+    <p>The benchmark is one <b>Union factory</b>, <span class="mono">rightsize-cpu-bench</span>: a declared graph of versioned, partitioned artifacts. Materializing the leaderboard for a release builds whatever is missing. Each approach is a value of the <span class="mono">arm</span> partition, so it is trained, cached, retried and inspected on its own.</p>
+    <div class="figure"><pre class="block">rt-cpubench-runs [release]           generate_cpu_runs    task code + input specs, deterministic from a seed
+      │
+rt-cpubench-corpus [release]         measure_cpu_bench    shards → 9-CPU spot pods, one workload at a time → cgroup cpu.stat
+      ├──────────────┬──────── … ──────┐   one instance per arm
+rt-cpubench-arm [release, arm]       fit_cpu_arm          CPU pod · hosted 27B · one T4 per LLM arm
+rt-cpubench-scorecard [release, arm] score_cpu_arm        every split and slice, cost frontier
+      └──────────────┴── .all("arm") ──┘
+rt-cpubench-leaderboard [release]    cpu_leaderboard      all arms side by side</pre></div>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>run</th><th>what</th><th>outcome</th></tr></thead>
+      <tbody>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-pilot-1">rsc-pilot-1</a></td><td>Pilot, 1 task per family</td><td>Failed at import in 24 s: cache versions hashed the GPU bench's files, which the code bundle did not ship. Fixed by computing each bench's version only when its stations ask.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-pilot-2">rsc-pilot-2</a></td><td>Pilot, 22 runs</td><td>Succeeded. Per-family peaks matched the code: pure-Python threads at 1.01 cores for any pool size, <span class="mono">n_jobs</span> forests near 5.4, the I/O fetcher at 0.06.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-small-1">rsc-small-1</a></td><td>small-1: 220 runs, 8 arms</td><td>Succeeded in 2 h 15 min. The results on this page.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <div class="part">Part 3 · Results</div>
+  <section id="results">
+    <h2>The declared pool size is a strong hint, and sometimes wrong</h2>
+    <p>Each dot is one run: the largest pool size its code declares, against its measured peak. If every pool ran fully in parallel, the dots would sit on the diagonal.</p>
+    <div class="legend" id="drvlegend"></div>
+    <div class="figure"><svg id="scatter" viewBox="0 0 900 420" role="img" aria-label="Declared pool size versus measured peak CPU for all 220 runs"></svg>
+      <p class="caption">All 220 runs of small-1. "none" means the code declares no pool size (one thread here). Dots are spread sideways slightly so overlapping runs stay visible.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>The dashed diagonal is "peak = declared pool". Blue dots (explicit pools) mostly sit on or just under it, which is why the code-rule works on them.</li>
+        <li>Orange dots (thread pools under the GIL) split in two: pure-Python work stays at 1 core whatever the pool size, while <span class="mono">zlib</span> and <span class="mono">hashlib</span> work reaches the pool size.</li>
+        <li>Red dots (I/O-bound) sit near zero even with 16 threads, because the threads spend their time waiting. Purple dots (phases) peak at the pool size but average less.</li>
+        <li>Green dots (process pools) fall below the diagonal when there are fewer chunks of work than processes.</li>
+      </ul>
+    </div>
+    <div class="cols">
+      <div class="stat"><span class="n">0.7%</span><span class="l">median difference between the peaks of a task's two runs, on inputs up to 4× apart (90th percentile 11%, 110 tasks). Peak CPU is a property of the code.</span></div>
+      <div class="stat"><span class="n">2.0</span><span class="l">median peak, in cores, across all runs (10th to 90th percentile: 1.0 to 4.1). The busiest run peaked at 8.1 cores.</span></div>
+      <div class="stat"><span class="n">≥ 4</span><span class="l">15-second platform windows in every run (median 5.0), so each peak is a sustained window.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The leaderboard</h2>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--rule-c)"></span>rule</span>
+      <span><span class="kind" style="background:var(--tree)"></span>classical ML</span>
+      <span><span class="kind" style="background:var(--warm)"></span>autoregressive LLM</span>
+      <span><span class="kind" style="background:var(--accent)"></span>decision model</span>
+    </div>
+    <div class="figure"><svg id="board" viewBox="0 0 900 420" role="img" aria-label="Share of runs with peak predicted within plus or minus 25 percent, test and unseen families"></svg>
+      <p class="caption">Solid bar: test split (52 runs). Outline: unseen families (40 runs). Higher is better; the oracle scores 100%.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>Each row is one decision rule. The bar length is the share of runs whose predicted peak was within ±25% of the measured peak.</li>
+        <li>The solid bar is new code from familiar families; the outlined bar is code from the two families no approach trained on. A large drop from solid to outline means the approach depends on having seen similar code.</li>
+        <li>The trees drop the most (65% to 35%): they learned which features mattered for the training families, and the unseen families use different pool-size APIs. The code-rule and the 27B model read the pool size directly, so they do not drop.</li>
+        <li>With 52 and 40 runs, differences smaller than about 10 points are within noise.</li>
+      </ul>
+    </div>
+    <div class="figure table-wrap"><table id="boardtable" class="num"></table></div>
+    <div class="howto"><span class="t">Columns</span>
+      <ul>
+        <li><b>within ±25%</b>: the headline, on each split (higher is better).</li>
+        <li><b>under</b>: share of runs predicted below the peak. These would be throttled (lower is better, but zero is easy if you over-predict everything).</li>
+        <li><b>MAE</b>: mean absolute error of the predicted peak, in cores (lower is better).</li>
+        <li><b>CPU regret</b>: cost over the oracle when the prediction is used as the limit (lower is better).</li>
+        <li><b>mean ±25%</b>: the same accuracy measure for the second decision, mean CPU.</li>
+        <li>Bold marks the best value in each column.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>Where each approach goes wrong</h2>
+    <p>Splitting the test runs by driver shows what each approach does and does not understand. Counts per driver are small (2 to 24 runs), so single cells move a lot; look for consistent patterns.</p>
+    <div class="figure table-wrap"><table id="drivertable" class="num"></table>
+      <p class="caption">Share of test runs predicted within ±25%, by driver. Cell shading is proportional to the value.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li><b>code-rule</b> is perfect on serial, process-pool and phased code and near perfect on explicit pools, but scores 25% under the GIL (it reads <span class="mono">max_workers=8</span> on pure-Python threads as 8 cores) and 0% on I/O.</li>
+        <li><b>zero-shot 27B</b> gets the GIL right (88%) but the phased code wrong (12%): it predicts the average of a serial and a parallel phase, not the parallel peak.</li>
+        <li><b>gbt-dist</b> and the <b>decision model</b> learned the GIL from training data (100% and 75%).</li>
+        <li>The I/O row has only 2 test runs.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="costvsacc">
+    <h2>Optimizing cost predicts low on purpose</h2>
+    <p>The decision model outputs a probability for each cell, so it can be decoded two ways from the same predictions. The chart decodes it by lowest expected cost, as the penalty for each second of delay grows from 0 to 8 oracle core-seconds, and compares that with decoding for accuracy.</p>
+    <div class="figure"><svg id="frontier" viewBox="0 0 900 330" role="img" aria-label="Under-prediction rate and accuracy of the decision model under cost-optimal decoding as the delay penalty grows"></svg>
+      <p class="caption">Decision 1.7B, pointer head, test split. Lines: cost-optimal decoding at each delay penalty. Dashed horizontal lines: accuracy decoding, the setting used on the leaderboard.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>At the default penalty (1 oracle core-second per second late), cost-optimal decoding under-predicts 60% of runs. A throttled second costs less than an idle core, so the cheapest policy is to throttle.</li>
+        <li>Only at a penalty of 4 does it under-predict as rarely as accuracy decoding, and by then its accuracy has already started falling again (65%) because it over-predicts.</li>
+        <li>Accuracy decoding gets 71% within ±25% with 17% under-predicted, from the same probabilities. The trees show the same pattern.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>What the small release supports</h2>
+    <ul>
+      <li><b>The benchmark works end to end.</b> 220 runs were measured from the cgroup in one factory materialization, every run spans at least 4 platform windows, and labels match what the code should do (pilot checks above).</li>
+      <li><b>Reading code is what separates approaches.</b> Input-size features alone cannot predict a peak that does not depend on input size; approaches that read the pool size lead on unseen families.</li>
+      <li><b>The zero-shot 27B is strongest on balance</b>, with the lowest error and cost and no training. The code-rule's 95% on unseen families says more about those two families (both honour their declared pool) than about the rule.</li>
+      <li><b>The decision model is competitive at a fiftieth of RightSizeMem's training data.</b> Decoding for accuracy beats its own argmax by 8 points on test and 15 on unseen families, the same pattern as RightSizeMem.</li>
+      <li><b>Not yet shown:</b> whether the 4B decision model, or pooling the trees with a decision model (RightSizeMem's best policy), beats the 27B. Both are in the full release.</li>
+    </ul>
+  </section>
+
+  <section id="limits">
+    <h2>Assumptions and limits</h2>
+    <ul>
+      <li><b>Sample size.</b> 52 test runs and 40 unseen runs. A 95% interval on a share near 75% is about ±12 points.</li>
+      <li><b>Workloads are short kernels</b> of real tasks: 60–90 seconds, long enough for 4–6 platform windows. Peak CPU does not depend on run length, but cost totals would.</li>
+      <li><b>The throttling model</b> stretches each second by u ÷ L. Real CFS throttling works in 100 ms periods and can add latency spikes the model does not capture.</li>
+      <li><b>Pools are at most 8 threads</b> (16 for I/O waits) on a 9-CPU pod, and BLAS is pinned to one thread unless the code sets it. On a larger node, an unsized BLAS pool would use every core.</li>
+      <li><b>The code-rule and the trees' 44 code tokens</b> were written by the person who wrote the generator, which makes both baselines generous.</li>
+      <li><b>Unseen families are only two</b>, and both honour their declared pool size, which favours any approach that reads it.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <div>Short version: <a href="https://claude.ai/artifact/4h3B4ZQcfdLX1ppfBN8EF6">RightSizeCPU Bench Abstract</a>. Sibling benchmarks: RightSizeMem (memory) and RightSizeGPU (GPU memory and utilization).</div>
+    <div>Source: <span class="mono">model-factory-resource-tuner/resource_tuner/bench_cpu/</span> · research log <span class="mono">research_log/2026-10-23-round-18-rightsize-cpu-gpu.md</span> · cluster project <span class="mono">resource-tuner-model-factory</span> on demo.hosted.unionai.cloud.</div>
+    <div>Reproduce: <span class="mono">flyte factory materialize rightsize-cpu-bench rt-cpubench-leaderboard --partition release=small-1 --partition arm=static,vpa,code-rule,gbt,gbt-dist,zeroshot-27b,sft,jev-pointer</span></div>
+  </footer>
+</div>
+
+<script>
+const ARMS = {"static":{"test_within_margin":0.3462,"test_under_rate":0.3077,"test_mae_cores":1.1276,"test_cpu_regret":0.4483,"test_mean_within_margin":0.1731,"ood_within_margin":0.325,"ood_under_rate":0.475,"ood_mae_cores":1.5489,"ood_cpu_regret":0.8386,"ood_mean_within_margin":0.325,"drv":{"gil":0.25,"io":0.0,"phases":0.5,"processes":0.5,"serial":0.0,"threads":0.4167}},"vpa":{"test_within_margin":0.6731,"test_under_rate":0.2308,"test_mae_cores":0.6172,"test_cpu_regret":0.1826,"test_mean_within_margin":0.5962,"ood_within_margin":0.675,"ood_under_rate":0.55,"ood_mae_cores":0.8829,"ood_cpu_regret":0.3954,"ood_mean_within_margin":0.65,"drv":{"gil":0.625,"io":0.5,"phases":0.75,"processes":0.75,"serial":0.5,"threads":0.7083}},"code-rule":{"test_within_margin":0.8077,"test_under_rate":0.4038,"test_mae_cores":0.7444,"test_cpu_regret":0.1796,"test_mean_within_margin":0.4615,"ood_within_margin":0.95,"ood_under_rate":0.65,"ood_mae_cores":0.5456,"ood_cpu_regret":0.0872,"ood_mean_within_margin":0.425,"drv":{"gil":0.25,"io":0.0,"phases":1.0,"processes":1.0,"serial":1.0,"threads":0.9167}},"gbt":{"test_within_margin":0.6538,"test_under_rate":0.3462,"test_mae_cores":0.6069,"test_cpu_regret":0.309,"test_mean_within_margin":0.6154,"ood_within_margin":0.35,"ood_under_rate":0.75,"ood_mae_cores":1.3557,"ood_cpu_regret":0.8935,"ood_mean_within_margin":0.475,"drv":{"gil":0.625,"io":0.0,"phases":1.0,"processes":0.75,"serial":0.6667,"threads":0.5833}},"gbt-dist":{"test_within_margin":0.7308,"test_under_rate":0.2692,"test_mae_cores":0.5117,"test_cpu_regret":0.2252,"test_mean_within_margin":0.6154,"ood_within_margin":0.475,"ood_under_rate":0.675,"ood_mae_cores":1.199,"ood_cpu_regret":0.6596,"ood_mean_within_margin":0.475,"drv":{"gil":1.0,"io":0.0,"phases":0.875,"processes":0.75,"serial":0.8333,"threads":0.625}},"zeroshot-27b":{"test_within_margin":0.7885,"test_under_rate":0.2308,"test_mae_cores":0.4246,"test_cpu_regret":0.1537,"test_mean_within_margin":0.8269,"ood_within_margin":0.925,"ood_under_rate":0.375,"ood_mae_cores":0.5017,"ood_cpu_regret":0.5312,"ood_mean_within_margin":0.925,"drv":{"gil":0.875,"io":1.0,"phases":0.125,"processes":1.0,"serial":1.0,"threads":0.875}},"sft-greedy":{"test_within_margin":0.7115,"test_under_rate":0.0769,"test_mae_cores":0.5394,"test_cpu_regret":0.1748,"test_mean_within_margin":0.6154,"ood_within_margin":0.675,"ood_under_rate":0.325,"ood_mae_cores":1.002,"ood_cpu_regret":0.8461,"ood_mean_within_margin":0.65,"drv":{"gil":0.75,"io":0.5,"phases":0.5,"processes":0.5,"serial":0.8333,"threads":0.7917}},"sft-sampled":{"test_within_margin":0.6154,"test_under_rate":0.1346,"test_mae_cores":0.7581,"test_cpu_regret":0.4153,"test_mean_within_margin":0.5769,"ood_within_margin":0.675,"ood_under_rate":0.525,"ood_mae_cores":0.9617,"ood_cpu_regret":0.7621,"ood_mean_within_margin":0.675,"drv":{"gil":0.5,"io":0.5,"phases":0.875,"processes":0.5,"serial":0.6667,"threads":0.5833}},"jev-pointer-argmax":{"test_within_margin":0.6346,"test_under_rate":0.0769,"test_mae_cores":0.6388,"test_cpu_regret":0.2398,"test_mean_within_margin":0.4423,"ood_within_margin":0.675,"ood_under_rate":0.15,"ood_mae_cores":0.9163,"ood_cpu_regret":0.5008,"ood_mean_within_margin":0.575,"drv":{"gil":0.875,"io":1.0,"phases":0.375,"processes":0.5,"serial":0.6667,"threads":0.625}},"jev-pointer":{"test_within_margin":0.7115,"test_under_rate":0.1731,"test_mae_cores":0.494,"test_cpu_regret":0.1946,"test_mean_within_margin":0.4423,"ood_within_margin":0.825,"ood_under_rate":0.55,"ood_mae_cores":0.7782,"ood_cpu_regret":0.5931,"ood_mean_within_margin":0.575,"drv":{"gil":0.75,"io":0.5,"phases":0.875,"processes":0.5,"serial":0.8333,"threads":0.6667}}};
+const DRV_N = {"threads": 24, "gil": 8, "processes": 4, "serial": 6, "io": 2, "phases": 8};
+const FRONT = [[0, 1.0, 0.0], [0.25, 0.981, 0.058], [0.5, 0.885, 0.269], [1, 0.596, 0.712], [2, 0.346, 0.712], [4, 0.154, 0.654], [8, 0.096, 0.577]];
+const PTS = [[3,2.94,0],[3,2.53,0],[2,1.87,0],[2,1.99,0],[8,5.66,0],[8,6.74,0],[2,1.9,0],[2,1.92,0],[3,2.84,0],[3,2.81,0],[1,1.0,0],[1,1.0,0],[1,1.0,0],[1,1.0,0],[2,1.91,0],[2,1.8,0],[4,3.25,0],[4,3.36,0],[8,7.14,0],[8,6.88,0],[2,0.05,4],[2,0.07,4],[16,1.01,4],[16,1.01,4],[4,0.04,4],[4,0.06,4],[16,0.97,4],[16,0.96,4],[2,0.09,4],[2,0.09,4],[16,0.12,4],[16,0.13,4],[16,0.12,4],[16,0.12,4],[8,0.08,4],[8,0.09,4],[16,0.15,4],[16,0.17,4],[2,0.1,4],[2,0.14,4],[6,4.0,5],[6,4.0,5],[4,2.57,5],[4,2.56,5],[2,2.0,5],[2,2.0,5],[2,1.98,5],[2,1.98,5],[8,5.0,5],[8,5.0,5],[2,1.98,5],[2,1.98,5],[2,2.0,5],[2,2.0,5],[2,1.83,5],[2,2.0,5],[3,2.56,5],[3,2.56,5],[4,2.95,5],[4,2.94,5],[3,1.01,0],[3,1.01,0],[6,6.0,0],[6,6.0,0],[4,4.0,0],[4,4.0,0],[0,1.0,0],[0,1.0,0],[3,3.0,0],[3,3.0,0],[0,1.0,0],[0,1.0,0],[2,2.0,0],[2,2.0,0],[2,2.0,0],[2,2.0,0],[2,2.0,0],[2,2.0,0],[4,4.0,0],[4,4.0,0],[0,1.01,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,0.95,3],[0,1.01,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[0,1.0,3],[4,3.62,0],[4,4.06,0],[4,3.17,0],[4,3.25,0],[3,3.53,0],[3,3.13,0],[1,1.17,0],[1,1.18,0],[2,2.0,0],[2,2.13,0],[2,2.05,0],[2,2.06,0],[2,2.13,0],[2,2.24,0],[4,3.93,0],[4,3.44,0],[4,3.26,0],[4,3.8,0],[4,4.62,0],[4,4.47,0],[4,1.84,2],[4,1.82,2],[6,3.34,2],[6,3.24,2],[3,3.15,2],[3,3.27,2],[6,1.83,2],[6,1.82,2],[2,2.01,2],[2,1.99,2],[4,1.81,2],[4,1.88,2],[2,1.62,2],[2,1.57,2],[2,2.2,2],[2,2.2,2],[3,1.88,2],[3,1.81,2],[8,2.9,2],[8,2.84,2],[6,1.09,0],[6,1.1,0],[8,8.12,0],[8,7.75,0],[4,4.19,0],[4,4.22,0],[1,1.07,0],[1,1.06,0],[2,2.14,0],[2,2.11,0],[3,3.11,0],[3,3.19,0],[6,5.33,0],[6,6.14,0],[4,4.12,0],[4,4.17,0],[2,2.15,0],[2,2.14,0],[2,2.12,0],[2,2.15,0],[2,1.01,1],[2,1.0,1],[4,1.01,1],[4,1.01,1],[4,3.5,1],[4,3.53,1],[6,1.01,1],[6,1.01,1],[4,1.01,1],[4,1.01,1],[4,1.01,1],[4,1.01,1],[2,2.01,1],[2,2.01,1],[8,7.82,1],[8,7.81,1],[4,3.97,1],[4,3.97,1],[4,3.97,1],[4,3.94,1],[2,1.63,0],[2,1.72,0],[2,1.28,0],[2,1.3,0],[8,3.6,0],[8,3.28,0],[3,2.36,0],[3,2.29,0],[2,1.83,0],[2,1.99,0],[2,1.99,0],[2,1.98,0],[4,3.76,0],[4,3.63,0],[8,5.31,0],[8,5.28,0],[4,3.42,0],[4,3.26,0],[4,2.95,0],[4,2.89,0],[3,3.0,0],[3,3.0,0],[4,4.0,0],[4,4.0,0],[1,1.0,0],[1,1.0,0],[2,2.0,0],[2,2.0,0],[4,4.0,0],[4,4.0,0],[2,2.0,0],[2,2.0,0],[1,1.0,0],[1,1.0,0],[4,4.0,0],[4,4.0,0],[4,4.0,0],[4,4.0,0],[3,3.0,0],[3,3.0,0]];
+const DRIVERS = [["threads", "explicit pool", "var(--d-threads)"], ["gil", "thread pool (GIL)", "var(--d-gil)"], ["processes", "process pool", "var(--d-proc)"], ["serial", "serial", "var(--d-serial)"], ["io", "I/O-bound", "var(--d-io)"], ["phases", "serial then parallel", "var(--d-phases)"]];
+const LABEL = {
+  "static": "static request", "vpa": "history max × margin", "code-rule": "code rule (declared pool)",
+  "gbt": "trees (gbt)", "gbt-dist": "trees, distribution", "zeroshot-27b": "zero-shot 27B",
+  "sft-greedy": "SFT 1.7B, greedy", "sft-sampled": "SFT 1.7B, 8 samples",
+  "jev-pointer-argmax": "decision 1.7B, argmax", "jev-pointer": "decision 1.7B, pointer"
+};
+const ORDER = Object.keys(LABEL);
+const KIND = a => a.startsWith("jev") ? "dec" : a.startsWith("sft") || a.startsWith("zeroshot") ? "llm" : a.startsWith("gbt") ? "tree" : "rule";
+const COLOR = { rule: "var(--rule-c)", tree: "var(--tree)", llm: "var(--warm)", dec: "var(--accent)" };
+const NS = "http://www.w3.org/2000/svg", MONO = "IBM Plex Mono, monospace";
+const pct = x => (x * 100).toFixed(1) + "%";
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+// scatter: declared pool vs measured peak
+(function () {
+  document.getElementById("drvlegend").innerHTML = DRIVERS.map(d => `<span><span class="kind" style="background:${d[2]};border-radius:50%"></span>${d[1]}</span>`).join("");
+  const svg = document.getElementById("scatter"), L = 70, R = 20, T = 14, B = 50, W = 900 - L - R, H = 420 - T - B;
+  const XS = [0, 1, 2, 3, 4, 6, 8, 16], xi = v => XS.indexOf(v);
+  const x = v => L + W * (xi(v) + 0.5) / XS.length, y = v => T + H * (1 - v / 8.5);
+  [0, 1, 2, 3, 4, 5, 6, 7, 8].forEach(v => {
+    el("line", { x1: L, x2: L + W, y1: y(v), y2: y(v), stroke: "var(--rule)" }, svg);
+    el("text", { x: L - 10, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, v);
+  });
+  XS.forEach(v => el("text", { x: x(v), y: T + H + 18, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, v === 0 ? "none" : v));
+  el("text", { x: L + W / 2, y: T + H + 40, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, svg, "largest pool size declared in the code");
+  el("text", { x: 16, y: T + H / 2, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)", transform: `rotate(-90 16 ${T + H / 2})` }, svg, "measured peak (cores, busiest 15 s)");
+  const diag = XS.filter(v => v >= 1 && v <= 8).map(v => `${x(v)},${y(v)}`).join(" ");
+  el("polyline", { points: diag, fill: "none", stroke: "var(--muted)", "stroke-dasharray": "4 4", "stroke-width": 1.2 }, svg);
+  let seed = 7; const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  PTS.forEach(([p, pk, d]) => {
+    const jx = (rnd() - 0.5) * (W / XS.length) * 0.6;
+    el("circle", { cx: x(p) + jx, cy: y(pk), r: 4, fill: DRIVERS[d][2], "fill-opacity": 0.75, stroke: "var(--panel)", "stroke-width": 0.8 }, svg);
+  });
+})();
+
+// leaderboard bars
+(function () {
+  const svg = document.getElementById("board"), L = 220, R = 60, T = 10, rowH = 39;
+  const W = 900 - L - R, x = v => L + W * v;
+  svg.setAttribute("viewBox", `0 0 900 ${T + rowH * ORDER.length + 30}`);
+  [0, 0.25, 0.5, 0.75, 1].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * ORDER.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * ORDER.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v * 100) + "%");
+  });
+  ORDER.forEach((a, i) => {
+    const d = ARMS[a], y = T + i * rowH, c = COLOR[KIND(a)];
+    el("text", { x: L - 10, y: y + 17, "text-anchor": "end", "font-size": 13, fill: "var(--ink)" }, svg, LABEL[a]);
+    el("rect", { x: L, y: y + 5, width: Math.max(1, x(d.test_within_margin) - L), height: 13, rx: 2, fill: c }, svg);
+    el("rect", { x: L, y: y + 21, width: Math.max(1, x(d.ood_within_margin) - L), height: 11, rx: 2, fill: "none", stroke: c, "stroke-width": 1.5 }, svg);
+    el("text", { x: x(d.test_within_margin) + 6, y: y + 16, "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, pct(d.test_within_margin));
+    el("text", { x: x(d.ood_within_margin) + 6, y: y + 31, "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, pct(d.ood_within_margin));
+  });
+})();
+
+// leaderboard table
+(function () {
+  const cols = [["test_within_margin", "test within ±25%", 1, pct], ["test_under_rate", "test under", -1, pct], ["test_mae_cores", "test MAE", -1, v => v.toFixed(2)],
+    ["test_cpu_regret", "test CPU regret", -1, pct], ["test_mean_within_margin", "test mean ±25%", 1, pct],
+    ["ood_within_margin", "unseen within ±25%", 1, pct], ["ood_mae_cores", "unseen MAE", -1, v => v.toFixed(2)], ["ood_cpu_regret", "unseen CPU regret", -1, pct]];
+  const best = {};
+  cols.forEach(([k, , dir]) => { const vs = ORDER.map(a => ARMS[a][k]); best[k] = dir > 0 ? Math.max(...vs) : Math.min(...vs); });
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td><span class="kind" style="background:${COLOR[KIND(a)]}"></span>${LABEL[a]}</td>`;
+    cols.forEach(([k, , , f]) => { h += `<td class="${ARMS[a][k] === best[k] ? "best" : ""}">${f(ARMS[a][k])}</td>`; });
+    h += "</tr>";
+  });
+  document.getElementById("boardtable").innerHTML = h + "</tbody>";
+})();
+
+// by-driver table
+(function () {
+  let h = "<thead><tr><th>approach</th>" + DRIVERS.map(d => `<th>${d[0]} <span class="muted">(${DRV_N[d[0]]})</span></th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td><span class="kind" style="background:${COLOR[KIND(a)]}"></span>${LABEL[a]}</td>`;
+    DRIVERS.forEach(([k]) => {
+      const v = ARMS[a].drv[k];
+      h += `<td class="heat" style="background:color-mix(in srgb, var(--accent) ${Math.round(v * 34)}%, transparent)">${Math.round(v * 100)}%</td>`;
+    });
+    h += "</tr>";
+  });
+  document.getElementById("drivertable").innerHTML = h + "</tbody>";
+})();
+
+// cost-optimal decoding vs accuracy decoding
+(function () {
+  const svg = document.getElementById("frontier"), L = 70, R = 170, T = 14, B = 46, W = 900 - L - R, H = 330 - T - B;
+  const x = i => L + W * i / (FRONT.length - 1), y = v => T + H * (1 - v);
+  [0, 0.25, 0.5, 0.75, 1].forEach(v => {
+    el("line", { x1: L, x2: L + W, y1: y(v), y2: y(v), stroke: "var(--rule)" }, svg);
+    el("text", { x: L - 10, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v * 100) + "%");
+  });
+  FRONT.forEach((f, i) => el("text", { x: x(i), y: T + H + 18, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, f[0]));
+  el("text", { x: L + W / 2, y: T + H + 38, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, svg, "delay penalty (oracle core-seconds per second late)");
+  const acc = ARMS["jev-pointer"];
+  [[acc.test_under_rate, "var(--bad)", "accuracy decoding: under"], [acc.test_within_margin, "var(--accent)", "accuracy decoding: within ±25%"]].forEach(([v, c, t]) => {
+    el("line", { x1: L, x2: L + W, y1: y(v), y2: y(v), stroke: c, "stroke-dasharray": "5 4", "stroke-width": 1.4 }, svg);
+  });
+  [[1, "var(--bad)", "under-predicted"], [2, "var(--accent)", "within ±25%"]].forEach(([k, c, t]) => {
+    el("polyline", { points: FRONT.map((f, i) => `${x(i)},${y(f[k])}`).join(" "), fill: "none", stroke: c, "stroke-width": 2.2 }, svg);
+    FRONT.forEach((f, i) => el("circle", { cx: x(i), cy: y(f[k]), r: i === 3 ? 5 : 3.5, fill: c }, svg));
+    const last = FRONT[FRONT.length - 1];
+    el("text", { x: L + W + 10, y: y(last[k]) + 4, "font-size": 12, fill: c }, svg, "cost-optimal: " + t);
+  });
+  el("text", { x: L + W + 10, y: y(acc.test_within_margin) - 6, "font-size": 11.5, fill: "var(--accent)" }, svg, "accuracy decoding");
+  el("text", { x: L + W + 10, y: y(acc.test_under_rate) - 6, "font-size": 11.5, fill: "var(--bad)" }, svg, "accuracy decoding");
+  el("text", { x: x(3), y: y(FRONT[3][1]) - 10, "text-anchor": "middle", "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, "default: 60% under");
+})();
+</script>

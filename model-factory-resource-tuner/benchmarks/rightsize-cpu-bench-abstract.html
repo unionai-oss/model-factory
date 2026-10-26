@@ -1,0 +1,189 @@
+<title>RightSizeCPU Bench Abstract</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a paper-style abstract. One paragraph, then the results (chart, table, findings), then the setup and definitions in compact form. Same tokens as the full RightSizeCPU and RightSizeMem reports. */
+:root {
+  --bg: #f5f6f9;
+  --panel: #ffffff;
+  --ink: #161823;
+  --muted: #5d6273;
+  --rule: #dcdfe8;
+  --tint: #eef0fb;
+  --accent: #4d65ff;     /* decision model */
+  --warm: #c9760a;       /* autoregressive LLM */
+  --tree: #1f9b6a;       /* classical ML */
+  --rule-c: #8a8fa0;     /* rules */
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+    --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+  --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 860px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; display: grid; gap: 30px; }
+header { display: grid; gap: 10px; }
+.eyebrow, .label { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.label { color: var(--accent); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(36px, 6vw, 52px); line-height: 1.02; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 24px; line-height: 1.15; margin: 0; text-wrap: balance; }
+p { margin: 0; max-width: 68ch; }
+section { display: grid; gap: 14px; min-width: 0; }
+.status { justify-self: start; font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; color: var(--warm); border: 1px solid color-mix(in srgb, var(--warm) 45%, transparent); border-radius: 999px; padding: 3px 12px; }
+.abstract { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 20px 22px; display: grid; gap: 10px; }
+.abstract p { font-size: 16.5px; max-width: none; text-wrap: pretty; }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 16px 10px; min-width: 0; }
+.figure svg { display: block; width: 100%; height: auto; }
+.caption { font-size: 13px; color: var(--muted); margin-top: 6px; max-width: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+td.best { font-weight: 600; }
+ol.findings { margin: 0; padding: 0; list-style: none; display: grid; gap: 14px; }
+ol.findings li { display: grid; grid-template-columns: 112px 1fr; gap: 16px; align-items: baseline; }
+ol.findings .n { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.05; font-variant-numeric: tabular-nums; }
+ol.findings b { font-weight: 600; }
+@media (max-width: 560px) { ol.findings li { grid-template-columns: 1fr; gap: 2px; } }
+dl.defs { display: grid; grid-template-columns: minmax(140px, 190px) 1fr; gap: 9px 20px; margin: 0; }
+dl.defs dt { font-weight: 600; }
+dl.defs dd { margin: 0; min-width: 0; }
+@media (max-width: 560px) { dl.defs { grid-template-columns: 1fr; gap: 2px 0; } dl.defs dd { margin-bottom: 8px; } }
+.mono { font-family: var(--font-mono); font-size: .9em; }
+.muted { color: var(--muted); }
+footer { padding-top: 16px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); display: grid; gap: 4px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Union model factory · round 18 · October 2026</div>
+    <h1>RightSizeCPU Bench: predicting peak CPU from code</h1>
+    <span class="status">Initial results · small release (small-1) · a 4× larger release is running</span>
+  </header>
+
+  <div class="abstract">
+    <div class="label">Abstract</div>
+    <p>A task's CPU request is set before it runs. Below the task's real peak, the kernel throttles it and it finishes late; above it, cores sit idle. RightSizeCPU Bench measures how well different approaches predict a task's <b>peak CPU</b>: the busiest 15-second average, which is exactly what Union's task monitoring can show, because Prometheus scrapes container CPU every 15 seconds. The small release has 220 runs of generated Flyte task code from 11 workload families, each run executed alone in a 9-CPU pod and measured from the container's cgroup. Every approach sees only the source code, the input files' metadata and the task's earlier runs, and is scored on the share of runs whose predicted peak lands <b>within ±25%</b> of the measured one.</p>
+    <p>Peak CPU turned out to be a property of the code: a task's two runs, on inputs up to 4× apart, agree to within 0.7% at the median. So approaches separate by how well they read code. A single static request is within ±25% on 35% of test runs. Gradient-boosted trees reach 73% on test but fall to 48% on two families held out of training. A one-line rule that reads the largest declared pool size reaches 81% and 95%, but fails thread pools held back by Python's GIL (25%) and I/O-bound code (0%). A zero-shot 27B model reaches 79% and 93% with the lowest error of any approach (0.43 cores), and a 1.7B decision model trained on only 116 runs reaches 71% and 83%. With 52 test runs, differences under about 10 points are within noise.</p>
+  </div>
+
+  <section>
+    <div class="label">Results</div>
+    <h2>Peak predicted within ±25%, by approach</h2>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--rule-c)"></span>rule</span>
+      <span><span class="kind" style="background:var(--tree)"></span>classical ML</span>
+      <span><span class="kind" style="background:var(--warm)"></span>autoregressive LLM</span>
+      <span><span class="kind" style="background:var(--accent)"></span>decision model</span>
+    </div>
+    <div class="figure"><svg id="board" viewBox="0 0 860 420" role="img" aria-label="Share of runs with peak CPU predicted within 25 percent, test split and unseen families"></svg>
+      <p class="caption">Bar length is the share of runs whose predicted peak was within ±25% of the measured peak (or 0.25 core for small peaks). Longer is better; the oracle scores 100%. Solid bars are the test split (52 runs of new code from the 9 training families); outlined bars are the two unseen families (40 runs).</p></div>
+    <div class="figure table-wrap"><table id="boardtable"></table>
+      <p class="caption">Under is the share of runs predicted below the peak, which would be throttled. MAE is the mean absolute error in cores. CPU regret is the core-seconds an approach's limit costs over the oracle, counting a penalty for each second a throttled run finishes late. Bold marks the best value in each column.</p></div>
+  </section>
+
+  <section>
+    <h2>Four findings</h2>
+    <ol class="findings">
+      <li><span class="n">0.7%</span><span><b>Peak CPU is decided by the code, not the input.</b> The two runs of a task differ by 0.7% at the median (11% at the 90th percentile). What sets the peak is a pool size written in the code, such as <span class="mono">n_jobs=4</span> or <span class="mono">SET threads = 6</span>, and whether that pool can really run in parallel. Trees on input features cannot see this, which is why they lose most on unseen families (73% to 48%).</span></li>
+      <li><span class="n">79% / 93%</span><span><b>A zero-shot 27B model is the strongest approach on balance.</b> Without training, it has the lowest error (0.43 cores on test, 0.50 on unseen) and the lowest cost on test (15.4% over the oracle), and it handles both explicit pools and the GIL. Its weak spot is code with a serial phase followed by a parallel one (1 of 8 right): it predicts the average rather than the peak.</span></li>
+      <li><span class="n">25% / 0%</span><span><b>Reading the declared pool size is a strong rule with predictable failures.</b> The code-rule is perfect on serial, process-pool and phased code, but scores 25% on pure-Python thread pools (8 threads under the GIL use about 1 core) and 0% on I/O-bound code. Its 95% on unseen families reflects those two families, which both honour their declared pool.</span></li>
+      <li><span class="n">71% / 83%</span><span><b>A small decision model learns CPU from 116 runs.</b> Qwen3-1.7B with a pointer head that scores each option is ahead of the trees on unseen code (83% against 48%). Choosing the option most likely to be within ±25% beats picking its single most likely option by 8 to 15 points. Decoding it for lowest cost instead would under-predict 60% of runs, because a throttled second costs less than an idle core.</span></li>
+    </ol>
+  </section>
+
+  <section>
+    <div class="label">Setup</div>
+    <h2>How the benchmark works</h2>
+    <dl class="defs">
+      <dt>Workloads</dt><dd>11 families of task code: NumPy BLAS, polars, DuckDB SQL, scikit-learn ensembles, pandas, Python thread pools, process pools, PyTorch on CPU, pyarrow CSV, I/O-bound fetch loops, and a serial phase followed by a parallel one. A generator varies the choices that decide parallelism (pool sizes, GIL-bound or GIL-releasing work, chunk counts, batch sizes). Each task runs twice, on inputs 0.5× to 2× its base size, and loops for 60 to 90 seconds.</dd>
+      <dt>Labels</dt><dd>Each run executes alone in a 9-CPU spot pod. Its CPU is read every second from the container cgroup's <span class="mono">cpu.stat</span>, the counter cAdvisor exports. The label is the smallest of 16 core counts (0.25 to 8) that covers the busiest sliding 15-second window. Every run spans at least 4 windows.</dd>
+      <dt>Splits</dt><dd>Split by task: 116 train, 12 validation and 52 test runs from 9 families, plus 40 runs from 2 families held out entirely (DuckDB SQL and pyarrow CSV). Settings are tuned on validation; test and unseen are scored once.</dd>
+      <dt>Approaches</dt><dd><b>Rules:</b> one static request; the task's largest past peak times a margin; the largest pool size the code declares, times a factor. <b>Trees:</b> gradient-boosted quantile regression on 71 numeric features, and the same trees read as a distribution over cells. <b>Autoregressive LLMs:</b> a zero-shot 27B model, and Qwen3-1.7B fine-tuned with LoRA to write the answer. <b>Decision model:</b> the same LoRA setup with a head that scores each core count written in the prompt. All fine-tuning on one T4 GPU.</dd>
+    </dl>
+    <h2>Key terms</h2>
+    <dl class="defs">
+      <dt>Peak CPU</dt><dd>The highest average core usage in any 15-second window of the run: the busiest value Union's monitoring can show.</dd>
+      <dt>Within ±25%</dt><dd>The predicted peak is within 25% of the measured peak, or within 0.25 core for small peaks. The headline metric. No two of the 16 options are more than 25% apart, so the oracle always scores 100%.</dd>
+      <dt>Throttling</dt><dd>A task asking for more cores than its limit is paused by the scheduler, so its work takes longer. It is never killed.</dd>
+      <dt>CPU regret</dt><dd>Core-seconds reserved (limit × stretched duration) plus one oracle core-second per oracle core for each second late, summed over runs, divided by the oracle's total, minus 1.</dd>
+      <dt>GIL</dt><dd>Python's global interpreter lock. Threads running pure Python share one core; libraries such as zlib, hashlib and NumPy release it and run in parallel.</dd>
+      <dt>Unseen families</dt><dd>The two families no approach trained on. They test whether an approach generalizes to new code and new pool-size APIs.</dd>
+    </dl>
+  </section>
+
+  <footer>
+    <div>Full report with methodology, chart reading guides and limits: <a href="https://claude.ai/artifact/EoKwzjGtnWqwM62UaF597V">RightSizeCPU Bench</a>.</div>
+    <div>Source: <span class="mono">model-factory-resource-tuner/resource_tuner/bench_cpu/</span> · research log <span class="mono">research_log/2026-10-23-round-18-rightsize-cpu-gpu.md</span> · run <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-small-1">rsc-small-1</a> on demo.hosted.unionai.cloud.</div>
+  </footer>
+</div>
+
+<script>
+const ARMS = {"static":[0.3462,0.3077,1.1276,0.4483,0.325,0.5489],"vpa":[0.6731,0.2308,0.6172,0.1826,0.675,0.8829],"code-rule":[0.8077,0.4038,0.7444,0.1796,0.95,0.5456],"gbt":[0.6538,0.3462,0.6069,0.309,0.35,1.3557],"gbt-dist":[0.7308,0.2692,0.5117,0.2252,0.475,1.199],"zeroshot-27b":[0.7885,0.2308,0.4246,0.1537,0.925,0.5017],"sft-greedy":[0.7115,0.0769,0.5394,0.1748,0.675,1.002],"sft-sampled":[0.6154,0.1346,0.7581,0.4153,0.675,0.9617],"jev-pointer-argmax":[0.6346,0.0769,0.6388,0.2398,0.675,0.9163],"jev-pointer":[0.7115,0.1731,0.494,0.1946,0.825,0.7782]};
+const LABEL = {
+  "static": "static request", "vpa": "history max × margin", "code-rule": "code rule (declared pool)",
+  "gbt": "trees (gbt)", "gbt-dist": "trees, distribution", "zeroshot-27b": "zero-shot 27B",
+  "sft-greedy": "SFT 1.7B, greedy", "sft-sampled": "SFT 1.7B, 8 samples",
+  "jev-pointer-argmax": "decision 1.7B, argmax", "jev-pointer": "decision 1.7B, pointer"
+};
+const ORDER = Object.keys(LABEL);
+const KIND = a => a.startsWith("jev") ? "dec" : a.startsWith("sft") || a.startsWith("zeroshot") ? "llm" : a.startsWith("gbt") ? "tree" : "rule";
+const COLOR = { rule: "var(--rule-c)", tree: "var(--tree)", llm: "var(--warm)", dec: "var(--accent)" };
+const NS = "http://www.w3.org/2000/svg", MONO = "IBM Plex Mono, monospace";
+const pct = x => (x * 100).toFixed(1) + "%";
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+(function () {
+  const svg = document.getElementById("board"), L = 200, R = 56, T = 8, rowH = 39;
+  const W = 860 - L - R, x = v => L + W * v;
+  svg.setAttribute("viewBox", `0 0 860 ${T + rowH * ORDER.length + 28}`);
+  [0, 0.25, 0.5, 0.75, 1].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * ORDER.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * ORDER.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v * 100) + "%");
+  });
+  ORDER.forEach((a, i) => {
+    const d = ARMS[a], y = T + i * rowH, c = COLOR[KIND(a)];
+    el("text", { x: L - 10, y: y + 17, "text-anchor": "end", "font-size": 13, fill: "var(--ink)" }, svg, LABEL[a]);
+    el("rect", { x: L, y: y + 5, width: Math.max(1, x(d[0]) - L), height: 13, rx: 2, fill: c }, svg);
+    el("rect", { x: L, y: y + 21, width: Math.max(1, x(d[4]) - L), height: 11, rx: 2, fill: "none", stroke: c, "stroke-width": 1.5 }, svg);
+    el("text", { x: x(d[0]) + 6, y: y + 16, "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, pct(d[0]));
+    el("text", { x: x(d[4]) + 6, y: y + 31, "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, pct(d[4]));
+  });
+})();
+(function () {
+  const cols = [[0, "test ±25%", 1, pct], [1, "test under", -1, pct], [2, "test MAE", -1, v => v.toFixed(2)], [3, "test CPU regret", -1, pct], [4, "unseen ±25%", 1, pct], [5, "unseen MAE", -1, v => v.toFixed(2)]];
+  const best = {};
+  cols.forEach(([k, , dir]) => { const vs = ORDER.map(a => ARMS[a][k]); best[k] = dir > 0 ? Math.max(...vs) : Math.min(...vs); });
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td><span class="kind" style="background:${COLOR[KIND(a)]}"></span>${LABEL[a]}</td>`;
+    cols.forEach(([k, , , f]) => { h += `<td class="${ARMS[a][k] === best[k] ? "best" : ""}">${f(ARMS[a][k])}</td>`; });
+    h += "</tr>";
+  });
+  document.getElementById("boardtable").innerHTML = h + "</tbody>";
+})();
+</script>
