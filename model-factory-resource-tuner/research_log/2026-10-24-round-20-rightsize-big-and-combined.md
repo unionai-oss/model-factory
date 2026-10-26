@@ -112,6 +112,7 @@ are left out of its gradient (they do not move its reward).
 | [rsg-big-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big-1) | **RightSizeGPU big-1**: 10,000 runs; 9 arms | **FAILED** at `rt-gpubench-arm[big-1, sft]`: `max_runtime of 8h0m0s exceeded`. Training finished (~980 steps, 5,129 train runs); decoding ~4,800 eval runs greedy + 8 samples (batch 2) did not. Corpus and the other 8 arms succeeded. 42 of 184 L40S re-measure shards TIMED_OUT (their runs are missing from the corpus) |
 | [rsg-big-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big-2) | relaunch with `train_llm_arm`'s max_runtime raised to 14 h in `bench/gpu_stations.py` | **aborted** after 2 min: that file is in every LLM arm's cache version (`_SHARED_LLM`), so all three LLM arms started retraining (~10 T4-hours). Fix: revert it, override the timeout at the GPU bench's call site (`train_llm_arm.override(timeout=...)` in `bench_gpu/stations.py`) |
 | [rsg-big-3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big-3) | relaunch with the call-site override | jev-pointer and jev-pointer-4b cache-hit within minutes; sft retraining; running |
+| [rsa-big-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-big-1) | **combined bench big-1**: v2 + CPU big-1 + GPU big-1 corpora, 5 arms + RL | succeeded in 8.4 h: supervised decision model 5.7 h (10,500 train runs), RL 2.7 h (370 steps), zeroshot 69 min. Results below |
 
 ## RightSizeCPU big-1 (rsc-big-1)
 
@@ -212,6 +213,62 @@ Findings (shakedown scale; to be re-tested on big-1):
 5. **zeroshot-27b** is the worst learned arm (44.4%) and produced
    unparseable answers on 183 of its ~600 prompts (counted as the
    fallback request).
+
+## Combined bench big-1 (rsa-big-1: v2 + CPU big-1 + GPU big-1)
+
+The GPU big-1 corpus is rsg-big-1's (its corpus step succeeded; the runs
+of the 42 timed-out L40S shards are missing from it). Eval: 2,697 val /
+5,363 test / 6,534 OOD runs (test: 2,316 mem, 1,634 cpu, 1,413 gpu);
+the decision model trains on 3,500 runs per source. zeroshot-27b is
+scored on a 300-run subsample per split. Mean per-run regret vs the
+oracle (lower is better):
+
+| arm | test regret | geo | first attempt ok | all axes right | mem / cpu / gpu src regret | OOD regret | OOD cpu src |
+|---|---|---|---|---|---|---|---|
+| static | 85.9% | 66.7% | 68.1% | 1.9% | 51.5 / 113.1 / 110.9% | 94.0% | 121.6% |
+| rules | 34.0% | 15.0% | 94.8% | 37.3% | 36.1 / 53.4 / 8.2% | **32.5%** | **16.7%** |
+| gbt-dist | 14.1% | 9.8% | 97.0% | **92.1%** | 25.2 / 1.4 / 10.4% | 33.2% | 69.1% |
+| zeroshot-27b (300 runs) | 49.1% | 30.0% | 87.0% | 28.3% | 34.7 / 64.5 / 50.2% | 49.5% | 14.7% |
+| jev-pointer-argmax | 24.3% | 14.6% | 89.1% | 84.0% | 42.1 / 10.8 / 10.6% | 49.7% | 95.7% |
+| jev-pointer (decoded) | 9.7% | 5.2% | 95.5% | 89.3% | **16.3** / -0.3 / 10.4% | 34.1% | 71.4% |
+| **rl-pointer-argmax** | **8.0%** | **2.8%** | 94.7% | 87.8% | 17.1 / **-4.6** / **7.6%** | 37.3% | 73.3% |
+| rl-pointer (decoded) | 19.2% | 13.9% | 96.5% | 74.8% | 36.3 / 2.6 / 10.4% | 34.0% | 51.7% |
+
+1. **At 2.4x the supervised data the supervised model catches up and RL's
+   lead shrinks to 1.7 points** (9.7% -> 8.0% test regret; rsa-full-3:
+   23.6% -> 12.6%). The decoded supervised model is now the best arm on
+   the memory rows (16.3% vs RL 17.1%); RL's remaining gain is on the CPU
+   rows (-0.3% -> -4.6%) and the GPU rows (10.4% -> 7.6%, the first time
+   any arm moved the GPU slice). Training reward: sampled-action regret
+   ~13% over the first 50 steps, ~6% over the last 50; KL to the
+   supervised policy ~2.1 nats at the end (beta 0.05).
+2. **On unseen families RL is worse than the model it started from**
+   (OOD 37.3% vs 34.1%) and `rules` is the best arm on OOD for the first
+   time (32.5%, with gbt-dist 33.2%). The OOD CPU rows carry it: rules
+   16.7% (declared pools), every learned arm 52-96%. The decoded RL policy
+   does best of the learned arms there (51.7%), its extra safety margin
+   paying off where the model is wrong.
+3. **The RL heads are still sharp, not calibrated**: memory and CPU
+   temperatures again hit the calibrator's cap (5.0, 5.0; GPU 3.1), and
+   the cost-aware decode on top of them over-provisions (19.2% test,
+   first-attempt 96.5%). Supervised temperatures 1.09 / 1.04 / 0.94.
+4. **Negative regret on the CPU rows**: the oracle asks for the cell that
+   covers the busiest 15 s, and a request a cell lower throttles briefly
+   for less than the core-hours it saves. RL found this (-4.6%), as the
+   decoded supervised model nearly did (-0.3%). The oracle is the label,
+   not the cost minimum; per-run regrets on the CPU source should be read
+   as "at or below the label's cost".
+5. **gbt-dist is the most accurate request (92.1% all axes right) at
+   14.1% regret**: trees get each axis right more often, but miss by more
+   when they miss on the memory rows (25.2% mem-source regret vs 16-17%).
+6. zeroshot-27b: 206 of ~900 answers unparseable (fallback 4Gi / 1 core
+   / no GPU), 2.4 s median, 46 completion tokens; 49.1% test regret.
+   No arm asked for a GPU on a CPU task, and every arm except static and
+   zeroshot gave every GPU task a GPU.
+
+Pages: [RightSize Bench (big-1)](https://claude.ai/artifact/AGe3ANw4KKjGfVfFDcFeqM),
+[abstract](https://claude.ai/artifact/LJceQj2Na4jwmmdPhyYx1u)
+(`benchmarks/rightsize-bench-combined*.html`).
 
 ## Code changes
 
