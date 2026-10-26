@@ -70,8 +70,8 @@ rt-bench-runs [release] ─► rt-bench-corpus [release] ─┬─► rt-bench-a
 Memory regret = GiB-hours reserved to get every run to SUCCEEDED (OOM retries
 included) over the oracle's, minus 1. Unseen = two workload families no arm
 trained on. Full tables, v1, live validation: research_log/round-17; page:
-`../benchmarks/rightsize-mem-bench.html`. The CPU, GPU and combined benches
-have pages too; see [`../benchmarks/`](../benchmarks/README.md).
+`benchmarks/rightsize-mem-bench.html`. The CPU, GPU and combined benches
+have pages too; see [`benchmarks/`](benchmarks/README.md).
 
 | arm | test | OOM | unseen families | per decision |
 |---|---|---|---|---|

@@ -352,3 +352,8 @@ Pages: [RightSize Bench (big-1)](https://claude.ai/artifact/AGe3ANw4KKjGfVfFDcFe
 - Tests: `tests/test_bench_all.py` (cost-model ordering, information
   boundary, every arm, a supervised + RL step on a tiny random Qwen3, bundle
   guard), big-profile / tree-CPU / encoder tests in the CPU and GPU suites.
+
+**2026-10-26:** the benchmark pages moved from the repo-root `benchmarks/` to
+`model-factory-resource-tuner/benchmarks/` (each project keeps its own), with
+an index at `benchmarks/README.md`. The `benchmarks/...` paths in this and
+earlier entries now resolve under this project directory.
