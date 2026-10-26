@@ -192,7 +192,7 @@ to training, keeping `a_symlink` held out.
 None of the station envs declared `cache=`. Consequences, all observed:
 `factory plan` reported every upstream instance as *existing* while
 `materialize` re-ran them all (df2-serve-r1, df2-serve-r2); and round 1's
-nightly cron was a full GPU retrain every night (finding 8). basic-model-factory
+nightly cron was a full GPU retrain every night (finding 8). model-factory-basic
 sets `cache="auto"` on its envs; all four stations here now do too
 (`test_every_station_env_caches`).
 

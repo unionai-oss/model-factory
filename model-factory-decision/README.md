@@ -1,4 +1,4 @@
-# decision-model-factory
+# model-factory-decision
 
 A **model factory for decision models**, built on [Union
 factories](https://www.union.ai/docs/v2/union/user-guide/factories/). The

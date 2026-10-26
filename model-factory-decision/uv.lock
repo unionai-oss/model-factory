@@ -692,6 +692,7 @@ train = [
 dev = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "torch" },
 ]
 
 [package.metadata]
@@ -713,6 +714,7 @@ provides-extras = ["train"]
 dev = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "torch", specifier = ">=2.6" },
 ]
 
 [[package]]
