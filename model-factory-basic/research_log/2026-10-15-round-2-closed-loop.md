@@ -141,7 +141,7 @@ Daily profile (the real runs):
 | [bmf-r2-plan-d1](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-plan-d1) | `--plan` for 10-13 | reports partitions as "existing" (round 1's nightly cron had built smoke versions); see finding 8 |
 | [bmf-r2-daily-d1](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-daily-d1) | **day 1**, cold start | 97 min wall (≈50 min of it waiting for a GPU). Candidate 42.5% vs base 35.0%: **promoted**, crowned ([uf275db606406e29](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/uf275db606406e29)). **Bug: 0 of 48 synthetic tasks kept** |
 | [bmf-r2-daily-d2](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-daily-d2) | **day 2**, warm start from gen 1 | 55.6 min wall. Candidate 42.0% vs champion 42.5%: **champion kept**. Still 0 synthetic (ran before the fix) |
-| [bmf-r2-daily-d3](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-daily-d3) | **day 3**, gen-1 champion, repaired curriculum ([16d8b51](#code-changes)) | 61 min wall. Candidate 41.0% vs champion 42.5%: **champion kept**. Curriculum now non-empty: 3 mutations kept, all from champion failures. Crowned ([u465104b9307baac2](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/u465104b9307baac2)) → champion[10-16] |
+| [bmf-r2-daily-d3](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-daily-d3) | **day 3**, gen-1 champion, repaired curriculum ([2a31a5c](#code-changes)) | 61 min wall. Candidate 41.0% vs champion 42.5%: **champion kept**. Curriculum now non-empty: 3 mutations kept, all from champion failures. Crowned ([u465104b9307baac2](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/u465104b9307baac2)) → champion[10-16] |
 | [bmf-r2-serve-d3](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-serve-d3) | `mf-inference[2026-10-15]` | **ABORTED** by me: after the `de-gpu` redeploy it was rebuilding day 3 (finding 11) |
 | [bmf-r2-serve-d3b](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-serve-d3b) | `mf-inference[2026-10-15] --version mf-promoted-model=f6611f86…` | everything upstream `skipped`, endpoint built. App `spec.inputs` pins `mf-promoted-model@f6611f868f60…`; `/health` → `loaded, adapter: true, generation: 1`; `/generate` returned a correct `is_anagram` |
 | [bmf-r2-daily-d4](https://demo.hosted.unionai.cloud/v2/domain/development/project/model-factory/runs/bmf-r2-daily-d4) | **day 4**, gen-1 champion, + frontier replay (`frontier_replay`) | Candidate 41.0% vs champion 42.5%: **champion kept**. 48 replayed frontier tasks, 0 mutations kept. Crown trigger paused by me for this run (see "Operational state") |
@@ -276,15 +276,15 @@ until someone runs `seed_champion` or a new release appears.
 
 On branch `round-2-basic-closed-loop`:
 
-- `c312628`: the closed loop. `mf-champion` source + `crown_champion`
+- `8281656`: the closed loop. `mf-champion` source + `crown_champion`
   trigger + `seed_champion`; `mf-heldout-tasks` / `mf-baseline-report`
   built once; the rotating daily window; leak checks; warm start; hard-task
   bookkeeping; candidate-vs-champion eval with paired CIs; champion/challenger
   release; `smoke`/`daily` profiles; trigger-era dead code removed; image
   flyte pin; 91 tests.
-- `16d8b51`: tolerant synthetic parser, assert wrapping, two draws per seed
+- `2a31a5c`: tolerant synthetic parser, assert wrapping, two draws per seed
   (finding 10).
-- `c0364be`: replay the champion's learnable failures (day 4's hypothesis; not supported).
+- `875888b`: replay the champion's learnable failures (day 4's hypothesis; not supported).
 - (final commit) research log, README walkthrough, docs corrected per finding 7.
 
 Tests: 98 pass (round 1: 68). New: graph-shape tests for the loop wiring

@@ -152,14 +152,14 @@ T4 app. Full-weight releases need no adapter at serve time.
 
 On `round-2-basic-closed-loop` (same branch as round 2):
 
-- `058a090` round 3: 500-task held-out, fresh LoRA on merged champion, vLLM rollouts,
+- `745a7db` round 3: 500-task held-out, fresh LoRA on merged champion, vLLM rollouts,
   7B vLLM teacher: `shared/checkpoints.py` (base/lora/full); trainer merges
   and saves full weights; eval and serving load via the helper;
   `trainer_image` with vLLM; the served-teacher task + `teacher_url` +
   reasoning strip; the batched `_curriculum` core; `probe-r3`.
-- `fea2c13` round-3 settings get their own profile name (`daily-r3`) (finding 1).
-- `77989e2` vLLM images use the PyTorch sampler (finding 4).
-- `be38e4b` replay label fix, README profiles, this log, index.
+- `d2b52c9` round-3 settings get their own profile name (`daily-r3`) (finding 1).
+- `05da0ad` vLLM images use the PyTorch sampler (finding 4).
+- `979f045` replay label fix, README profiles, this log, index.
 
 Tests: 106 pass (round 2: 98). New: checkpoint shapes, teacher URL, reasoning
 strip on the real 27B output, profile wiring (served vs local teacher), replay
