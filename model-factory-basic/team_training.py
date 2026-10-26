@@ -1,9 +1,9 @@
 """Model training team deploy unit.
 
-    flyte --config ~/.flyte/config-model-factory.yaml deploy team_training.py trainer_env
+    flyte --config .flyte/config.yaml deploy team_training.py trainer_env
 
-`train_grpo` is the factory's `policy-checkpoint` build; it reads whatever
-`rl-tasks-dataset` version the materialization resolved. See
+`train_grpo` is the factory's `policy-checkpoint` build: it reads the day's
+`rl-tasks-dataset` and warm-starts from the day's `champion`. See
 `model_factory/factory.py`.
 """
 

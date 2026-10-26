@@ -1,208 +1,233 @@
-# model-factory
+# basic-model-factory
 
-A **dark model factory** proof-of-concept on [Flyte v2](https://www.union.ai/docs/v2/)
-/ Union: a mostly-autonomous loop that trains a small coding agent with RL
-from verifiable rewards (GRPO + sandboxed unit-test execution), where every
-asset is a versioned artifact, the whole loop is one declared
-[Union factory](https://www.union.ai/docs/v2/union/user-guide/factories/), and
-humans stay in the loop only at the judgment layers — data validation and
-checkpoint promotion.
+A **closed-loop model factory** on [Flyte v2](https://www.union.ai/docs/v2/) /
+Union, small enough to read in an afternoon. Every day it:
 
-Source context: the "Effective dark model factory patterns" conference
-abstract and poolside's model-factory blog series. See
-[docs/SPEC.md](docs/SPEC.md) for the architecture and small/medium/large
-scopes, and [docs/research/](docs/research/) for the research notes.
+1. curates a fresh slice of coding problems,
+2. writes new practice problems aimed at what yesterday's model got wrong
+   (a 7B teacher on vLLM) and replays the ones it sometimes solved,
+3. trains a small coding model (Qwen2.5-Coder-0.5B) with RL — GRPO with vLLM
+   rollouts, where **running the unit tests is the reward** — as a fresh LoRA
+   on yesterday's best model,
+4. scores it against yesterday's best and the base model on a fixed held-out
+   exam,
+5. releases whichever is better, serves it, and hands it to tomorrow.
 
-## The loop
+The whole loop is one declared [Union factory](https://www.union.ai/docs/v2/union/user-guide/factories/):
+a graph of versioned, partitioned artifacts. Nothing runs until you ask for an
+artifact; the platform works out what has to be built and reuses the rest.
 
-The whole loop is **one declared factory** (`model_factory/factory.py`) — a
-graph of partitioned artifacts, not a chain of triggers. Nothing runs until
-you materialize a target:
+Everything is public and self-contained: KodCode-Light-RL-10K for problems,
+Qwen2.5-Coder 0.5B (student) and 7B (problem writer) from Hugging Face, a
+local subprocess sandbox for the tests. No external LLM APIs, no gated models
+(a served teacher app is an opt-in profile field, `teacher_app`).
+
+**Results so far** — see [research_log/](research_log/README.md):
+on a fixed 500-task held-out split the loop compounds. Day 1 takes
+Qwen2.5-Coder-0.5B-Instruct from **42.0% to 47.6% pass@1**; day 2, starting
+from that champion, reaches **50.8%** (+3.2 over the champion, paired 95% CI
+[+0.6, +5.8]); day 3 ties, so the gate keeps generation 2. Each step is about
+an A10G-hour of compute. See
+[round 3](research_log/2026-10-16-round-3-compounding.md) and, for the
+round-2 baseline that did *not* compound,
+[round 2](research_log/2026-10-15-round-2-closed-loop.md).
+
+## The loop, one day at a time
 
 ```
-mf-seed-tasks        ingest_and_curate        [date: Daily]
-      │   (HF: KodCode, curated + oracle-verified)
-      ├──────────────────────┐
-      ▼                      │
-mf-synthetic-tasks           │  generate_synthetic_tasks (batch inference
-      │                      │                           + execution oracle)
-      └──────────┬───────────┘
-                 ▼
-mf-rl-tasks-dataset          assemble_dataset     [HITL gate 1: data validation]
-                 ▼
-mf-policy-checkpoint         train_grpo (TRL + LoRA, A10G; sandboxed
-                 ▼                       unit tests ARE the reward)
-mf-eval-report               evaluate_checkpoint (candidate vs base pass@1)
-                 ▼
-mf-promoted-model            promote_checkpoint  [auto margin + HITL gate 2]
-                 ▼
-mf-inference  (app)          serve — the app's `model` parameter is bound to
-                                    the promoted-model version the
-                                    materialization resolved
+  built once (no partitions)              per release day D  (partitioned by date)
+  ──────────────────────────              ────────────────────────────────────────
+  mf-heldout-tasks ─┬───────────────────▶ mf-seed-tasks[D]       curate the day's slice
+        │           │                          │
+        ▼           │   mf-champion[D] ────────┼──▶ mf-synthetic-tasks[D]   mutate the champion's
+  mf-baseline-      │   (source) │             ▼          │                  failures (1.5B teacher)
+  report            └────────────┼──▶ mf-rl-tasks-dataset[D] ◀┘   leak check + HITL gate 1
+        │                        │             ▼
+        │                        ├──▶ mf-policy-checkpoint[D]     GRPO, warm-started from the champion
+        │                        │             ▼
+        └────────────────────────┼──▶ mf-eval-report[D]           candidate vs champion vs base
+                                 │             ▼
+                                 └──▶ mf-promoted-model[D]        the better of the two + HITL gate 2
+                                               │
+                                               ├──▶ mf-inference (app)      serve it
+                                               ▼
+                       crown_champion (artifact trigger) ──▶ mf-champion[D+1]
 ```
 
-Everything is partitioned by `date` — one release per day — declared once on
-the first build and inherited downstream. The synthetic loop that used to be a
-cycle (dataset → synthetic → dataset) is a DAG here: each day's synthetic
-batch is mutated from *that day's* curated seed tasks.
+| artifact | station task | what it is, and why it is an artifact |
+|---|---|---|
+| `mf-heldout-tasks` | `curate_heldout` | 500 verified problems from rows 0–1999 of the dataset (`daily-r3`). **No partition**: it is built once and every day reads the same version, which is what makes day-over-day numbers comparable. |
+| `mf-baseline-report` | `evaluate_baseline` | The base model's pass@1 on that exam. Also built once; every day's eval reads it instead of re-generating it. |
+| `mf-champion[D]` | *(published outside the factory)* | The model day D starts from and must beat. Day one: the base model (`seed_champion`). After that: yesterday's release (`crown_champion`). |
+| `mf-seed-tasks[D]` | `ingest_and_curate` | ~256 problems from a window of the dataset that rotates by date (new day, new problems), schema-mapped, deduped, and **oracle-verified**: the reference solution must pass its own tests in the sandbox. Anything in the held-out set is dropped. |
+| `mf-synthetic-tasks[D]` | `generate_synthetic_tasks` | The **failure-driven curriculum**. The champion carries the list of training problems its RL rollouts kept failing; a 7B teacher (one batched vLLM call) writes variants of those, topping up with random ones, and only variants whose own solution passes their own tests survive (38% did on day 1). The failures it *sometimes* solved are also replayed as-is. Set `teacher_app` in the profile to use a served model instead. |
+| `mf-rl-tasks-dataset[D]` | `assemble_dataset` | Seed + synthetic. Refuses to publish if any task is in the held-out set. **Human gate 1** (data validation) lives here. |
+| `mf-policy-checkpoint[D]` | `train_grpo` | TRL GRPO on one A10G with colocated vLLM rollouts: a **fresh LoRA on the champion's merged weights**, saved merged, so every generation is one full-weight model directory. The reward is format (0.1) + parses (0.1) + all hidden tests pass (1.0), with anti-reward-hacking guards. Records which tasks it could not solve. |
+| `mf-eval-report[D]` | `evaluate_checkpoint` | Greedy pass@1 of candidate, champion and base on the fixed exam, paired deltas with bootstrap 95% CIs. |
+| `mf-promoted-model[D]` | `promote_checkpoint` | Champion/challenger: the candidate if it beats the champion by ≥1 point and **human gate 2** approves; otherwise the champion carries forward. A bad day never moves the factory backwards. |
+| `mf-inference` | *(app)* | A FastAPI app serving the release; the factory deploys it with the exact version it just built. |
 
-Both human gates still exist, inside the station tasks: `mf-promoted-model`
-cannot be published without someone approving the data and the promotion. They
-default to open (`AUTO_APPROVE = True`) so an unattended materialization
-finishes; set it False, or pass
-`--param mf-rl-tasks-dataset.auto_approve=false`, to arm them.
+Every station returns a plain `File`/`Dir`. The factory declares the artifact
+(name, kind, partition, parents) and publishes it, and stamps each version with
+`flyte.io/materialization` and one `flyte.io/consumed/<param>` entry per input —
+so "which dataset trained the model we serve?" is a lookup, not an investigation.
 
-### What this replaced
+### How the loop closes (and why it looks like this)
 
-The loop used to be wired by `OnArtifact` triggers plus an `integration.py`
-that re-implemented the chain so it could be tested. That worked, but gave no
-way to ask for one target, no reuse between runs, no backfill, and a test
-harness that duplicated production. The factory gives all four from one
-declaration — see
-[research_log/round-1](research_log/2026-10-02-round-1-factory-refactor.md)
-for the port and the five gotchas it cost.
+Day D+1 has to build on day D. The obvious wiring — "train from yesterday's
+`promoted-model`" — is a cycle (`promoted-model → … → promoted-model`), and a
+factory graph is a DAG over artifact names, so `factory deploy` rejects it.
+There is also no "previous partition" mapping: `.window()` always includes the
+consumer's own day.
+
+So the state that crosses days is its own artifact, `mf-champion`, which the
+graph only *reads* (`factory.source`). One small task outside the graph writes
+it:
+
+```python
+crown_on_promotion = flyte.Trigger(
+    name="crown-champion",
+    automation=flyte.OnArtifact(name="mf-promoted-model"),
+    inputs={"promoted": flyte.TriggeredArtifact, "date": flyte.TriggeredPartition("date")},
+)
+
+@eval_cpu_env.task(triggers=[crown_on_promotion], produces_artifacts=True)
+async def crown_champion(promoted: Dir, date: datetime) -> Dir:
+    return flyte.artifacts.new(promoted, champion_metadata(date + timedelta(days=1), ...))
+```
+
+What that buys:
+
+- **Day D is a pure function of `champion[D]`.** Re-materializing a day is all
+  cache hits; a cache hit publishes no new version, so it does not re-crown.
+- **A day without a champion never trains.** Blocking is per dependency: the
+  day's seed tasks still get curated (they do not read the champion), then
+  everything downstream of `mf-champion[D]` is blocked with `source
+  partition(s) not in the registry`. That is also why a backfill runs day by
+  day: each day's champion appears when the previous day is released.
+- **Warm start and curriculum are both just inputs.** `train_grpo` and
+  `generate_synthetic_tasks` take `champion=champion` like any other artifact,
+  and the lineage of every checkpoint names the champion it grew from.
+
+## What the factory gives you
+
+```bash
+CFG=.flyte/config.yaml
+F="uv run flyte --config $CFG factory"
+
+# plan: what would be built or reused, launching nothing
+$F materialize model-factory mf-promoted-model --partition date=2026-10-15 --plan
+
+# materialize: one release day, end to end (builds what is missing, reuses the rest)
+$F materialize model-factory mf-promoted-model --partition date=2026-10-15 --wait
+
+# reuse: ask again and every station is a cache hit (seconds, no GPU)
+$F materialize model-factory mf-promoted-model --partition date=2026-10-15 --wait
+
+# backfill: a range is one action per day; with a champion chain it runs day by day
+$F materialize model-factory mf-promoted-model --partition date=2026-10-16..2026-10-18
+
+# serve: deploy the app bound to that day's release
+$F materialize model-factory mf-inference --partition date=2026-10-15 --wait
+
+# roll the endpoint back to an earlier release
+$F materialize model-factory mf-inference --partition date=2026-10-15 \
+    --version mf-promoted-model=<version>
+
+# just the data release, or rebuild one station on purpose
+$F materialize model-factory mf-rl-tasks-dataset --partition date=2026-10-15
+$F materialize model-factory mf-promoted-model --partition date=2026-10-15 --rebuild trainer.train_grpo
+```
+
+**Triggers.** A `flyte.Cron` on the factory materializes today's release
+every night at 06:00 UTC, and the `crown-champion` artifact trigger closes the
+loop. Both are live as soon as they are deployed. The nightly run only
+trains if today's champion exists, i.e. if yesterday was released; otherwise
+it curates the day's seed tasks and stops.
+
+**Human gates.** Both gates are `flyte` conditions inside station tasks, so
+`mf-promoted-model` cannot exist without them. They default open
+(`AUTO_APPROVE = True` in `model_factory/factory.py`) so an unattended night
+finishes; `--param mf-rl-tasks-dataset.auto_approve=false` arms one per run.
 
 ## Quickstart
 
 ```bash
 uv sync
-uv run pytest                 # 68 tests (sandbox, rewards, parsing, graph)
+uv run pytest                    # graph shape, loop wiring, held-out isolation, rewards, sandbox
 
-CFG=~/.flyte/config-model-factory.yaml    # or .flyte/config.yaml
+CFG=.flyte/config.yaml
+# 1. station tasks, one deploy unit per team (also arms the crown trigger)
+MF_USE_SECRETS=1 uv run flyte --config $CFG deploy --all team_data.py
+MF_USE_SECRETS=1 uv run flyte --config $CFG deploy team_training.py trainer_env
+MF_USE_SECRETS=1 uv run flyte --config $CFG deploy --all team_eval.py
 
-# 1. the station tasks (one per team)
-uv run flyte --config $CFG deploy team_data.py de_cpu_env
-uv run flyte --config $CFG deploy team_training.py trainer_env
-uv run flyte --config $CFG deploy team_eval.py eval_cpu_env
-
-# 2. the serving app env — this is what BUILDS the app image.
-#    On a cold registry it then fails at "Failed to materialize artifact
-#    mf-promoted-model@latest". Expected and harmless: the image is built by
-#    then, and `flyte factory deploy` does NOT build app images.
+# 2. the serving app env — this BUILDS the app image. On a cold registry it
+#    then fails at "Failed to materialize artifact mf-promoted-model@latest";
+#    expected: `flyte factory deploy` does not build app images, this does.
 uv run flyte --config $CFG deploy team_inference.py inference_app_env
 
 # 3. the factory, and the lineage dashboard
 uv run flyte --config $CFG factory deploy factory.py
 uv run flyte --config $CFG deploy app.py lineage_app_env
 
-# 4. one release day, end to end (builds what is missing, reuses the rest)
-uv run flyte --config $CFG factory materialize model-factory mf-promoted-model \
-    --partition date=2026-10-02 --wait
+# 4. start the loop: the base model is the champion of the first day
+uv run flyte --config $CFG run team_eval.py seed_champion --date 2026-10-13
 
-# 5. roll it out to the serving app
-uv run flyte --config $CFG factory materialize model-factory mf-inference \
-    --partition date=2026-10-02 --wait
+# 5. day one, then day two (warm-started from day one's release)
+uv run flyte --config $CFG factory materialize model-factory mf-promoted-model --partition date=2026-10-13 --wait
+uv run flyte --config $CFG factory materialize model-factory mf-promoted-model --partition date=2026-10-14 --wait
 ```
 
-Steps 1–3 are one-time per code change; step 4 is the loop.
+Profiles (`model_factory/config.py`):
 
-### Other things the graph gives you
+- `daily-r3` (the default): 500 held-out tasks; 384 fresh tasks/day; 80 GRPO
+  steps of 8 prompts × 8 rollouts on colocated vLLM; a fresh LoRA each day on
+  the champion's merged weights; a 7B teacher (vLLM) for the curriculum.
+- `daily`: round 2's day (200 held-out tasks, 50 HF-generate steps, one LoRA
+  continued across days).
+- `smoke`: tiny everything, minutes. Its promotion margin is -1, so it proves
+  plumbing, never quality.
 
-```bash
-# what would be rebuilt, without launching anything
-uv run flyte --config $CFG factory plan model-factory mf-promoted-model \
-    --partition date=2026-10-02
-
-# just the data release, or just one station's output
-uv run flyte --config $CFG factory materialize model-factory mf-rl-tasks-dataset \
-    --partition date=2026-10-02
-
-# backfill a week; one action per day, run in parallel
-uv run flyte --config $CFG factory materialize model-factory mf-promoted-model \
-    --partition date=2026-09-25..2026-10-02
-
-# roll the endpoint back to an earlier promoted model
-uv run flyte --config $CFG factory materialize model-factory mf-inference \
-    --partition date=2026-10-02 --version mf-promoted-model=<version>
-```
-
-Profiles (`model_factory/config.py`): `smoke` (0.5B model, 96 tasks, 10 GRPO
-steps — minutes), `smoke-plus`, `dev` (1.5B, ~2K tasks, 100 steps), `full`
-(10K tasks, 500+ steps). The profile is a build constant, so
-`--param mf-policy-checkpoint.profile_name=dev` overrides it per run.
-
-### Why the artifacts are `mf-`-prefixed
-
-An artifact's partition schema is fixed in the registry by its first version
-and cannot change afterwards. The pre-factory trigger chain had already
-published `rl-tasks-dataset`, `policy-checkpoint`, `eval-report` and
-`promoted-model` **unpartitioned**, so declaring them `{date: Daily}` is
-rejected at deploy. The prefix keeps the daily dimension (and with it per-day
-reuse and backfill) and leaves the earlier rounds' lineage in place.
-
-## Clusters
-
-Tenants differ in node pools and org policy, so everything cluster-specific
-(GPU device, GPU task sizing, whether apps may be anonymous) lives in
-`ClusterProfile` in `model_factory/config.py`. Select one at deploy time
-with `MF_CLUSTER`; it defaults to `demo`.
-
-| | `demo` (default) | `playground` |
-|---|---|---|
-| endpoint | `demo.hosted.unionai.cloud` | `playground.canary.unionai.cloud` |
-| config | `~/.flyte/config-model-factory.yaml` | `~/.flyte/config-playground.yaml` |
-| accelerator (train/synth/eval) | `A10G:1` | `T4:1` |
-| accelerator (serving app) | `L4:1` | `T4:1` |
-| GPU envs: cpu / memory / disk | 6 / 24Gi / 100Gi | 2 / 10Gi / 100Gi |
-| CPU envs: cpu / memory | 2 / 4Gi | 12 / 24Gi |
-| apps | public (`requires_auth=False`) | authenticated (org sets `app.disallow_anonymous`) |
-
-`flyte.Resources(memory=...)` is **host** memory, not VRAM — VRAM comes with
-the accelerator named in `gpu`, so `V100:4` requests four V100s and their
-memory along with them.
-
-`playground` has no A10G or L4. Its GPU pools are V100 (`p3.8xlarge` /
-`p3.16xlarge`) and T4 (`g4dn.xlarge`). On-demand V100 capacity is scarce
-there — `V100:4` needs a whole free p3 node and sat queued for 90+ minutes
-with the node group at max size — so the profile targets `g4dn.xlarge`
-(1x T4, 3670m CPU / 14000Mi allocatable). CPU envs at 12 / 24Gi target the
-`c5.4xlarge` pool (15640m / 26900Mi).
-
-An unschedulable pod does not fail the run, it just queues, so the parent
-reports `running` indefinitely. Check the action's K8s events rather than
-waiting.
-
-Deploying there also needs an explicit `--project`, since that config file
-defaults to `flytesnacks`:
-
-```bash
-export MF_CLUSTER=playground
-CFG=~/.flyte/config-playground.yaml
-P="--project model-factory --domain development"
-uv run flyte --config $CFG deploy $P team_data.py de_cpu_env
-# ... same for the other units, then:
-uv run flyte --config $CFG run $P team_data.py data_release --profile_name smoke --auto_approve
-```
-
-Individual fields can be overridden without adding a profile: `MF_GPU`,
-`MF_INFERENCE_GPU`, `MF_GPU_CPU`, `MF_GPU_MEMORY` (host memory), `MF_GPU_DISK`,
-`MF_CPU`, `MF_CPU_MEMORY`, `MF_REQUIRE_AUTH`, `MF_ORG`.
-
-## Secrets
-
-`HUGGINGFACE_TOKEN` and `WANDB_API_KEY` exist on the demo tenant (project
-`model-factory`, domain `development`); attach them by deploying/running with
-`MF_USE_SECRETS=1` (CI does). Without them the loop still runs (public
-models/datasets; W&B disabled). See [TODO.md](TODO.md).
+The profile is a constant in the deployed graph: `MF_PROFILE=smoke uv run flyte
+... factory deploy factory.py` deploys a smoke factory. **Never change what a
+profile name means.** The name is part of every build's cache key but its
+contents are not, so a redefined profile silently reuses artifacts built under
+the old settings. Add a new name instead.
 
 ## Layout
 
 | path | team / role |
 |---|---|
-| `model_factory/factory.py` | **the graph**: what each artifact is made of, its partitions, the serve step |
-| `model_factory/contracts.py` | the inter-team interface: artifact names, partition dimension, payload schemas |
-| `model_factory/shared/` | platform libs: sandbox, rewards, reporting, assets, gates, images, inference client |
-| `model_factory/data_engineering/` | data eng: curate + oracle-verify, synthetic gen, release assembly + data gate |
-| `model_factory/training/` | training: GRPO (TRL + LoRA) |
-| `model_factory/evaluation/` | eval: candidate-vs-base pass@1, auto margin + promotion gate |
-| `model_factory/inference/` | inference: serving app, model bound by the factory (adapter toggle per request) |
-| `model_factory/lineage_app.py` | platform: global lineage AppEnvironment |
-| `factory.py` | deploy entrypoint for the graph (`flyte factory deploy factory.py`) |
-| `team_*.py` | deploy units for each team's task environments |
+| `model_factory/factory.py` | **the graph**: what each artifact is made of, its partitions, the serve step, the nightly trigger |
+| `model_factory/contracts.py` | the inter-team interface: artifact names, partition dimension, payload schemas, held-out leak checks |
+| `model_factory/data_engineering/` | held-out split, daily curation, synthetic curriculum, release assembly + data gate |
+| `model_factory/training/` | GRPO (TRL + LoRA), warm start, hard-task bookkeeping |
+| `model_factory/evaluation/` | baseline, candidate-vs-champion eval, release decision, `crown_champion` / `seed_champion` |
+| `model_factory/inference/` | the serving app (model bound by the factory) |
+| `model_factory/shared/` | sandbox, rewards, reporting, gates, images, registry lookups |
+| `model_factory/lineage_app.py` | lineage dashboard (every version of every artifact, and the run that made it) |
+| `factory.py`, `team_*.py`, `app.py` | deploy entrypoints |
 
-Station tasks return **plain** `File`/`Dir`. The factory declares and publishes
-each artifact — name, kind, partition values and parent versions — by calling
-the task with `produces_artifacts=True` inside a `flyte.artifacts.produces(...)`
-block, so a task must not wrap its own output in `flyte.artifacts.new()`.
-Lineage comes for free: every version carries `flyte.io/materialization`,
-`flyte.io/factory` and a `flyte.io/consumed/<param>` entry per input.
+## Clusters
+
+Everything cluster-specific (GPU type, task sizing, app auth) lives in
+`ClusterProfile` in `model_factory/config.py`, selected with `MF_CLUSTER`
+(default `demo`). On demo, training/eval run on `A10G:1` and serving on `T4:1`
+(`L4` never schedules there). `flyte.Resources(memory=...)` is host memory;
+VRAM comes with the accelerator. An unschedulable pod does not fail a run, it
+queues — check the action's events rather than waiting.
+
+## Secrets
+
+`HUGGINGFACE_TOKEN` and `WANDB_API_KEY` exist on the demo tenant; attach them
+by deploying with `MF_USE_SECRETS=1`. Without them the loop still runs (all
+models and data are public; W&B disabled).
+
+## Why the artifacts are `mf-`-prefixed
+
+An artifact's partition schema is fixed by its first version. An earlier,
+trigger-chained version of this project published `rl-tasks-dataset`,
+`policy-checkpoint` etc. **unpartitioned**, so declaring them `{date: Daily}`
+is rejected at deploy; the prefix keeps the daily dimension and leaves the old
+lineage in place. See [research_log/round-1](research_log/2026-10-02-round-1-factory-refactor.md).

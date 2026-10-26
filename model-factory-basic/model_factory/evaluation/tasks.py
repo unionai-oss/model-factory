@@ -1,59 +1,60 @@
-"""Eval team tasks: candidate-vs-base pass@1, the promotion gate, promotion.
+"""Eval team tasks: score models on the fixed held-out split, decide the release,
+and crown tomorrow's champion.
 
-Both tasks return plain values; the factory declares them as the
-`eval-report` and `promoted-model` builds and publishes what they return
-(see model_factory/factory.py).
+Inside the factory (each returns a plain value the factory publishes):
+- `evaluate_baseline`   -> `baseline-report`  (base model; built once)
+- `evaluate_checkpoint` -> `eval-report[D]`   (candidate vs base vs champion)
+- `promote_checkpoint`  -> `promoted-model[D]` (champion/challenger + human gate)
 
-Generation goes through the inference team's serving app (the same weights
-service both variants: adapter on = candidate, adapter off = base), falling
-back to local in-task generation if the service is unreachable — an eval
-must never be blocked by a serving outage.
+Outside the factory (they publish `mf-champion` themselves, which is the point):
+- `crown_champion` — OnArtifact trigger on `promoted-model`: publishes
+  `champion[D+1] = promoted[D]`. This is the one edge that crosses days, and
+  the reason the factory graph can stay acyclic.
+- `seed_champion` — run once to start the loop: `champion[D0] = base model`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
+import shutil
+from datetime import datetime, timedelta
 
 import flyte
+import flyte.artifacts
 import flyte.io
 import flyte.report
+import pandas as pd
 
 from ..config import get_profile
-from ..shared import inference_client, reporting
+from ..contracts import ARTIFACT_CHAMPION, ARTIFACT_PROMOTED, EVAL_FILE, PARTITION_DATE, heldout_fingerprint
+from ..shared import reporting
+from ..shared.checkpoints import load_causal_lm, read_manifest
 from ..shared.gates import gate
 from ..shared.rewards import build_prompt, score_completion
 from .envs import eval_cpu_env, eval_gpu_env
-
-_GEN_BATCH = 8
+from .metrics import paired_delta, pass_at_1, promotion_decision
 
 
 @flyte.trace
-async def _generate_local(
-    base_model: str, adapter_dir: str | None, prompts: list[list[dict]], max_new_tokens: int
+async def _generate(
+    model_dir: str | None, manifest: dict, prompts: list[list[dict]], max_new_tokens: int, batch: int
 ) -> list[str]:
-    """Fallback: greedy batched generation in-task; adapter_dir=None → base."""
+    """Greedy batched generation in-task, for any checkpoint shape (base / lora / full)."""
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(base_model, padding_side="left")
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        torch_dtype=torch.bfloat16,
-        device_map="cuda" if torch.cuda.is_available() else "cpu",
-    )
-    if adapter_dir:
-        from peft import PeftModel
-
-        model = PeftModel.from_pretrained(model, adapter_dir)
+    tok = AutoTokenizer.from_pretrained(manifest["base_model"], padding_side="left")
+    model = load_causal_lm(model_dir or "", manifest, device_map="cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
 
     outs: list[str] = []
-    for i in range(0, len(prompts), _GEN_BATCH):
-        chunk = prompts[i : i + _GEN_BATCH]
+    for i in range(0, len(prompts), batch):
         chats = [
             tok.apply_chat_template(p, tokenize=False, add_generation_prompt=True)
-            for p in chunk
+            for p in prompts[i : i + batch]
         ]
         inputs = tok(chats, return_tensors="pt", padding=True, truncation=True, max_length=2048).to(model.device)
         with torch.no_grad():
@@ -70,21 +71,6 @@ async def _generate_local(
     return outs
 
 
-@flyte.trace
-async def _generate_via_service(
-    checkpoint_path: str, prompts: list[list[dict]], use_adapter: bool, max_new_tokens: int
-) -> list[str]:
-    url = inference_client.resolve_endpoint()
-    return await asyncio.to_thread(
-        inference_client.generate,
-        url,
-        prompts,
-        use_adapter=use_adapter,
-        max_new_tokens=max_new_tokens,
-        checkpoint_path=checkpoint_path,
-    )
-
-
 async def _score_all(completions: list[str], tests: list[str]) -> list[dict]:
     sem = asyncio.Semaphore(8)
 
@@ -96,109 +82,143 @@ async def _score_all(completions: list[str], tests: list[str]) -> list[dict]:
     return list(await asyncio.gather(*(one(c, t) for c, t in zip(completions, tests))))
 
 
+async def _run_heldout(heldout: pd.DataFrame, model_dir: str | None, manifest: dict, profile) -> tuple[list[str], list[dict]]:
+    prompts = [build_prompt(r.question, r.function_declaration or None) for r in heldout.itertuples()]
+    outs = await _generate(model_dir, manifest, prompts, profile.max_completion_length, profile.eval_batch)
+    return outs, await _score_all(outs, list(heldout["tests"]))
+
+
+@eval_gpu_env.task(report=True, cache="auto", timeout=flyte.Timeout(max_runtime=3600))
+async def evaluate_baseline(heldout: flyte.io.File, profile_name: str = "daily") -> flyte.io.File:
+    """The base model's pass@1 on the held-out split. Built once, read every day."""
+    profile = get_profile(profile_name)
+    df = pd.read_parquet(await heldout.download())
+    _, scores = await _run_heldout(df, None, {"base_model": profile.base_model, "weights": "base"}, profile)
+    passed = [s["tests_passed"] for s in scores]
+    result = {
+        "base_model": profile.base_model,
+        "n_heldout": len(df),
+        "heldout_fingerprint": heldout_fingerprint(df["task_id"]),
+        "pass_at_1": pass_at_1(passed),
+        "per_task": {tid: bool(p) for tid, p in zip(df["task_id"], passed)},
+    }
+    out = "/tmp/baseline_report.json"
+    with open(out, "w") as f:
+        json.dump(result, f, indent=2)
+    await flyte.report.replace.aio(
+        reporting.page(
+            "Baseline: base model on the fixed held-out split",
+            reporting.stats_row(
+                {
+                    "base model": profile.base_model.split("/")[-1],
+                    "held-out tasks": len(df),
+                    "pass@1": f"{result['pass_at_1']:.2%}",
+                    "fingerprint": result["heldout_fingerprint"],
+                }
+            ),
+        )
+    )
+    await flyte.report.flush.aio()
+    return await flyte.io.File.from_local(out)
+
+
 @eval_gpu_env.task(report=True, timeout=flyte.Timeout(max_runtime=3600))
 async def evaluate_checkpoint(
     checkpoint: flyte.io.Dir,
-    dataset: flyte.io.File,
-    profile_name: str = "smoke",
-    use_service: bool = True,
+    champion: flyte.io.Dir,
+    heldout: flyte.io.File,
+    baseline: flyte.io.File,
+    profile_name: str = "daily",
 ) -> flyte.io.File:
-    """Compare candidate vs base on the held-out split; return the report file."""
-    import pandas as pd
-
+    """Score the candidate on the fixed held-out split against base AND champion."""
     profile = get_profile(profile_name)
-    df = pd.read_parquet(await dataset.download())
-    heldout = df[df["split"] == "heldout"].reset_index(drop=True)
-    adapter_dir = await checkpoint.download()
+    df = pd.read_parquet(await heldout.download())
+    base = json.loads(open(await baseline.download()).read())
+    fingerprint = heldout_fingerprint(df["task_id"])
+    if base["heldout_fingerprint"] != fingerprint:
+        raise flyte.errors.NonRecoverableError(
+            f"baseline was scored on held-out {base['heldout_fingerprint']}, this eval on {fingerprint}"
+        )
+    cand_dir = await checkpoint.download()
+    champ_dir = await champion.download()
+    cand_m, champ_m = read_manifest(cand_dir), read_manifest(champ_dir)
+    champion_is_base = champ_m["weights"] == "base"
 
-    with open(f"{adapter_dir}/manifest.json") as f:
-        manifest = json.load(f)
-    base_model = manifest["base_model"]
-
-    prompts = [
-        build_prompt(r.question, r.function_declaration or None)
-        for r in heldout.itertuples()
-    ]
-    tests = list(heldout["tests"])
-
-    backend = "inference-service"
-    if use_service:
-        try:
-            cand_out = await _generate_via_service(
-                checkpoint.path, prompts, True, profile.max_completion_length
-            )
-            base_out = await _generate_via_service(
-                checkpoint.path, prompts, False, profile.max_completion_length
-            )
-        except Exception as e:
-            print(f"inference service unavailable ({e}); falling back to local generation")
-            backend = f"local (service failed: {str(e)[:120]})"
-            cand_out = await _generate_local(base_model, adapter_dir, prompts, profile.max_completion_length)
-            base_out = await _generate_local(base_model, None, prompts, profile.max_completion_length)
+    cand_out, cand_scores = await _run_heldout(df, cand_dir, cand_m, profile)
+    cand = [s["tests_passed"] for s in cand_scores]
+    base_passed = [base["per_task"][t] for t in df["task_id"]]
+    if not champion_is_base:
+        _, champ_scores = await _run_heldout(df, champ_dir, champ_m, profile)
+        champ = [s["tests_passed"] for s in champ_scores]
     else:
-        backend = "local (requested)"
-        cand_out = await _generate_local(base_model, adapter_dir, prompts, profile.max_completion_length)
-        base_out = await _generate_local(base_model, None, prompts, profile.max_completion_length)
+        champ = base_passed  # the champion IS the base model; its score is the baseline
 
-    cand_scores = await _score_all(cand_out, tests)
-    base_scores = await _score_all(base_out, tests)
-
-    def pass_rate(scores: list[dict]) -> float:
-        return sum(s["tests_passed"] for s in scores) / max(len(scores), 1)
-
+    vs_base = paired_delta(cand, base_passed)
+    vs_champ = paired_delta(cand, champ)
     result = {
         "profile": profile.name,
-        "base_model": base_model,
-        "generation_backend": backend,
-        "n_heldout": len(heldout),
-        "candidate_pass_at_1": pass_rate(cand_scores),
-        "base_pass_at_1": pass_rate(base_scores),
-        "delta": pass_rate(cand_scores) - pass_rate(base_scores),
+        "base_model": cand_m["base_model"],
+        "generation_backend": "local",
+        "n_heldout": len(df),
+        "heldout_fingerprint": fingerprint,
+        "candidate_generation": cand_m["generation"],
+        "champion_generation": champ_m["generation"],
+        "champion_is_base": champion_is_base,
+        "candidate_pass_at_1": pass_at_1(cand),
+        "base_pass_at_1": pass_at_1(base_passed),
+        "champion_pass_at_1": pass_at_1(champ),
+        "delta_vs_base": vs_base["delta"],
+        "delta_vs_base_ci95": vs_base["ci95"],
+        "delta_vs_champion": vs_champ["delta"],
+        "delta_vs_champion_ci95": vs_champ["ci95"],
+        "wins_losses_vs_champion": [vs_champ["wins"], vs_champ["losses"]],
         "promotion_margin": profile.promotion_margin,
-        "auto_gate_passed": pass_rate(cand_scores) - pass_rate(base_scores) >= profile.promotion_margin,
+        "auto_gate_passed": vs_champ["delta"] >= profile.promotion_margin,
+        "train_summary": {k: cand_m.get(k) for k in ("warm_start", "train_tasks", "hard_tasks", "max_steps")},
         "per_task": [
             {
-                "task_id": r.task_id,
-                "difficulty": r.difficulty,
+                "task_id": t,
+                "difficulty": d,
                 "candidate": cand_scores[i],
-                "base": base_scores[i],
+                "base": bool(base_passed[i]),
+                "champion": bool(champ[i]),
             }
-            for i, r in enumerate(heldout.itertuples())
+            for i, (t, d) in enumerate(zip(df["task_id"], df["difficulty"]))
         ],
     }
     out = "/tmp/eval_report.json"
     with open(out, "w") as f:
         json.dump(result, f, indent=2)
 
-    # --- report: the promotion-decision window ---
     body = reporting.stats_row(
         {
-            "held-out tasks": len(heldout),
-            "candidate pass@1": f"{result['candidate_pass_at_1']:.2%}",
+            "held-out tasks": len(df),
             "base pass@1": f"{result['base_pass_at_1']:.2%}",
-            "delta": f"{result['delta']:+.2%}",
+            f"champion (gen {champ_m['generation']})": f"{result['champion_pass_at_1']:.2%}",
+            f"candidate (gen {cand_m['generation']})": f"{result['candidate_pass_at_1']:.2%}",
+            "Δ vs champion": f"{vs_champ['delta']:+.2%} [{vs_champ['ci95'][0]:+.1%}, {vs_champ['ci95'][1]:+.1%}]",
+            "Δ vs base": f"{vs_base['delta']:+.2%}",
             "auto gate": "PASS" if result["auto_gate_passed"] else "FAIL",
-            "generation": backend,
         }
     )
-    rows = []
-    for i, r in enumerate(heldout.itertuples()):
-        rows.append(
+    body += "<h3>Per-task results</h3>" + reporting.table(
+        ["task", "difficulty", "candidate", "champion", "base", "candidate execution"],
+        [
             [
-                r.task_id,
-                r.difficulty,
-                reporting.pill(cand_scores[i]["tests_passed"]),
-                reporting.pill(base_scores[i]["tests_passed"]),
-                cand_scores[i]["execution_summary"],
+                p["task_id"],
+                p["difficulty"],
+                reporting.pill(p["candidate"]["tests_passed"]),
+                reporting.pill(p["champion"]),
+                reporting.pill(p["base"]),
+                p["candidate"]["execution_summary"],
             ]
-        )
-    body += "<h3>Per-task results (candidate vs base)</h3>"
-    body += reporting.table(["task", "difficulty", "candidate", "base", "candidate execution"], rows)
+            for p in result["per_task"]
+        ],
+    )
     body += "<h3>Sample completions (vibe check)</h3>"
-    for i in range(min(3, len(heldout))):
-        body += f"<h4>{reporting.esc(heldout.iloc[i]['task_id'])}</h4>"
-        body += f"<pre>{reporting.esc(cand_out[i][:1200])}</pre>"
-    await flyte.report.replace.aio(reporting.page("Evaluation: candidate vs base", body))
+    for i in range(min(3, len(df))):
+        body += f"<h4>{reporting.esc(df.iloc[i]['task_id'])}</h4><pre>{reporting.esc(cand_out[i][:1200])}</pre>"
+    await flyte.report.replace.aio(reporting.page("Evaluation: candidate vs champion vs base", body))
     await flyte.report.flush.aio()
 
     return await flyte.io.File.from_local(out)
@@ -206,51 +226,123 @@ async def evaluate_checkpoint(
 
 @eval_cpu_env.task(report=True)
 async def promote_checkpoint(
-    checkpoint: flyte.io.Dir, eval_report: flyte.io.File, auto_approve: bool = False
+    checkpoint: flyte.io.Dir,
+    champion: flyte.io.Dir,
+    eval_report: flyte.io.File,
+    auto_approve: bool = False,
 ) -> flyte.io.Dir:
-    """Gate a checkpoint, then return it for publication as `promoted-model`.
+    """Release the better of candidate and champion as `promoted-model[D]`.
 
-    Both gates that used to live in the `eval_and_promote` orchestrator are
-    here, because this is the build the factory publishes `promoted-model`
-    from: failing either one fails the build, so no promoted version exists
-    and the serving app keeps whatever it already had.
+    The candidate wins only if it beats the champion by the profile's margin
+    and passes the human gate; otherwise the champion is carried forward. The
+    returned directory carries the deciding eval report and a promotion record.
     """
-    local = await checkpoint.download()
-    with open(f"{local}/manifest.json") as f:
-        manifest = json.load(f)
     ev = json.loads(open(await eval_report.download()).read())
+    approved = False
+    if ev["auto_gate_passed"]:
+        approved = await gate(
+            "approve-promotion",
+            "## Checkpoint promotion gate\n\n"
+            f"Candidate pass@1 **{ev['candidate_pass_at_1']:.2%}** vs champion "
+            f"**{ev['champion_pass_at_1']:.2%}** (Δ {ev['delta_vs_champion']:+.2%}, 95% CI "
+            f"{ev['delta_vs_champion_ci95'][0]:+.1%}..{ev['delta_vs_champion_ci95'][1]:+.1%}) and base "
+            f"**{ev['base_pass_at_1']:.2%}** on {ev['n_heldout']} fixed held-out tasks.\n\n"
+            "Inspect the eval report for reward hacking or degenerate outputs.\n\n"
+            "**Promote this checkpoint?**",
+            auto_approve,
+        )
+    winner, reason = promotion_decision(ev["delta_vs_champion"], ev["promotion_margin"], approved)
 
-    body = reporting.stats_row(
-        {
-            "candidate pass@1": f"{ev['candidate_pass_at_1']:.2%}",
-            "base pass@1": f"{ev['base_pass_at_1']:.2%}",
-            "delta": f"{ev['delta']:+.2%}",
-            "margin": f"{ev['promotion_margin']:+.2%}",
-            "auto gate": "PASS" if ev["auto_gate_passed"] else "FAIL",
-        }
-    )
-    await flyte.report.replace.aio(reporting.page("Promotion decision", body))
-    await flyte.report.flush.aio()
-
-    if not ev["auto_gate_passed"]:
-        raise flyte.errors.NonRecoverableError(
-            f"not promoted: delta {ev['delta']:+.2%} below margin {ev['promotion_margin']:+.2%}"
+    src = await (checkpoint if winner == "candidate" else champion).download()
+    out_dir = "/tmp/promoted-model"
+    shutil.copytree(src, out_dir, dirs_exist_ok=True)
+    if winner == "candidate":
+        shutil.copy(await eval_report.download(), os.path.join(out_dir, EVAL_FILE))
+    with open(os.path.join(out_dir, "promotion.json"), "w") as f:
+        json.dump(
+            {
+                "released": winner,
+                "reason": reason,
+                "candidate_pass_at_1": ev["candidate_pass_at_1"],
+                "champion_pass_at_1": ev["champion_pass_at_1"],
+                "base_pass_at_1": ev["base_pass_at_1"],
+                "heldout_fingerprint": ev["heldout_fingerprint"],
+            },
+            f,
+            indent=2,
         )
 
-    approved = await gate(
-        "approve-promotion",
-        "## Checkpoint promotion gate\n\n"
-        f"Candidate pass@1 **{ev['candidate_pass_at_1']:.2%}** vs base "
-        f"**{ev['base_pass_at_1']:.2%}** (Δ {ev['delta']:+.2%}) on "
-        f"{ev['n_heldout']} held-out tasks (generation: {ev['generation_backend']}).\n\n"
-        "Inspect the eval report for reward hacking or degenerate outputs.\n\n"
-        "**Promote this checkpoint?**",
-        auto_approve,
+    await flyte.report.replace.aio(
+        reporting.page(
+            "Promotion decision",
+            reporting.stats_row(
+                {
+                    "released": winner,
+                    "candidate pass@1": f"{ev['candidate_pass_at_1']:.2%}",
+                    "champion pass@1": f"{ev['champion_pass_at_1']:.2%}",
+                    "Δ vs champion": f"{ev['delta_vs_champion']:+.2%}",
+                    "margin": f"{ev['promotion_margin']:+.2%}",
+                }
+            )
+            + f"<p>{reporting.esc(reason)}</p>",
+        )
     )
-    if not approved:
-        raise flyte.errors.NonRecoverableError("not promoted: human gate")
-    print(
-        f"promoting {manifest['base_model']} adapter — candidate pass@1 "
-        f"{ev['candidate_pass_at_1']:.2%} (delta {ev['delta']:+.2%})"
+    await flyte.report.flush.aio()
+    print(f"released {winner}: {reason}")
+    return await flyte.io.Dir.from_local(out_dir)
+
+
+# ── the loop's one cross-day edge ───────────────────────────────────────
+
+
+def champion_metadata(day: datetime, version: str, description: str) -> flyte.artifacts.Metadata:
+    return flyte.artifacts.Metadata(
+        name=ARTIFACT_CHAMPION,
+        version=version,
+        partitions={PARTITION_DATE: day.date()},
+        kind="model",
+        description=description,
     )
-    return await flyte.io.Dir.from_local(local)
+
+
+crown_on_promotion = flyte.Trigger(
+    name="crown-champion",
+    automation=flyte.OnArtifact(name=ARTIFACT_PROMOTED),
+    inputs={"promoted": flyte.TriggeredArtifact, "date": flyte.TriggeredPartition(PARTITION_DATE)},
+    # Live on deploy, like everything else in this factory: the loop closes
+    # itself. Pause it by setting this False and redeploying, not in the console.
+    auto_activate=True,
+)
+
+
+@eval_cpu_env.task(triggers=[crown_on_promotion], produces_artifacts=True)
+async def crown_champion(promoted: flyte.io.Dir, date: datetime) -> flyte.io.Dir:
+    """Make day D's release the model day D+1 starts from and must beat.
+
+    Fired by every new `promoted-model` version (a cache-hit re-materialization
+    publishes no new version, so it does not fire). The version is derived from
+    the promoted model's location, so re-crowning the same release is
+    idempotent and does not invalidate tomorrow's cache.
+    """
+    nxt = date + timedelta(days=1)
+    version = hashlib.sha256(promoted.path.encode()).hexdigest()[:16]
+    print(f"crowning {promoted.path} as {ARTIFACT_CHAMPION}[{nxt:%Y-%m-%d}] ({version})")
+    return flyte.artifacts.new(
+        promoted, champion_metadata(nxt, version, f"Released on {date:%Y-%m-%d}; the model {nxt:%Y-%m-%d} must beat")
+    )
+
+
+@eval_cpu_env.task(produces_artifacts=True)
+async def seed_champion(date: datetime, profile_name: str = "daily") -> flyte.io.Dir:
+    """Start (or restart) the loop: the base model becomes `champion[date]`.
+
+        flyte run team_eval.py seed_champion --date 2026-10-13
+    """
+    profile = get_profile(profile_name)
+    out_dir = "/tmp/base-champion"
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
+        json.dump({"base_model": profile.base_model, "weights": "base", "generation": 0}, f, indent=2)
+    d = await flyte.io.Dir.from_local(out_dir)
+    version = f"base-{profile.name}-{date:%Y%m%d}"
+    return flyte.artifacts.new(d, champion_metadata(date, version, f"Base model {profile.base_model}"))

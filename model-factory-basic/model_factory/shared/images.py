@@ -12,6 +12,11 @@ from ..config import HF_TOKEN_SECRET, USE_SECRETS, WANDB_SECRET
 
 PYTHON = (3, 12)
 
+#: The task images' flyte must track the SDK that deploys the factory: an image
+#: a minor behind cannot read a factory task spec, and an unpinned one drifts to
+#: whatever is newest on PyPI. flyteplugins-union 0.17 caps flyte below 2.11.
+FLYTE_PIN = "flyte>=2.10.6,<2.11"
+
 
 def secrets() -> list[flyte.Secret]:
     """Secret attachments, gated until the secrets exist on the cluster."""
@@ -26,7 +31,7 @@ def secrets() -> list[flyte.Secret]:
 cpu_image = (
     flyte.Image.from_debian_base(name="mf-cpu", python_version=PYTHON)
     .with_pip_packages(
-        "flyte>=2.6.0",
+        FLYTE_PIN,
         "pandas>=2.2",
         "pyarrow>=17",
         "datasets>=3.2",
@@ -39,7 +44,7 @@ gpu_image = (
     flyte.Image.from_debian_base(name="mf-gpu", python_version=PYTHON)
     .with_apt_packages("git")
     .with_pip_packages(
-        "flyte>=2.6.0",
+        FLYTE_PIN,
         "torch>=2.6",
         "transformers>=4.57",
         "trl>=1.10",
@@ -54,4 +59,16 @@ gpu_image = (
         "pytest>=8",
     )
     .with_env_vars({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+)
+
+#: The trainer's image adds vLLM for colocated GRPO rollouts. vLLM 0.31 pins
+#: torch 2.13 (what the stack already resolves); TRL 1.10 only *warns* above
+#: the vLLM 0.26 it was tested with. Kept separate so eval/synthetic/serving
+#: images do not carry it.
+#: FlashInfer's top-k/top-p sampler JIT-compiles a CUDA kernel at engine
+#: warm-up and needs nvcc, which this image does not carry ("Could not find
+#: nvcc"); the PyTorch-native sampler needs nothing.
+trainer_image = (
+    gpu_image.with_pip_packages("vllm==0.31.0")
+    .with_env_vars({"HF_HUB_ENABLE_HF_TRANSFER": "1", "VLLM_USE_FLASHINFER_SAMPLER": "0"})
 )
