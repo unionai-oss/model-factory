@@ -34,7 +34,7 @@ def secrets() -> list[flyte.Secret]:
 
 
 cpu_image = flyte.Image.from_debian_base(name="df-cpu", python_version=PYTHON).with_pip_packages(
-    "flyte>=2.10.0",
+    "flyte>=2.10.6",
     "pandas>=2.2",
     "pyarrow>=17",
 )
@@ -42,10 +42,9 @@ cpu_image = flyte.Image.from_debian_base(name="df-cpu", python_version=PYTHON).w
 gpu_image = (
     flyte.Image.from_debian_base(name="df-gpu", python_version=PYTHON)
     .with_pip_packages(
-        "flyte>=2.10.0",
+        "flyte>=2.10.6",
         "torch>=2.6",
         "transformers>=4.57",
-        "trl>=0.21",
         "peft>=0.13",
         "accelerate>=1.0",
         "datasets>=3.2",
@@ -63,7 +62,7 @@ gpu_image = (
 # ~5GB the app would pull on every cold start and never use.
 serving_image = (
     flyte.Image.from_debian_base(name="df-serve", python_version=PYTHON)
-    .with_pip_packages("flyte>=2.10.0", "fastapi", "uvicorn", "pandas>=2.2", "pyarrow>=17")
+    .with_pip_packages("flyte>=2.10.6", "fastapi", "uvicorn", "pandas>=2.2", "pyarrow>=17")
     .with_pip_packages("torch>=2.6", index_url="https://download.pytorch.org/whl/cpu")
     .with_pip_packages("transformers>=4.57", "peft>=0.13", "accelerate>=1.0")
 )

@@ -2,10 +2,13 @@
 
 Two independent axes:
 
-- **The suite** (`MODEL_SUITE`): which open-weights models get fine-tuned and
-  compared. Each entry is a short slug, because the slug becomes a *partition
-  value* in the factory and a HF repo id (`Qwen/Qwen2.5-0.5B-Instruct`) has a
-  `/` in it, which a partition value cannot carry.
+- **The suite** (`MODEL_SUITE`): every **torso x head** pair, e.g.
+  `qwen2.5-0.5b-pointer` and `qwen2.5-0.5b-sft`. Each entry is a short slug,
+  because the slug becomes a *partition value* in the factory and a HF repo id
+  (`Qwen/Qwen2.5-0.5B-Instruct`) has a `/` in it, which a partition value
+  cannot carry. Encoding the head in the same `model` value (rather than a
+  second dimension) keeps one `.all("model")` collapse comparing every
+  variant against every other.
 - **The profile** (`PROFILES`): how big the run is — episode counts, epochs,
   which slice of the suite to train.
 
@@ -119,43 +122,89 @@ def serving_resources():
         kwargs["gpu"] = SERVING_GPU
     return flyte.Resources(**kwargs)
 
-
-# ── the model suite ─────────────────────────────────────────────────────
+# ── the model suite: torso x head ───────────────────────────────────────
 
 
 @dataclass(frozen=True)
-class Candidate:
-    """One model in the suite."""
+class Torso:
+    """A pretrained small LM whose hidden states the head reads."""
 
-    #: Short, partition-safe key. Becomes the `model` partition value, so it
-    #: must be lowercase alphanumerics, '-', '_', '.' — never '/'.
     slug: str
     hf_id: str
-    #: Rough parameter count, for the scorecard's size-vs-accuracy column.
+    #: Rough parameter count, for the scorecard's size column.
     params_m: int
     #: True when the Hub requires a manual licence acceptance (needs a token).
     gated: bool = False
 
 
-SMOLLM2_135M = Candidate("smollm2-135m", "HuggingFaceTB/SmolLM2-135M-Instruct", 135)
-SMOLLM2_360M = Candidate("smollm2-360m", "HuggingFaceTB/SmolLM2-360M-Instruct", 360)
-QWEN25_05B = Candidate("qwen2.5-0.5b", "Qwen/Qwen2.5-0.5B-Instruct", 494)
-QWEN3_06B = Candidate("qwen3-0.6b", "Qwen/Qwen3-0.6B", 596)
-QWEN25_15B = Candidate("qwen2.5-1.5b", "Qwen/Qwen2.5-1.5B-Instruct", 1540)
+#: The two ways to turn a torso into a decision model.
+#:
+#: ``pointer`` — the Jev / Strands-Decider shape. The LM head is dropped; a
+#:   ~1M-param pointer head scores the hidden state at each candidate option
+#:   against the hidden state at the answer position. One forward pass, zero
+#:   output tokens, a probability for every option.
+#: ``sft`` — the familiar baseline. Keep the LM head and fine-tune it to emit
+#:   ``{"decision": "..."}``. Same torso, same LoRA, same data, same steps.
+HEADS: tuple[str, ...] = ("pointer", "sft")
 
-#: Every model the factory knows how to train, keyed by partition value.
-MODEL_SUITE: dict[str, Candidate] = {
-    c.slug: c
-    for c in (SMOLLM2_135M, SMOLLM2_360M, QWEN25_05B, QWEN3_06B, QWEN25_15B)
+#: Pointer-head projection rank. 2 x hidden x rank: ~0.9M params on a
+#: 896-wide torso, the same order as Strands Decider's ~1M head.
+POINTER_RANK = 512
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """One suite member: a torso with a head. ``slug`` is the `model`
+    partition value, so it must be lowercase alphanumerics, '-', '_', '.' —
+    never '/' (which every HF repo id contains)."""
+
+    slug: str
+    torso: Torso
+    head: str
+    gated: bool = False
+
+    @property
+    def hf_id(self) -> str:
+        return self.torso.hf_id
+
+    @property
+    def params_m(self) -> int:
+        return self.torso.params_m
+
+
+TORSOS: dict[str, Torso] = {
+    t.slug: t
+    for t in (
+        Torso("smollm2-135m", "HuggingFaceTB/SmolLM2-135M-Instruct", 135),
+        Torso("smollm2-360m", "HuggingFaceTB/SmolLM2-360M-Instruct", 362),
+        Torso("qwen2.5-0.5b", "Qwen/Qwen2.5-0.5B-Instruct", 494),
+        Torso("qwen3-0.6b", "Qwen/Qwen3-0.6B", 596),
+        Torso("qwen2.5-1.5b", "Qwen/Qwen2.5-1.5B-Instruct", 1540),
+    )
 }
 
 #: Opt-in only: these need an accepted licence plus HUGGINGFACE_TOKEN.
-GATED_MODELS: dict[str, Candidate] = {
-    c.slug: c
-    for c in (
-        Candidate("gemma3-270m", "google/gemma-3-270m-it", 270, gated=True),
-        Candidate("llama3.2-1b", "meta-llama/Llama-3.2-1B-Instruct", 1240, gated=True),
+GATED_TORSOS: dict[str, Torso] = {
+    t.slug: t
+    for t in (
+        Torso("gemma3-270m", "google/gemma-3-270m-it", 270, gated=True),
+        Torso("llama3.2-1b", "meta-llama/Llama-3.2-1B-Instruct", 1240, gated=True),
     )
+}
+
+
+def suite_slug(torso: str, head: str) -> str:
+    """``qwen2.5-0.5b`` + ``pointer`` -> ``qwen2.5-0.5b-pointer``."""
+    return f"{torso}-{head}"
+
+
+#: Every model the factory knows how to train, keyed by partition value.
+MODEL_SUITE: dict[str, Candidate] = {
+    suite_slug(t.slug, h): Candidate(suite_slug(t.slug, h), t, h) for t in TORSOS.values() for h in HEADS
+}
+GATED_MODELS: dict[str, Candidate] = {
+    suite_slug(t.slug, h): Candidate(suite_slug(t.slug, h), t, h, gated=True)
+    for t in GATED_TORSOS.values() for h in HEADS
 }
 
 
@@ -179,87 +228,123 @@ class Profile:
     """Sizing knobs for one pass through the factory."""
 
     name: str
-    #: Which suite members to train and compare.
+    #: Which suite members to train and compare (partition values).
     models: tuple[str, ...]
     train_episodes: int
-    eval_episodes: int
+    #: Used only to tune the gate threshold, so the operating point is not fit
+    #: to the test numbers it is reported on.
+    val_episodes: int
+    test_episodes: int
+    #: Extra test calls from families never seen in train/val (OOD slice).
+    heldout_episodes: int
+    #: Extra VAL calls from a disjoint set of held-out families, for tuning
+    #: the gate under shift (leave-families-out).
+    heldout_val_episodes: int
     epochs: float
-    per_device_batch: int
+    batch_size: int
     grad_accum: int
     learning_rate: float
+    head_learning_rate: float
     lora_r: int
     max_seq_length: int
-    max_new_tokens: int
-    #: Champion selection floor: a model must beat this exact-accuracy to be
-    #: promoted at all, so a failed suite deploys nothing rather than the
-    #: least-bad thing.
-    min_exact_accuracy: float
-    #: Also score each base model untuned, to show what fine-tuning bought.
-    score_base_model: bool
+    #: Champion floor: a winner below this accuracy deploys nothing.
+    min_accuracy: float
+    #: Requests timed (batch size 1) for the latency column.
+    latency_samples: int = 64
 
     @property
     def candidates(self) -> list[Candidate]:
         return [get_candidate(s) for s in self.models]
 
 
-#: Minutes end to end: two tiny models, a few hundred episodes, one epoch.
+def _suite(*torsos: str) -> tuple[str, ...]:
+    return tuple(suite_slug(t, h) for t in torsos for h in HEADS)
+
+
+#: Minutes end to end: the smallest torso, both heads.
 SMOKE = Profile(
     name="smoke",
-    models=("smollm2-135m", "qwen2.5-0.5b"),
-    train_episodes=600,
-    eval_episodes=120,
+    models=_suite("smollm2-135m"),
+    train_episodes=1500,
+    val_episodes=300,
+    test_episodes=400,
+    heldout_episodes=100,
+    heldout_val_episodes=100,
     epochs=1.0,
-    per_device_batch=8,
-    grad_accum=2,
+    batch_size=8,
+    grad_accum=1,
     learning_rate=2e-4,
+    head_learning_rate=1e-3,
     lora_r=16,
     max_seq_length=1024,
-    max_new_tokens=64,
-    # Smoke proves the loop runs; it must not block on quality. The majority
-    # baseline is ~20% on this mix, so 0 means "deploy whatever won".
-    min_exact_accuracy=0.0,
-    score_base_model=True,
+    # Smoke proves the loop runs; it must not block on quality.
+    min_accuracy=0.0,
+    latency_samples=16,
 )
 
 DEV = Profile(
     name="dev",
-    models=("smollm2-135m", "smollm2-360m", "qwen2.5-0.5b", "qwen3-0.6b"),
-    train_episodes=4000,
-    eval_episodes=600,
-    epochs=2.0,
-    per_device_batch=8,
+    models=_suite("smollm2-360m", "qwen2.5-0.5b", "qwen3-0.6b"),
+    train_episodes=8000,
+    val_episodes=800,
+    test_episodes=1600,
+    heldout_episodes=600,
+    heldout_val_episodes=400,
+    epochs=1.0,
+    batch_size=8,
     grad_accum=2,
-    learning_rate=1e-4,
+    learning_rate=2e-4,
+    head_learning_rate=1e-3,
     lora_r=16,
     max_seq_length=1024,
-    max_new_tokens=64,
-    min_exact_accuracy=0.60,
-    score_base_model=True,
+    min_accuracy=0.80,
 )
 
 FULL = Profile(
     name="full",
-    models=("smollm2-135m", "smollm2-360m", "qwen2.5-0.5b", "qwen3-0.6b", "qwen2.5-1.5b"),
+    models=_suite("smollm2-360m", "qwen2.5-0.5b", "qwen3-0.6b", "qwen2.5-1.5b"),
     train_episodes=20000,
-    eval_episodes=2000,
-    epochs=3.0,
-    per_device_batch=4,
-    grad_accum=4,
-    learning_rate=5e-5,
-    lora_r=32,
+    val_episodes=1000,
+    test_episodes=2000,
+    heldout_episodes=800,
+    heldout_val_episodes=600,
+    epochs=2.0,
+    batch_size=8,
+    grad_accum=2,
+    learning_rate=1e-4,
+    head_learning_rate=1e-3,
+    lora_r=16,
     max_seq_length=1024,
-    max_new_tokens=64,
-    min_exact_accuracy=0.85,
-    score_base_model=True,
+    min_accuracy=0.90,
 )
 
-PROFILES: dict[str, Profile] = {p.name: p for p in (SMOKE, DEV, FULL)}
+#: Round 3's seed study: the two strongest torsos, both heads, dev sizing.
+#: Run once per date (the date seeds both the data and the training init).
+OOD = Profile(
+    name="ood",
+    models=_suite("qwen2.5-0.5b", "qwen3-0.6b"),
+    train_episodes=8000,
+    val_episodes=800,
+    test_episodes=1600,
+    heldout_episodes=600,
+    heldout_val_episodes=400,
+    epochs=1.0,
+    batch_size=8,
+    grad_accum=2,
+    learning_rate=2e-4,
+    head_learning_rate=1e-3,
+    lora_r=16,
+    max_seq_length=1024,
+    min_accuracy=0.80,
+)
+
+PROFILES: dict[str, Profile] = {p.name: p for p in (SMOKE, DEV, FULL, OOD)}
 
 #: Which profile the factory graph is declared at. The suite a factory trains
 #: is part of its *structure* (one build instance per model partition value),
 #: so changing this changes the graph and needs a redeploy — unlike the
 #: per-build constants, which `--param` can override per materialization.
-DEFAULT_PROFILE = os.environ.get("DF_PROFILE", "smoke")
+DEFAULT_PROFILE = os.environ.get("DF_PROFILE", "dev")
 
 
 def get_profile(name: str) -> Profile:

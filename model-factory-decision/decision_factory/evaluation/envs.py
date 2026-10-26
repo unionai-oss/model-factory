@@ -17,6 +17,9 @@ scorer_env = flyte.TaskEnvironment(
     name="df-scorer",
     resources=gpu_resources(),
     env_vars=env_vars(),
+    # Off by default in Flyte 2. Without it a factory materialization
+    # re-runs every build even when the plan shows it as existing.
+    cache="auto",
     image=gpu_image,
     secrets=secrets(),
 )
@@ -25,5 +28,8 @@ selector_env = flyte.TaskEnvironment(
     name="df-selector",
     resources=cpu_resources(),
     env_vars=env_vars(),
+    # Off by default in Flyte 2. Without it a factory materialization
+    # re-runs every build even when the plan shows it as existing.
+    cache="auto",
     image=cpu_image,
 )

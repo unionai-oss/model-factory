@@ -1,34 +1,38 @@
-"""The decision-model factory: train a suite, compare it, serve the winner.
+"""The decision-model factory: a coding agent's permission gate.
+
+Generate oracle-labelled tool calls, fine-tune every torso x head in the
+suite, score them, promote the cheapest-to-be-wrong one, and serve it.
 
     flyte factory deploy factory.py
-    flyte factory materialize decision-factory decision-champion --partition date=2026-10-02
-    flyte factory materialize decision-factory decision-api      --partition date=2026-10-02
+    flyte factory materialize decision-factory permission-champion --partition date=2026-10-15 \
+        --partition model=qwen2.5-0.5b-pointer,qwen2.5-0.5b-sft,...
+    flyte factory materialize decision-factory permission-gate --partition date=2026-10-15 ...
 
               ┌────────────────────────┐
-              │   decision-episodes    │  generate_episodes          [date]
-              │  (oracle-labelled)    │
+              │  permission-episodes   │  generate_episodes          [date]
+              │   (oracle-labelled)    │
               └───────────┬────────────┘
                           │                      one instance per suite member
           ┌───────────────┼───────────────┐
           ▼               ▼               ▼
     ┌───────────┐   ┌───────────┐   ┌───────────┐
-    │ decision- │   │ decision- │   │ decision- │  finetune_decision_model
+    │permission-│   │permission-│   │permission-│  finetune_decision_model
     │  model    │   │  model    │   │  model    │            [date, model]
-    │[smollm2…] │   │[qwen2.5…] │   │   […]     │
+    │[…-pointer]│   │ […-sft]   │   │   […]     │
     └─────┬─────┘   └─────┬─────┘   └─────┬─────┘
           ▼               ▼               ▼
     ┌───────────┐   ┌───────────┐   ┌───────────┐
-    │ decision- │   │ decision- │   │ decision- │  score_model
+    │permission-│   │permission-│   │permission-│  score_model
     │ scorecard │   │ scorecard │   │ scorecard │            [date, model]
     └─────┬─────┘   └─────┬─────┘   └─────┬─────┘
           └───────────────┼───────────────┘
                           ▼  .all("model")  — collapses the suite
               ┌────────────────────────┐
-              │  decision-champion     │  select_champion            [date]
+              │  permission-champion   │  select_champion            [date]
               └───────────┬────────────┘
                           ▼
               ╭────────────────────────╮
-              │     decision-api       │  serve (app)
+              │    permission-gate     │  serve (app)
               ╰────────────────────────╯
 
 The shape worth noticing is the fan-out and the collapse. `model` is a string
@@ -47,6 +51,8 @@ override per materialization.
 
 from __future__ import annotations
 
+import os
+
 import flyte
 from flyte.remote import Task
 from flyteplugins.union import factory
@@ -63,6 +69,9 @@ from .contracts import (
 )
 
 FACTORY_NAME = "decision-factory"
+
+#: Opt-in weekly retrain of the suite (6 A10G fine-tunes for `dev`). Off by default.
+WEEKLY_TRIGGER = os.environ.get("DF_WEEKLY_TRIGGER", "0") == "1"
 
 
 def _task(name: str):
@@ -85,7 +94,7 @@ def build_graph(profile_name: str = DEFAULT_PROFILE) -> factory.Factory:
         ARTIFACT_EPISODES,
         partitions={PARTITION_DATE: factory.Daily},
         kind="data",
-        description="Oracle-labelled tool-calling decisions for one day",
+        description="Oracle-labelled coding-agent tool calls (allow / ask_user / deny) for one day",
     ).using(generate_episodes, profile_name=profile_name)
 
     # `model` is a dimension no input carries, which is exactly what
@@ -96,7 +105,7 @@ def build_graph(profile_name: str = DEFAULT_PROFILE) -> factory.Factory:
         ARTIFACT_MODEL,
         partitions={PARTITION_DATE: factory.Daily, PARTITION_MODEL: str},
         kind="model",
-        description="One suite member fine-tuned on the day's episodes",
+        description="One torso x head (pointer or sft) fine-tuned on the day's episodes",
     ).using(
         finetune_decision_model,
         episodes=episodes,
@@ -107,7 +116,7 @@ def build_graph(profile_name: str = DEFAULT_PROFILE) -> factory.Factory:
     scorecard = factory.build(
         ARTIFACT_SCORECARD,
         kind="data",
-        description="Exact / tool / JSON-validity accuracy for one fine-tune",
+        description="Accuracy, unsafe-allow, calibration, latency and the autonomy/safety frontier for one fine-tune",
     ).using(
         score_model,
         candidate=candidate,
@@ -121,7 +130,7 @@ def build_graph(profile_name: str = DEFAULT_PROFILE) -> factory.Factory:
     champion = factory.build(
         ARTIFACT_CHAMPION,
         kind="model",
-        description="Best model in the suite, by exact accuracy on held-out episodes",
+        description="Lowest val expected-cost suite member, with its tuned gate threshold",
     ).using(
         select_champion,
         candidates=candidate.all(PARTITION_MODEL),
@@ -132,28 +141,35 @@ def build_graph(profile_name: str = DEFAULT_PROFILE) -> factory.Factory:
     # Importing the app env is what makes `serve` possible. It is also why the
     # app image must exist first: `flyte factory deploy` builds only the
     # factory's own image, so deploy the app env once
-    # (`flyte deploy app.py decision_app_env`) or the app crash-loops pulling
+    # (`flyte deploy app.py permission_app_env`) or the app crash-loops pulling
     # an image that was never pushed.
-    from .serving.service import decision_app_env
+    from .serving.service import permission_app_env
 
     endpoint = factory.serve(
         ENDPOINT_APP,
-        description="Serves the champion decision model",
-    ).using(decision_app_env, model=champion)
+        description="Serves the champion as a permission gate (/decide, /oracle)",
+    ).using(permission_app_env, model=champion)
 
     return factory.Factory(
         FACTORY_NAME,
         champion,
         endpoint,
         description=(
-            "Synthetic tool-calling decisions -> fine-tune a suite -> score -> "
-            f"serve the winner (suite: {', '.join(profile.models)})"
+            "Coding-agent permission gate: oracle-labelled tool calls -> fine-tune torso x head "
+            f"-> score -> serve the winner (suite: {', '.join(profile.models)})"
         ),
-        triggers=[
-            # A fresh suite every morning. When nothing changed this is all
-            # cache hits and finishes in seconds, so it is cheap to leave on.
-            factory.on(flyte.Cron("0 5 * * *"), champion, endpoint, name="nightly-suite"),
-        ],
+        # Recurring GPU spend is the user's call, so the schedule is OFF unless
+        # opted into with DF_WEEKLY_TRIGGER=1 at deploy time (factory triggers
+        # have no `auto_activate` knob; not declaring one is the off switch).
+        # When on: weekly, endpoint-only. Lessons from round 1's nightly cron
+        # (research_log/2026-10-15-round-2-*): a Cron on a `Daily` graph builds
+        # a NEW day each time — a full 6-model retrain, never cache hits — and
+        # `factory.on(cron, a, b)` compiles to one trigger per target that each
+        # rebuild the shared upstream concurrently.
+        triggers=(
+            [factory.on(flyte.Cron("0 5 * * 1"), endpoint, name="weekly-suite")]
+            if WEEKLY_TRIGGER else []
+        ),
     )
 
 

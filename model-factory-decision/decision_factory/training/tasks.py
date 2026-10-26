@@ -1,215 +1,136 @@
-"""Training station: supervised fine-tuning of one suite member.
+"""Training station: fine-tune one torso x head.
 
-One task call = one model. The factory instantiates this build once per value
-of the `model` partition, so the suite is trained by fanning out over a
-partition dimension rather than by a loop inside a task — which means each
-fine-tune is separately cached, separately retried, and separately visible.
+One task call = one suite member. The factory instantiates this build once
+per value of the `model` partition (`qwen2.5-0.5b-pointer`,
+`qwen2.5-0.5b-sft`, ...), so the suite is a fan-out over a partition
+dimension rather than a loop inside a task: each fine-tune is separately
+cached, retried and visible.
 
-The task returns a plain Dir; the factory declares and publishes it as
-`decision-model[date, model]`.
+Both heads go through the SAME loop (`heads.modeling.train`): same LoRA, same
+prompt, same data, same optimizer, same number of steps. The only branch is
+the head and its loss — cross-entropy over the options for ``pointer``,
+cross-entropy over the completion tokens for ``sft``.
 
-Why SFT and not RL: the decision problem has an exact oracle label for every
-observation, so there is a supervised target. GRPO (what the sibling
-model-factory-basic uses) earns its complexity when the reward is only
-computable by *running* something — sandboxed tests there. Here, policy
-agreement is the label, and SFT on labels is both cheaper and a tighter fit.
-
-Training is completion-only on purpose. The prompt (system + observation) is
-long and the target (`{"tool": ..., "args": {...}}`) is short, so training on
-the concatenation would spend most of the loss on tokens the model is never
-asked to produce. TRL masks the prompt automatically for prompt-completion
-datasets, which is why the dataset is built in that shape rather than as flat
-text.
+Why supervised and not RL: the oracle gives an exact label for every call.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import random
 from datetime import datetime
 
 import flyte
 import flyte.io
 import flyte.report
 
-from ..config import get_candidate, get_profile
-from ..harness.policy import build_chat
+from ..config import POINTER_RANK, get_candidate, get_profile
+from ..harness.policy import Observation
+from ..harness.prompt import build_chat, shuffled_options
+from ..heads import modeling
 from ..shared import reporting
 from .envs import trainer_env
 
 
-def build_sft_rows(df) -> list[dict]:
-    """Episodes -> conversational prompt/completion rows for TRL.
+def training_inputs(rows: list[dict], seed: int = 0) -> tuple[list, list, list]:
+    """Episodes -> (chats, option orders, labels).
 
-    The prompt is built by the SAME `build_chat` the eval and the serving app
-    use, so what the model is trained on and what it is asked at inference
-    cannot drift.
+    Option order is shuffled per example for BOTH heads, so the two arms see
+    the identical prompt distribution; for the pointer head it is what stops
+    it learning "the answer is usually the first slot".
     """
-    rows = []
-    for r in df.itertuples():
-        obs = {
-            "customer_message": r.obs_customer_message,
-            "intent": r.obs_intent,
-            "order_id": _clean(r.obs_order_id),
-            "order_looked_up": bool(r.obs_order_looked_up),
-            "order_status": _clean(r.obs_order_status),
-            "order_total_cents": _clean_int(r.obs_order_total_cents),
-            "days_since_delivery": _clean_int(r.obs_days_since_delivery),
-            "tracking_number": _clean(r.obs_tracking_number),
-        }
-        rows.append(
-            {
-                "prompt": build_chat(obs),
-                "completion": [{"role": "assistant", "content": r.label_json}],
-            }
-        )
-    return rows
+    rng = random.Random(seed)
+    chats, options, labels = [], [], []
+    for r in rows:
+        opts = shuffled_options(rng)
+        chats.append(build_chat(Observation.from_row(r), opts))
+        options.append(opts)
+        labels.append(r["label"])
+    return chats, options, labels
 
 
-def _clean(value):
-    """Parquet turns missing strings into NaN; the prompt must show None."""
-    if value is None:
-        return None
-    if isinstance(value, float) and value != value:  # NaN
-        return None
-    return str(value) if str(value) else None
-
-
-def _clean_int(value):
-    if value is None:
-        return None
-    if isinstance(value, float) and value != value:
-        return None
-    return int(value)
-
-
-@trainer_env.task(report=True, timeout=flyte.Timeout(max_runtime=5400))
-async def finetune_decision_model(
-    episodes: flyte.io.File,
-    model: str,
-    profile_name: str = "smoke",
-    date: datetime | None = None,
-) -> flyte.io.Dir:
-    """Fine-tune one suite member on the day's episodes.
-
-    ``model`` is the suite slug and also the `model` partition value — the
-    factory passes it with ``factory.partition("model")``.
-    """
-    import pandas as pd
-    from datasets import Dataset
-    from peft import LoraConfig
-    from trl import SFTConfig, SFTTrainer
-
-    profile = get_profile(profile_name)
-    candidate = get_candidate(model)
-
-    df = pd.read_parquet(await episodes.download())
-    train_df = df[df["split"] == "train"].reset_index(drop=True)
-    if len(train_df) == 0:
-        raise flyte.errors.NonRecoverableError("no train-split episodes in the dataset")
-
-    train_ds = Dataset.from_list(build_sft_rows(train_df))
-
-    out_dir = "/tmp/decision-model"
-    args = SFTConfig(
-        output_dir="/tmp/sft-out",
-        num_train_epochs=profile.epochs,
-        per_device_train_batch_size=profile.per_device_batch,
-        gradient_accumulation_steps=profile.grad_accum,
-        learning_rate=profile.learning_rate,
-        max_length=profile.max_seq_length,
-        logging_steps=5,
-        save_strategy="no",
-        bf16=True,
-        report_to=[],
-        # Prompt tokens are masked; see the module docstring.
-        completion_only_loss=True,
-    )
-
-    history: list[dict] = []
-    trainer = SFTTrainer(
-        model=candidate.hf_id,
-        args=args,
-        train_dataset=train_ds,
-        peft_config=LoraConfig(
-            r=profile.lora_r,
-            lora_alpha=profile.lora_r * 2,
-            target_modules="all-linear",
-            task_type="CAUSAL_LM",
-        ),
-    )
-
-    # Stream the loss curve to the console. A suite run has one of these per
-    # model, so the reports are how you see which fine-tune actually converged.
-    from transformers import TrainerCallback
-
-    class LiveReport(TrainerCallback):
-        def on_log(self, args_, state, control, logs=None, **kw):
-            if not logs:
-                return
-            history.append({"step": state.global_step, **logs})
-            try:
-                body = reporting.stats_row(
-                    {
-                        "model": candidate.slug,
-                        "step": state.global_step,
-                        "loss": f"{logs.get('loss', float('nan')):.4f}",
-                        "epoch": f"{logs.get('epoch', 0):.2f}",
-                    }
-                )
-                body += reporting.table(
-                    ["step", "loss", "epoch", "lr"],
-                    [
-                        [
-                            h.get("step"),
-                            f"{h.get('loss', float('nan')):.4f}",
-                            f"{h.get('epoch', 0):.2f}",
-                            f"{h.get('learning_rate', 0):.2e}",
-                        ]
-                        for h in history[-25:]
-                    ],
-                )
-                flyte.report.replace(reporting.page(f"SFT — {candidate.slug}", body))
-                flyte.report.flush()
-            except Exception:
-                pass  # reporting must never kill training
-
-    trainer.add_callback(LiveReport())
-    trainer.train()
-
-    trainer.save_model(out_dir)
-    trainer.processing_class.save_pretrained(out_dir)
-
+def write_manifest(out_dir: str, info: dict, *, slug: str, torso: str, head: str, base_model: str,
+                   params_m: int | None, profile, train_n: int, date: datetime | None = None) -> dict:
+    """The model Dir's manifest: what the scorer, selector and app read to
+    know how to load it (`base_model`, `head`, `pointer_rank`)."""
     manifest = {
-        "model_slug": candidate.slug,
-        "base_model": candidate.hf_id,
-        "params_m": candidate.params_m,
+        "model_slug": slug,
+        "torso": torso,
+        "head": head,
+        "base_model": base_model,
+        "params_m": params_m,
         "profile": profile.name,
-        "train_episodes": len(train_df),
+        "train_episodes": train_n,
         "epochs": profile.epochs,
         "lora_r": profile.lora_r,
         "date": date.strftime("%Y-%m-%d") if date else "",
-        "final_loss": history[-1].get("loss") if history else None,
-        "loss_history": history,
+        "final_loss": info["history"][-1]["loss"] if info["history"] else None,
+        **info,
     }
-    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
+    with open(os.path.join(out_dir, modeling.MANIFEST), "w") as f:
         json.dump(manifest, f, indent=2, default=str)
+    return manifest
 
-    body = reporting.stats_row(
-        {
-            "model": candidate.slug,
-            "base": candidate.hf_id,
-            "params": f"{candidate.params_m}M",
-            "train episodes": len(train_df),
-            "epochs": profile.epochs,
-            "final loss": f"{manifest['final_loss']:.4f}" if manifest["final_loss"] else "n/a",
-        }
+
+@trainer_env.task(report=True, timeout=flyte.Timeout(max_runtime=7200))
+async def finetune_decision_model(
+    episodes: flyte.io.File,
+    model: str,
+    profile_name: str = "dev",
+    date: datetime | None = None,
+) -> flyte.io.Dir:
+    """``model`` is the suite slug and the `model` partition value — the
+    factory passes it with ``factory.partition("model")``."""
+    import pandas as pd
+
+    profile = get_profile(profile_name)
+    cand = get_candidate(model)
+    df = pd.read_parquet(await episodes.download())
+    rows = df[df["split"] == "train"].to_dict("records")
+    if not rows:
+        raise flyte.errors.NonRecoverableError("no train-split episodes in the dataset")
+    chats, options, labels = training_inputs(rows, seed=int(date.strftime("%Y%m%d")) if date else 0)
+
+    history: list[dict] = []
+
+    def on_log(rec: dict) -> None:
+        history.append(rec)
+        try:
+            body = reporting.stats_row({"model": cand.slug, "head": cand.head, "step": rec["step"],
+                                        "loss": f"{rec['loss']:.4f}", "epoch": f"{rec['epoch']:.2f}"})
+            body += reporting.table(["step", "loss", "lr", "elapsed"],
+                                    [[h["step"], f"{h['loss']:.4f}", f"{h['lr']:.2e}", f"{h['elapsed_s']:.0f}s"]
+                                     for h in history[-25:]])
+            flyte.report.replace(reporting.page(f"Training {cand.slug}", body))
+            flyte.report.flush()
+        except Exception:
+            pass  # reporting must never kill training
+
+    out_dir = "/tmp/permission-model"
+    info = modeling.train(
+        cand.head, cand.hf_id, chats, options, labels, out_dir,
+        epochs=profile.epochs, batch_size=profile.batch_size, grad_accum=profile.grad_accum,
+        lr=profile.learning_rate, head_lr=profile.head_learning_rate, lora_r=profile.lora_r,
+        pointer_rank=POINTER_RANK, max_len=profile.max_seq_length, on_log=on_log,
+        # Round 3: the day seeds the init (and the option shuffles) as well as
+        # the data, so independent days are independent seeds end to end.
+        seed=int(date.strftime("%Y%m%d")) % (2**31) if date else 0,
     )
+
+    manifest = write_manifest(
+        out_dir, info, slug=cand.slug, torso=cand.torso.slug, head=cand.head, base_model=cand.hf_id,
+        params_m=cand.params_m, profile=profile, train_n=len(rows), date=date)
+
+    body = reporting.stats_row({
+        "model": cand.slug, "base": cand.hf_id, "head": cand.head,
+        "head params": f"{info['head_params'] / 1e6:.2f}M", "trainable": f"{info['trainable_params'] / 1e6:.2f}M",
+        "train examples": info["train_examples"], "steps": info["steps"],
+        "train time": f"{info['train_seconds'] / 60:.1f} min",
+        "final loss": f"{manifest['final_loss']:.4f}" if manifest["final_loss"] is not None else "n/a",
+    })
     body += "<h3>Loss</h3>" + reporting.table(
-        ["step", "loss", "epoch"],
-        [[h.get("step"), f"{h.get('loss', float('nan')):.4f}", f"{h.get('epoch', 0):.2f}"] for h in history],
-    )
-    await flyte.report.replace.aio(reporting.page(f"Fine-tuned {candidate.slug}", body))
+        ["step", "loss", "epoch"], [[h["step"], f"{h['loss']:.4f}", f"{h['epoch']:.2f}"] for h in info["history"]])
+    await flyte.report.replace.aio(reporting.page(f"Fine-tuned {cand.slug}", body))
     await flyte.report.flush.aio()
-
     return await flyte.io.Dir.from_local(out_dir)

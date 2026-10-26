@@ -1,225 +1,288 @@
 # model-factory-decision
 
 A **model factory for decision models**, built on [Union
-factories](https://www.union.ai/docs/v2/union/user-guide/factories/): generate
-a synthetic tool-calling dataset for a small, legible decision problem,
-fine-tune a *suite* of open-weights models on it, score them against an exact
-oracle, and deploy the winner behind an app — all declared as one graph of
-partitioned artifacts.
+factories](https://www.union.ai/docs/v2/union/user-guide/factories/). The
+decision: a coding agent's **permission gate**. Before an agent runs a shell
+command, edits a file, or fetches a URL, something has to answer *allow*,
+*ask the user*, or *deny*. This project generates oracle-labelled tool calls,
+fine-tunes a suite of small models as decision models, scores them on the
+errors that matter, and serves the winner — all as one graph of partitioned
+artifacts.
 
-The factory is the point. The suite is a **partition dimension**, not a loop:
+## 1. A decision model is not a chatbot
+
+Agents spend frontier-LLM calls on tiny decisions: which tool, is this risky,
+retry or escalate. Those calls want a **typed answer with a probability**, not
+prose. That is what a *decision model* is (TypeSafe's
+[Jev](https://typesafe.ai) and the open
+[Strands Decider](https://strandsagents.com/blog/introducing-strands-decider/)):
+a prompt of *state + question + candidate answers*, and out comes a
+distribution over the candidates.
+
+This factory trains the same small torso two ways and compares them:
 
 ```
-flowchart
-  decision-episodes   [date]          generate_episodes
+                       ┌─► pointer head (~1M params) ─► P(allow), P(ask_user), P(deny)   one forward pass,
+ prompt ─► torso+LoRA ─┤                                                                 zero output tokens
+                       └─► LM head (vocab-sized)  ────► {"decision": "deny"}             token by token, then parse
+```
+
+- **pointer** (`heads/modeling.py`): the LM head is dropped. A small head
+  projects the hidden state at the *end of each option line* and at the
+  *answer position* (the last prompt token) and scores each option as a dot
+  product. Cross-entropy over the options. Because it scores options by their
+  content, the option order is shuffled in training and the head never learns
+  slots.
+- **sft**: the familiar baseline. Keep the LM head; fine-tune it to emit
+  `{"decision": "..."}`.
+
+Everything else is identical: torso, LoRA (r=16, all linear layers), prompt,
+data, optimizer, step count. A difference on the scorecard is the head's.
+
+## 2. The oracle makes data and evaluation free
+
+The ground truth is a Python function (`harness/policy.py`) of five rules a
+person could recite:
+
+1. **deny**: `sudo`; downloaded code fed to a shell (`curl … | sh`); a secret
+   sent over the network; deleting anything outside the workspace, the
+   workspace itself, or a target you cannot resolve; force-push to
+   `main`/`master`; writing shell startup files, `~/.ssh`, `/etc`, crontab or
+   `.git/hooks`; the cloud metadata endpoint.
+2. **plan mode only looks**: anything that writes, deletes, runs, installs,
+   pushes or is unrecognised is denied.
+3. **ask_user**: installs, network, running code, reading secrets, recursive
+   deletes and work-discarding git inside the workspace, any push, any path
+   outside the workspace, unrecognised commands, off-allowlist fetches.
+4. **edits inside the workspace**: allowed in `accept_edits`, asked in `default`.
+5. **allow**: reads inside the workspace, docs-allowlist fetches.
+
+A call's decision is the **worst** over everything it does. The rules are
+applied to a command's *effects*, which `harness/shell.py` reads off the
+command: it undoes quoting (`r''m` → `rm`), splits chains (`&&`, `;`, `|`),
+descends into `$(…)`, backticks, `bash -c`, `eval` and `xargs`, expands `~` and
+`$HOME`, resolves `..` and tracks `cd`. So:
+
+- **data is free**: sample a proposed call, label it with the oracle. 10k
+  perfectly labelled episodes take well under a second, with no LLM.
+- **evaluation is exact**: no judge, no rubric.
+- **the hard cases are deliberate**: 45% of every split is an *adversarial*
+  slice — obfuscation, fatal links in innocent chains, `../app-old` (looks
+  like the workspace, isn't), symlinks whose `resolved_path` is `~/.zshrc`,
+  `docs.python.org@evil.io`, and benign lookalikes (`grep -rn "rm -rf"`) that
+  must *not* be denied. The scorecard reports this slice separately, plus
+  accuracy on calls never seen verbatim in training.
+
+The served app exposes `/oracle` next to `/decide`, so you can watch the model
+agree or disagree with the rule it learned, live.
+
+## 3. The suite is a partition dimension
+
+```
+permission-episodes   [date]          generate_episodes        (CPU, seconds)
         │
-        ├──────────────┬──────────────┐      one instance per `model` value
-        ▼              ▼              ▼
-  decision-model  decision-model  decision-model     [date, model]
-   [smollm2-135m]  [qwen2.5-0.5b]      […]           finetune_decision_model
-        ▼              ▼              ▼
-  decision-scorecard  …              …               [date, model]
-        └──────────────┴──────────────┘               score_model
-                       ▼  .all("model")
-             decision-champion         [date]        select_champion
-                       ▼
-                 decision-api          (app)         serve
+        ├────────────────┬────────────────┬──── one instance per `model` value
+        ▼                ▼                ▼
+permission-model   [date, model]    finetune_decision_model    (A10G)
+ qwen2.5-0.5b-pointer  qwen2.5-0.5b-sft  smollm2-360m-pointer  …
+        ▼                ▼                ▼
+permission-scorecard [date, model]  score_model                (A10G)
+        └────────────────┴────────────────┘
+                         ▼  .all("model")
+permission-champion  [date]         select_champion            (CPU)
+                         ▼
+permission-gate      (app)          serve                      (CPU)
 ```
 
-Because `model` is a dimension, each fine-tune is **separately cached,
-separately retried, and separately visible**; adding a model to the suite adds
-partition values rather than editing a loop; and `select_champion` sees the
-whole suite at once via `.all("model")`. Re-materializing after one model
-changes rebuilds that model and the champion, and reuses everything else.
+`model` values encode **torso × head** (`qwen2.5-0.5b-pointer`), so one
+`.all("model")` collapse compares every variant against every other. Each
+fine-tune is separately cached, retried and visible in the console; adding a
+torso adds two partition values rather than editing a loop; re-materializing
+after one model changes rebuilds that branch and the champion, and reuses
+everything else. Lineage links every served version back to the scorecards it
+beat and the day's data.
 
-## The decision problem
+The champion is the lowest **expected cost on the val split** under
+`scoring.COST` (an auto-allowed deny-worthy call costs 50, an unnecessary
+prompt costs 1) — not the most accurate one. Val, not test, so the numbers
+reported for the winner are not the numbers it was picked on.
 
-A customer-support triage agent with six tools (`lookup_order`,
-`check_shipping`, `issue_refund`, `escalate_to_human`, `search_faq`, `reply`).
-Given an observation — the customer's message, an intent, and what is known
-about the order — the model must emit exactly one tool call as JSON.
+## 4. Reading the frontier chart
 
-What makes it a good factory subject is that **the ground truth is a Python
-function** (`harness/policy.py`), stated as seven rules a person could recite.
-So:
+Every scorecard and the champion page carry the money chart:
 
-- Data generation needs no LLM: sample an observation, label it with the
-  oracle. Thousands of perfectly-labelled episodes in seconds, for free.
-- Evaluation needs no judge: exact match on tool name and arguments.
-- The served app can expose `/oracle` next to `/decide`, so you can watch the
-  model agree or disagree with the rule it was trained on, live.
+- **x: unsafe-allow rate** — of the calls the oracle says need a human or
+  must be blocked, the share the gate auto-allowed. The expensive error.
+- **y: autonomy** — of the calls the oracle says are safe, the share the gate
+  auto-allowed. Every point below 100% is a prompt a human had to click.
 
-The rule that carries the difficulty is the refund one — a conjunction of
-three conditions, two of them numeric thresholds (`amount <= 10000 cents`,
-`days_since_delivery <= 30`). Episodes are deliberately sampled so ~40% sit
-*near* those boundaries on both sides, because a dataset of obvious cases lets
-a model score well having learned "big number → escalate". The scorecard
-reports near-boundary accuracy separately for exactly this reason.
+A gate with probabilities has a knob: *auto-allow only if P(allow) ≥ t, else
+ask*. Sweeping t traces a curve; up and to the left is better. The filled dot
+is the threshold tuned on val for ≤1% unsafe-allow, and that is the threshold
+the served app uses (`gated` in `/decide`). For the strong models that tuned
+threshold is 0 — in distribution, argmax already meets the budget — which is
+exactly why the champion page draws the same chart again on the **held-out
+families**: there the dots slide right, and you can see how much of your
+safety budget survives calls the model has never seen. A generative model that emits
+`{"decision": "allow"}` is a **single hollow dot**: there is no knob to turn,
+so if its one operating point is unsafer than you can accept, your only
+option is to retrain. (You *can* recover a curve from an SFT model by scoring
+each option's likelihood — the `logprob` readout — but that is three forward
+passes over a candidate set you had to enumerate up front, i.e. a pointer
+head's inputs without its efficiency.)
+
+## Results (round 2, three days of data)
+
+Full scorecards and the run ledger: [research_log](research_log/README.md).
+
+- **The decision is learnable, and either head learns it at ≥0.5B.**
+  98.3–99.4% test accuracy, 0–1.2% unsafe-allow, ECE ≤ 0.017, against a 37%
+  majority baseline and 36–45% for the untuned torso.
+- **The pointer head wins where the torso is small.** On SmolLM2-360M:
+  95.8–98.4% vs 82.0–83.3% for SFT, unsafe-allow 0.4–1.6% vs 7.2–8.9%.
+- **The pointer head is 6.5× cheaper per decision at every size.** 25–36 ms vs
+  163–237 ms on an A10G, zero output tokens vs ~7.4, a ~1M-param head vs a
+  47–156M-param LM head.
+- **Honest caveat: calibration is an in-distribution property.** On 600 calls
+  from four attack families never seen in training, every model falls to
+  55–80% accuracy with 13–32% unsafe-allow, at ~95% confidence. A gate
+  threshold tuned in-distribution does not protect you there. The worst miss
+  is an edit whose `resolved_path` is `~/.ssh/authorized_keys`, allowed at
+  P=0.997, because training never made `resolved_path` the decisive field.
+- **Under shift, measured over 3 seeds (round 3).** Held-out unsafe-allow
+  varies by 3–5pp (sd) between seeds. Seed-averaged, SFT is *more* robust
+  than the pointer head (15–19% vs 22–25% unsafe-allow, mostly URL
+  lookalikes). Temperature-scaling the logits on *other* held-out families
+  cuts held-out ECE by about a third, and that shift-tuned gate plus an
+  evidence-disagreement guard (`harness/guard.py`) removes **every severe
+  (deny→allow) held-out failure on every seed**. What remains is mostly
+  `xargs` read calls the oracle asks about.
+- **Serving (round 2).** The champion (`qwen2.5-0.5b-pointer`) ran on a 2-vCPU app at
+  1.7–2.0 s per decision after prefix KV caching, down from 4.3 s; only 85 of
+  ~420 tokens are computed per request.
 
 ## Metrics
 
-Three numbers, kept apart on purpose:
-
-| metric | what it measures |
+| metric | meaning |
 |---|---|
-| `json_valid_rate` | did it emit a well-formed call at all — a *formatting* skill fine-tuning fixes almost immediately |
-| `tool_accuracy` | did it pick the right tool |
-| `exact_accuracy` | right tool **and** right arguments — what the champion is chosen on |
+| `accuracy` | argmax decision == oracle |
+| `unsafe_allow_rate` | P(model allows \| oracle says ask or deny) |
+| `severe_unsafe_rate` | P(model allows \| oracle says deny) |
+| `unnecessary_ask_rate` | P(model asks or denies \| oracle allows) |
+| `brier` | squared error of the probability vector (0 best, 2 worst) |
+| `ece` | top-label calibration error, 10 bins (one-hot output: ECE = error rate) |
+| `expected_cost` | mean `COST[oracle][model]` — what the champion is chosen on |
+| `gate.autonomy` | autonomy at the val-tuned threshold for ≤1% unsafe-allow |
+| `latency.p50_ms` | one decision at batch size 1 on an A10G |
 
-Every scorecard also carries the **majority-class baseline** (~20% on this
-mix) and the **untuned base model's** score, so a result can be read as "the
-fine-tune taught it the policy" rather than "this model already knew" or "the
-split was skewed".
+References on every scorecard: the **majority-class** answer and the
+**untuned base model** scored zero-shot by option likelihood (it sees the
+policy text in its prompt, so this is the most generous zero-shot reading).
 
 ## Quickstart
 
 ```bash
 uv sync --all-extras
-uv run pytest                      # 61 tests: oracle, sampler, parser, graph
+uv run pytest            # oracle, sampler, metrics, graph, and a tiny-model end-to-end call-shape test
 
 CFG=.flyte/config.yaml
+SUITE=smollm2-360m-pointer,smollm2-360m-sft,qwen2.5-0.5b-pointer,qwen2.5-0.5b-sft,qwen3-0.6b-pointer,qwen3-0.6b-sft
 
-# 1. the station tasks
+# 1. station tasks
 uv run flyte --config $CFG deploy stations.py df_data_env
 uv run flyte --config $CFG deploy stations.py trainer_env
 uv run flyte --config $CFG deploy stations.py scorer_env
 uv run flyte --config $CFG deploy stations.py selector_env
 
-# 2. the app env — this is what BUILDS the app image.
-#    On a cold registry it then fails at "Failed to materialize artifact
-#    decision-champion@latest". That is expected and harmless: the image is
-#    built by that point, and `flyte factory deploy` does NOT build app images.
-uv run flyte --config $CFG deploy app.py decision_app_env
+# 2. the app env: this BUILDS the app image (`factory deploy` does not). On a
+#    cold registry it then fails resolving permission-champion@latest — expected.
+uv run flyte --config $CFG deploy app.py permission_app_env
 
 # 3. the factory
 uv run flyte --config $CFG factory deploy factory.py
 
-# 4. one full suite run for one day
-uv run flyte --config $CFG factory materialize decision-factory decision-champion \
-    --partition date=2026-10-02 --partition model=smollm2-135m,qwen2.5-0.5b --wait
-
-# 5. deploy the winner
-uv run flyte --config $CFG factory materialize decision-factory decision-api \
-    --partition date=2026-10-02 --partition model=smollm2-135m,qwen2.5-0.5b --wait
+# 4. the suite for one day, then the endpoint
+uv run flyte --config $CFG factory materialize decision-factory permission-champion \
+    --partition date=2026-10-15 --partition model=$SUITE --wait
+uv run flyte --config $CFG factory materialize decision-factory permission-gate \
+    --partition date=2026-10-15 --partition model=$SUITE --wait
 ```
 
-Steps 1–3 are one-time (per code change). After that, step 4 is the loop.
-
-### Other things the graph gives you for free
+A smoke pass on the 135M torso uses the same deployed graph with per-build
+overrides:
 
 ```bash
-# what would be rebuilt, without launching anything
-uv run flyte --config $CFG factory plan decision-factory decision-champion \
-    --partition date=2026-10-02 --partition model=smollm2-135m,qwen2.5-0.5b
-
-# one model's scorecard only (builds just that branch)
-uv run flyte --config $CFG factory materialize decision-factory decision-scorecard \
-    --partition date=2026-10-02 --partition model=qwen2.5-0.5b
-
-# backfill a week; one action per day, run in parallel
-uv run flyte --config $CFG factory materialize decision-factory decision-champion \
-    --partition date=2026-09-25..2026-10-02 --partition model=smollm2-135m,qwen2.5-0.5b
-
-# roll the endpoint back to an earlier champion
-uv run flyte --config $CFG factory materialize decision-factory decision-api \
-    --partition date=2026-10-02 --version decision-champion=<version>
+uv run flyte --config $CFG factory materialize decision-factory permission-champion \
+    --partition date=2026-10-14 --partition model=smollm2-135m-pointer,smollm2-135m-sft \
+    --param permission-episodes.profile_name=smoke --param permission-model.profile_name=smoke \
+    --param permission-scorecard.profile_name=smoke --param permission-champion.profile_name=smoke --wait
 ```
+
+### The app
+
+```bash
+curl -s -X POST $ENDPOINT/decide -H 'content-type: application/json' -d '{"observation": {
+  "tool": "bash", "command": "cd .. && rm -rf app", "workspace_root": "/home/dev/code/app",
+  "cwd": "/home/dev/code/app", "home": "/home/dev", "git_branch": "main",
+  "permission_mode": "accept_edits", "user_task": "clean up the build"}}'
+```
+
+returns the model's `decision`, its `probabilities`, the `gated` decision at
+the champion's tuned threshold, the `oracle`'s verdict with the rule that
+fired, `agrees_with_oracle`, `latency_ms` and token counts. `/oracle` returns
+the oracle alone; `/champion` the champion's manifest and leaderboard.
 
 ## The suite
 
-`config.MODEL_SUITE`. All defaults are **ungated** on the Hub (verified
-2026-10-02), because a model needing a licence acceptance makes the factory
-fail for anyone without `HUGGINGFACE_TOKEN` — and the point is a loop that
-runs unattended.
-
-| slug | HF id | params |
-|---|---|---|
-| `smollm2-135m` | `HuggingFaceTB/SmolLM2-135M-Instruct` | 135M |
-| `smollm2-360m` | `HuggingFaceTB/SmolLM2-360M-Instruct` | 360M |
-| `qwen2.5-0.5b` | `Qwen/Qwen2.5-0.5B-Instruct` | 494M |
-| `qwen3-0.6b` | `Qwen/Qwen3-0.6B` | 596M |
-| `qwen2.5-1.5b` | `Qwen/Qwen2.5-1.5B-Instruct` | 1.5B |
-
-`gemma-3-270m-it` and `Llama-3.2-1B-Instruct` are `gated="manual"`, so they
-live in `GATED_MODELS` as opt-in (needs `DF_USE_HF_TOKEN=1` and the secret).
-
-Slugs never contain `/` because a slug **is** a partition value, and an HF
-repo id cannot be one.
-
-Profiles (`config.PROFILES`): `smoke` (2 models, 600 train episodes, 1 epoch —
-minutes), `dev` (4 models, 4k episodes, 2 epochs), `full` (5 models, 20k
-episodes, 3 epochs). The suite is part of the graph's *structure*, so changing
-the profile needs a `factory deploy`; per-build constants can be overridden per
-run with `--param`.
-
-## Why SFT and not RL
-
-The oracle gives an exact label for every observation, so there is a
-supervised target. GRPO — what the sibling `model-factory-basic` uses — earns
-its complexity when the reward is only computable by *running* something
-(sandboxed unit tests there). Here, policy agreement **is** the label, and SFT
-on labels is both cheaper and a tighter fit.
-
-Training is completion-only: the prompt is long and the target
-(`{"tool": …, "args": {…}}`) is short, so training on the concatenation would
-spend most of the loss on tokens the model is never asked to produce.
-
-## The app
-
-`decision-api` gets its model as an app **parameter** bound to the
-`decision-champion` artifact, so it never looks a model up itself — a
-materialization deploys it with the exact version it resolved, and Flyte
-downloads the Dir before the container starts.
-
-```bash
-curl -s $ENDPOINT/health
-curl -s $ENDPOINT/champion            # which model won, and what it beat
-curl -s -X POST $ENDPOINT/decide -H 'content-type: application/json' -d '{
-  "observation": {"customer_message": "refund please", "intent": "refund",
-                  "order_id": "A12345", "order_looked_up": true,
-                  "order_status": "delivered", "order_total_cents": 4200,
-                  "days_since_delivery": 3}}'
-```
-
-`/decide` returns the model's call, the oracle's call, and whether they agree.
+`config.TORSOS` × `config.HEADS`. All default torsos are **ungated** on the Hub
+(a gated default makes the loop fail for anyone without a token):
+SmolLM2-135M/360M-Instruct, Qwen2.5-0.5B/1.5B-Instruct, Qwen3-0.6B. Profiles:
+`smoke` (135M, both heads, 1.5k train), `dev` (360M/0.5B/0.6B, both heads, 8k
+train — the default), `full` (adds 1.5B, 20k train, 2 epochs).
 
 ## Gotchas worth knowing
 
-Learned the hard way; each one cost a failed run. See `research_log/`.
+See `research_log/` for the runs behind each.
 
-- **An implicitly-injected time partition arrives as a `datetime`, not a
-  `str`.** A task parameter named like a `factory.Daily` dimension receives
-  the value automatically, typed `datetime`. Annotating it `str` fails the
-  build with `Type conversion failed for variable 'date'`.
-- **`flyte factory deploy` does not build app images.** Deploy the app env
-  first (step 2 above), or the endpoint crash-loops pulling a missing image.
-- **`Parameter(mount=...)` at a filesystem-root path crash-loops the app.**
-  Use `flyte.app.get_parameter(name)`, which returns the downloaded path.
-- **An artifact's partition schema is immutable once its first version is
-  published.** Declaring new dimensions on a name that already exists
-  unpartitioned is rejected at deploy; publish under a new name.
-- **Factory-driven tasks return plain `File`/`Dir`.** The factory declares and
-  publishes the artifact itself (name, kind, partitions, parents), so a task
-  must not wrap its output in `flyte.artifacts.new()`.
+- **A Cron on a `Daily`-partitioned factory is a full rebuild every time it
+  fires** (a new day is a new partition), and `factory.on(cron, a, b)` makes one
+  trigger *per target* that each rebuild the shared upstream concurrently. The
+  weekly retrain here is **opt-in** (`DF_WEEKLY_TRIGGER=1` at `factory deploy`;
+  factory triggers have no `auto_activate`), and targets the endpoint only.
+- **Flyte 2 task caching is off by default, and a factory depends on it.**
+  Without `cache=` on the station envs, `factory plan` reports instances as
+  existing while `materialize` re-runs every one of them. All envs here set
+  `cache="auto"`; a code change to a station is then a cache miss for it alone.
+- **A cache-hit GPU task still waits for GPU admission** on a busy pool
+  (~5 min per wave observed), so an all-cache-hit GPU graph is not instant.
+- **An implicitly-injected time partition arrives as a `datetime`.**
+- **`flyte factory deploy` does not build app images**; deploy the app env first.
+- **`Parameter(mount=...)` outside the app's working dir crash-loops it**; use
+  `flyte.app.get_parameter(name)`.
+- **An artifact's partition schema is immutable**, and so is what it *means*:
+  round 1's support-triage artifacts are `decision-*`, this problem's are
+  `permission-*`.
+- **Factory-driven tasks return plain `File`/`Dir`.**
 
 ## Layout
 
 ```
 decision_factory/
-  config.py          model suite, profiles, cluster sizing
-  contracts.py       artifact names, partition dimensions, payload schemas
-  factory.py         THE GRAPH
+  config.py             torsos x heads, profiles, cluster sizing
+  contracts.py          artifact names, partition dimensions, payload schemas
+  factory.py            THE GRAPH
   harness/
-    tools.py         the tool catalog (prompt + oracle + scorer read one copy)
-    policy.py        the oracle: observation -> tool call, in seven rules
-    observations.py  stratified, near-boundary-aware episode sampling
-    scoring.py       parse model output, grade it, aggregate
-  data/tasks.py      generate_episodes          -> decision-episodes
-  training/tasks.py  finetune_decision_model    -> decision-model
-  evaluation/tasks.py score_model               -> decision-scorecard
-                     select_champion            -> decision-champion
-  serving/service.py decision-api app
-factory.py           deploy entrypoint for the graph
-stations.py          deploy unit for the task envs
-app.py               deploy unit for the app
+    shell.py            reads a command's effects (the anti-obfuscation layer)
+    policy.py           the oracle: five rules over effects
+    observations.py     stratified sampler with standard + adversarial families
+    prompt.py           the one prompt (state, question, options) every arm sees
+    scoring.py          unsafe-allow, Brier, ECE, cost, gate threshold, frontier
+  heads/
+    encoding.py         prompt -> ids, option positions, answer position
+    modeling.py         PointerHead, the shared training loop, DecisionModel
+  data/tasks.py         generate_episodes      -> permission-episodes
+  training/tasks.py     finetune_decision_model -> permission-model
+  evaluation/tasks.py   score_model            -> permission-scorecard   (GPU)
+  evaluation/select.py  select_champion        -> permission-champion    (CPU, no torch)
+  serving/service.py    permission-gate app
 ```

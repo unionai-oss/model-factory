@@ -97,12 +97,20 @@ def test_the_date_dimension_is_daily(graph):
     assert dims[contracts.PARTITION_DATE] is factory.Daily
 
 
-def test_nightly_trigger_targets_the_champion_and_the_endpoint(graph):
-    (trigger,) = graph.triggers
-    assert {t.name for t in trigger.targets} == {
-        contracts.ARTIFACT_CHAMPION,
-        contracts.ENDPOINT_APP,
-    }
+def test_no_recurring_gpu_spend_by_default(graph):
+    # The weekly retrain is opt-in (DF_WEEKLY_TRIGGER=1); recurring GPU spend
+    # is the user's decision, not a side effect of `factory deploy`.
+    assert graph.triggers == [] or list(graph.triggers) == []
+
+
+def test_the_opt_in_trigger_targets_only_the_endpoint(monkeypatch):
+    # One target, not two: each target compiles to its own trigger, and two
+    # triggers on a shared upstream rebuild that upstream twice, concurrently.
+    from decision_factory import factory as f
+
+    monkeypatch.setattr(f, "WEEKLY_TRIGGER", True)
+    (trigger,) = f.build_graph("smoke").triggers
+    assert [t.name for t in trigger.targets] == [contracts.ENDPOINT_APP]
 
 
 def test_materialize_args_names_the_profile_suite():
@@ -117,6 +125,17 @@ def test_suite_slugs_are_valid_partition_values():
         assert "/" not in slug, slug
         assert slug == slug.lower()
         assert "/" in candidate.hf_id, f"{slug} should map to a HF repo id"
+        assert slug == f"{candidate.torso.slug}-{candidate.head}"
+
+
+def test_every_profile_compares_both_heads_on_each_torso():
+    # The head comparison is the point of the suite: a torso with only one
+    # head in a profile has nothing to be compared against.
+    for name in ("smoke", "dev", "full"):
+        profile = get_profile(name)
+        torsos = {c.torso.slug for c in profile.candidates}
+        for t in torsos:
+            assert {c.head for c in profile.candidates if c.torso.slug == t} == {"pointer", "sft"}, (name, t)
 
 
 def test_every_profile_names_only_known_models():
@@ -135,10 +154,21 @@ def test_the_default_suite_is_ungated():
             assert candidate.gated is False, f"{name} includes gated {candidate.slug}"
 
 
-def test_smoke_trains_more_than_one_model():
+def test_smoke_trains_more_than_one_model():  # noqa: D103
     # A "suite" of one has nothing to compare, so champion selection would be
     # vacuous and the `.all` collapse untested by a smoke run.
     assert len(get_profile("smoke").models) >= 2
+
+
+def test_every_station_env_caches():
+    # Flyte 2 caching is off by default; without it a factory materialization
+    # re-runs every build even when the plan shows the artifact as existing.
+    from decision_factory.data.envs import data_env
+    from decision_factory.evaluation.envs import scorer_env, selector_env
+    from decision_factory.training.envs import trainer_env
+
+    for env in (data_env, trainer_env, scorer_env, selector_env):
+        assert env.cache == "auto", env.name
 
 
 def test_graph_renders_as_mermaid(graph):

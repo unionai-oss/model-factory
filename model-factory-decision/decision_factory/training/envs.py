@@ -11,6 +11,9 @@ trainer_env = flyte.TaskEnvironment(
     name="df-trainer",
     resources=gpu_resources(),
     env_vars=env_vars(),
+    # Off by default in Flyte 2. Without it a factory materialization
+    # re-runs every build even when the plan shows it as existing.
+    cache="auto",
     image=gpu_image,
     secrets=secrets(),
 )

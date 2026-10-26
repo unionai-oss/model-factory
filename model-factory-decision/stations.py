@@ -12,7 +12,8 @@ The tasks are wired into the loop by the factory, not by this module; see
 
 from decision_factory.data.envs import data_env as df_data_env  # noqa: F401
 from decision_factory.data.tasks import generate_episodes  # noqa: F401
-from decision_factory.evaluation.tasks import score_model, select_champion  # noqa: F401
+from decision_factory.evaluation.select import select_champion  # noqa: F401
+from decision_factory.evaluation.tasks import score_model  # noqa: F401
 from decision_factory.evaluation.envs import scorer_env, selector_env  # noqa: F401
 from decision_factory.training.envs import trainer_env  # noqa: F401
 from decision_factory.training.tasks import finetune_decision_model  # noqa: F401
