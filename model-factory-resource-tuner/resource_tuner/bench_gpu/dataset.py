@@ -31,16 +31,16 @@ def _split_for(task_id: str, family: str) -> str:
 
 
 def generate_runs(tasks_per_family: int, seed: int = 0, runs_per_task: int = 2,
-                  families: list[str] | None = None) -> list[dict]:
+                  families: list[str] | None = None, profile: str = "default") -> list[dict]:
     rng = Random(seed)
     rows: list[dict] = []
     for family in families or sorted(FAMILIES):
         for _ in range(tasks_per_family):
-            task = make_task(family, rng.randint(0, 2**31), n_runs=runs_per_task)
+            task = make_task(family, rng.randint(0, 2**31), n_runs=runs_per_task, profile=profile)
             code, harness = render_task(task), render_harness(task)
             for k in range(runs_per_task):
                 rows.append({
-                    "bench": "gpu", "run_id": f"{task.task_id}-r{k}", "task_id": task.task_id,
+                    "bench": "gpu", "profile": profile, "run_id": f"{task.task_id}-r{k}", "task_id": task.task_id,
                     "family": family, "driver": task.memory_driver, "run_idx": k,
                     "split": _split_for(task.task_id, family),
                     "knobs_json": json.dumps(task.knobs, sort_keys=True),

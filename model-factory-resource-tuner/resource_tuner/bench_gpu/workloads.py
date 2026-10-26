@@ -11,7 +11,8 @@ block size of a chunked computation. Utilization is set by whether the GPU
 is fed: tiny models, small batches, and per-sample Python augmentation on
 a CPU dataloader leave it idle.
 
-Every workload runs until ``TIME_BUDGET_S`` (120-180 s): 4-6 samples of
+Every workload runs until ``TIME_BUDGET_S`` (120-180 s; 60-120 s in the
+``big`` profile): 2-6 samples of
 Union's 30 s DCGM interval. ``driver`` names what an arm had to read:
 
 - ``params``       weights + grads + optimizer state dominate
@@ -26,12 +27,29 @@ Code runs on CPU when no GPU is present, so the tests can execute it.
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 from random import Random
 
 from ..bench.workloads import Family, Task, _floats, _log_uniform, array, col, table
 
 _BUDGETS = (120, 150, 180)
 _SIZES = (0.5, 2.0)
+
+#: Workload profiles, chosen per release. ``big`` (RightSizeMem's scale, ~10^4
+#: runs) halves the time budget: a training loop reaches its peak memory in
+#: its first steps, and 60 s is still two DCGM samples.
+PROFILES: dict[str, tuple] = {"default": _BUDGETS, "big": (60, 90, 120)}
+
+
+@contextmanager
+def _profile(name: str):
+    global _BUDGETS
+    saved = _BUDGETS
+    _BUDGETS = PROFILES[name]
+    try:
+        yield
+    finally:
+        _BUDGETS = saved
 
 _HEAD = [
     'device = "cuda" if torch.cuda.is_available() else "cpu"',
@@ -195,25 +213,36 @@ def _encoder_infer(rng: Random) -> dict:
     half = rng.random() < 0.5
     no_grad = rng.random() < 0.7
     keep_on_gpu = rng.random() < 0.4
+    # Batches held on the device between copies to the host. Unbounded
+    # accumulation (round 19) made the peak a function of the time budget.
+    flush = rng.choice([16, 64, 256])
     body = [_budget(rng), *_HEAD,
             "tokens = torch.from_numpy(np.load(tokens_path).astype(np.int64))  # (N, seq)",
             f"layer = torch.nn.TransformerEncoderLayer({d}, {d // 64}, 4 * {d}, batch_first=True)",
             f"encoder = torch.nn.TransformerEncoder(layer, {layers}, enable_nested_tensor=False)",
             f"model = torch.nn.Sequential(torch.nn.Embedding(30522, {d}), encoder).to(device).eval()",
             *(["model = model.half()"] if half else []),
-            "outputs = []", "t0 = time.monotonic()", "batches = 0",
+            "outputs, kept = [], []", "t0 = time.monotonic()", "batches = 0",
             "ctx = torch.inference_mode() if " + str(no_grad) + " else contextlib.nullcontext()",
             "with ctx:",
             "    while time.monotonic() - t0 < TIME_BUDGET_S:",
             f"        i = (batches * {batch}) % max(1, len(tokens) - {batch})",
             f"        emb = model(tokens[i : i + {batch}].to(device)).mean(dim=1)",
-            ("        outputs.append(emb)  # kept on the device" if keep_on_gpu else "        outputs.append(emb.float().cpu())"),
+            # grad on: the forward saves its activations for a backward that never
+            # comes. Kept attached, every output pins its batch's graph on the device
+            # and the peak grows with the run (round 19: every such run OOMed a 44 GiB
+            # L40S); detached, the peak is one batch's saved activations.
+            *([] if no_grad else ["        emb = emb.detach()"]),
+            *([f"        kept.append(emb)  # on the device until the next flush",
+               f"        if len(kept) == {flush}:",
+               "            outputs.append(torch.cat(kept).float().cpu())", "            kept = []"]
+              if keep_on_gpu else ["        outputs.append(emb.float().cpu())"]),
             "        batches += 1",
             'return {"batches": batches, "rows": sum(len(o) for o in outputs)}']
     return {"func_name": "embed_corpus", "imports": "import contextlib\nimport os\nimport time\nimport numpy as np\nimport torch",
             "body": "\n".join(body), "inputs": [{**array("tokens", [n, seq], "int32"), "high": 30522}],
             "knobs": {"d": d, "layers": layers, "seq": seq, "batch": batch, "half": half, "no_grad": no_grad,
-                      "keep_on_gpu": keep_on_gpu}}
+                      "keep_on_gpu": keep_on_gpu, "flush": flush if keep_on_gpu else 0}}
 
 
 # ── 5. recommender embeddings (held out) ────────────────────────────────
@@ -364,10 +393,11 @@ FAMILIES: dict[str, Family] = {
 HELDOUT_FAMILIES: tuple[str, ...] = ("recsys_train", "knn_search")
 
 
-def make_task(family: str, seed: int, n_runs: int = 2) -> Task:
+def make_task(family: str, seed: int, n_runs: int = 2, profile: str = "default") -> Task:
     fam = FAMILIES[family]
     rng = Random(seed)
-    spec = fam.make(rng)
+    with _profile(profile):
+        spec = fam.make(rng)
     lo, hi = fam.size_range
     factors = sorted(_log_uniform(rng, lo, hi) for _ in range(n_runs))
     rng.shuffle(factors)

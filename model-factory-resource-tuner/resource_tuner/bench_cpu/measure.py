@@ -8,7 +8,9 @@ observation: cumulative CPU seconds sampled once a second, from
   same counter cAdvisor exports as ``container_cpu_usage_seconds_total``,
   so the label is what the platform's monitoring sees, process pools and
   all; or
-- the workload's **process tree** (psutil), elsewhere (a laptop).
+- the workload's **process tree** (psutil), elsewhere (a laptop), and
+  when two workloads share a pod (``big`` releases: each pinned to its own
+  ``SLOT_CORES`` cores, so neither can steal the other's).
 
 The per-second series is kept with the run: the busiest 15-second window
 is the label (``grid.peak_window``), and the scoring simulates a CPU limit
@@ -69,22 +71,46 @@ def cgroup_cpu_seconds() -> float | None:
     return None
 
 
-def _tree_cpu_seconds(pid: int) -> float:
-    import psutil
+class TreeCpu:
+    """Cumulative CPU seconds of a process tree, children that exited included.
 
-    try:
-        root = psutil.Process(pid)
-        procs = [root, *root.children(recursive=True)]
-    except psutil.Error:
-        return 0.0
-    total = 0.0
-    for p in procs:
+    Every process ever seen keeps its last reading, so a pool worker that
+    exits between samples does not take its CPU time with it (summing only
+    the live tree made the series dip, then stall, when a pool shut down)."""
+
+    def __init__(self, pid: int):
+        self.pid = pid
+        self.seen: dict[tuple[int, float], float] = {}
+
+    def __call__(self) -> float:
+        import psutil
+
         try:
-            t = p.cpu_times()
-            total += t.user + t.system
+            root = psutil.Process(self.pid)
+            procs = [root, *root.children(recursive=True)]
         except psutil.Error:
-            continue
-    return total
+            return sum(self.seen.values())
+        for p in procs:
+            try:
+                t = p.cpu_times()
+                self.seen[(p.pid, p.create_time())] = t.user + t.system
+            except psutil.Error:
+                continue
+        return sum(self.seen.values())
+
+
+#: Cores per measurement slot when two workloads share a node (``big``
+#: releases): a 15-CPU pod on a 16-core c5.4xlarge, two slots of 7 pinned
+#: cores, one left for the harness. Pools in that profile stop at 6.
+SLOT_CORES = 7
+
+
+def slot_cpus(n_slots: int = 2, per_slot: int = SLOT_CORES) -> list[set[int]]:
+    """Disjoint core sets for `n_slots` workloads, from this process's affinity."""
+    cores = sorted(os.sched_getaffinity(0))
+    if len(cores) < n_slots * per_slot:
+        raise RuntimeError(f"{len(cores)} cores visible; {n_slots} slots of {per_slot} need more")
+    return [set(cores[i * per_slot : (i + 1) * per_slot]) for i in range(n_slots)]
 
 
 def _source() -> str:
@@ -115,28 +141,30 @@ def per_second(stamps: list[tuple[float, float]]) -> list[float]:
 
 
 def run_workload(harness_code: str, paths: list[str], workdir: Path, timeout_s: float = 400,
-                 tick_s: float = 1.0) -> dict:
-    """Run one harness module in a fresh interpreter; sample its CPU every `tick_s`."""
+                 tick_s: float = 1.0, shared: bool = False) -> dict:
+    """Run one harness module in a fresh interpreter; sample its CPU every `tick_s`.
+
+    `shared`: another workload runs in the same container (a ``big`` shard's
+    second slot), so the cgroup counter would sum both; read the workload's
+    own process tree instead. The caller pins the slot's cores."""
     (workdir / "workload.py").write_text(harness_code)
     status_path = workdir / "status.json"
     spec = json.dumps({"dir": str(workdir), "paths": paths, "status": str(status_path)})
-    source = _source()
+    source = "psutil" if shared else _source()
     t0 = time.monotonic()
     proc = subprocess.Popen([sys.executable, "-c", _CHILD, spec], cwd=workdir, env=_base_env(1))
-    read = cgroup_cpu_seconds if source == "cgroup" else (lambda: _tree_cpu_seconds(proc.pid))
+    read = cgroup_cpu_seconds if source == "cgroup" else TreeCpu(proc.pid)
     base = read() or 0.0
     stamps: list[tuple[float, float]] = [(0.0, 0.0)]
     killed = {"why": ""}
     done = threading.Event()
 
     def sample() -> None:
-        last_tree = 0.0
         while not done.wait(tick_s):
             now = time.monotonic() - t0
             used = (read() or 0.0) - base
-            if source != "cgroup":  # a process tree loses its exited children
-                used = max(used, last_tree)
-                last_tree = used
+            if source != "cgroup":  # never backwards: a reading can miss a process
+                used = max(used, stamps[-1][1])
             stamps.append((now, used))
             if now > timeout_s:
                 killed["why"] = f"timeout {timeout_s:.0f}s"
@@ -160,6 +188,9 @@ def run_workload(harness_code: str, paths: list[str], workdir: Path, timeout_s: 
     cpu_s = stamps[-1][1]
     return {
         "ok": bool(status.get("ok")) and not killed["why"],
+        # the kernel's total for the child and every descendant it waited
+        # for: a check on the sampled series (cpu_s), whichever source
+        "ru_cpu_s": float(child_cpu),
         "censored": False,
         "error": killed["why"] or status.get("error", "" if status else "no status (killed?)"),
         "cpu_source": source,
@@ -174,13 +205,14 @@ def run_workload(harness_code: str, paths: list[str], workdir: Path, timeout_s: 
     }
 
 
-def measure_run(harness_code: str, inputs: list[dict], seed: int, timeout_s: float = 400) -> dict:
+def measure_run(harness_code: str, inputs: list[dict], seed: int, timeout_s: float = 400,
+                shared: bool = False) -> dict:
     with tempfile.TemporaryDirectory(prefix="rsc-") as d:
         workdir = Path(d)
         t0 = time.monotonic()
         paths, sizes = prepare_inputs(inputs, workdir, seed)
         prep_s = time.monotonic() - t0
-        out = run_workload(harness_code, paths, workdir, timeout_s)
+        out = run_workload(harness_code, paths, workdir, timeout_s, shared=shared)
     out["input_bytes"] = sizes
     out["prep_s"] = prep_s
     return out

@@ -162,7 +162,7 @@ def test_factory_graph():
     assert set(g._nodes[ARTIFACT_ARM].partitions) == {PARTITION_RELEASE, PARTITION_ARM}
 
 
-@pytest.mark.parametrize("pkg", ["resource_tuner.bench_cpu", "resource_tuner.bench_gpu"])
+@pytest.mark.parametrize("pkg", ["resource_tuner.bench_cpu", "resource_tuner.bench_gpu", "resource_tuner.bench_all"])
 def test_no_lazy_package_imports(pkg):
     import ast
     import importlib
@@ -211,3 +211,49 @@ def test_time_budget_env_is_read_by_every_family():
     for fam in FAMILIES:
         assert 'os.environ.get("TIME_BUDGET_S"' in render_harness(make_task(fam, 0))
     assert os.environ.get("TIME_BUDGET_S") is None
+
+
+def test_release_prefix_sets_corpus_size():
+    sizes = {"small": 10, "full": 40}
+    assert common.tasks_for_release("small-1", sizes) == 10
+    assert common.tasks_for_release("full-2", sizes) == 40
+    with pytest.raises(ValueError):
+        common.tasks_for_release("medium-1", sizes)
+
+
+def test_big_profile_fits_a_pinned_slot():
+    """big releases pin each workload to SLOT_CORES cores: no pool may ask for more."""
+    assert common.profile_for_release("big-1") == "big" and common.profile_for_release("full-1") == "default"
+    for fam in FAMILIES:
+        for seed in range(8):
+            t = make_task(fam, seed, profile="big")
+            if t.memory_driver in ("io", "gil"):  # one core under the GIL, whatever the pool
+                continue
+            pool = max([v for k, v in t.knobs.items() if k in ("threads", "processes", "jobs") and v] or [1])
+            assert pool < measure.SLOT_CORES, (fam, t.knobs)
+            assert any(f'"{b}"' in render_harness(t) for b in (30, 45, 60)), fam
+    # the profile is scoped to the call: the default release is unchanged
+    assert any(f'"{b}"' in render_harness(make_task("numpy_blas", 0)) for b in (60, 75, 90))
+    rows = dataset.generate_runs(1, seed=0, profile="big")
+    assert {r["profile"] for r in rows} == {"big"}
+
+
+def test_tree_cpu_keeps_exited_children(monkeypatch):
+    """A shared-pod run reads its process tree; a pool that shuts down must not lose its CPU."""
+    monkeypatch.setenv("TIME_BUDGET_S", "3")
+    t = make_task("process_pool", 3, profile="big")
+    m = measure.measure_run(render_harness(t), [scale_input(s, 0.05) for s in t.inputs], seed=0, timeout_s=60,
+                            shared=True)
+    assert m["ok"], m["error"]
+    assert m["cpu_source"] == "psutil"
+    # the sampled total accounts for the kernel's (wait4) total, workers included
+    assert m["cpu_s"] >= 0.8 * m["ru_cpu_s"] > 0
+
+
+@pytest.mark.skipif(not hasattr(os, "sched_getaffinity"), reason="Linux affinity")
+def test_slot_cpus_are_disjoint():
+    n = len(os.sched_getaffinity(0))
+    if n < 2:
+        pytest.skip("one core")
+    a, b = measure.slot_cpus(2, n // 2)
+    assert a and b and not a & b

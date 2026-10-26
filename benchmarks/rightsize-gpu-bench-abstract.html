@@ -1,0 +1,190 @@
+<title>RightSizeGPU Bench Abstract</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a paper-style abstract. One paragraph, then the results (chart, table, findings), then the setup and definitions in compact form. Same tokens as the full RightSizeGPU, RightSizeCPU and RightSizeMem reports. */
+:root {
+  --bg: #f5f6f9;
+  --panel: #ffffff;
+  --ink: #161823;
+  --muted: #5d6273;
+  --rule: #dcdfe8;
+  --tint: #eef0fb;
+  --accent: #4d65ff;     /* decision model */
+  --warm: #c9760a;       /* autoregressive LLM */
+  --tree: #1f9b6a;       /* classical ML */
+  --rule-c: #8a8fa0;     /* rules */
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+    --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+  --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 860px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; display: grid; gap: 30px; }
+header { display: grid; gap: 10px; }
+.eyebrow, .label { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.label { color: var(--accent); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(36px, 6vw, 52px); line-height: 1.02; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 24px; line-height: 1.15; margin: 0; text-wrap: balance; }
+p { margin: 0; max-width: 68ch; }
+section { display: grid; gap: 14px; min-width: 0; }
+.status { justify-self: start; font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; color: var(--warm); border: 1px solid color-mix(in srgb, var(--warm) 45%, transparent); border-radius: 999px; padding: 3px 12px; }
+.abstract { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 20px 22px; display: grid; gap: 10px; }
+.abstract p { font-size: 16.5px; max-width: none; text-wrap: pretty; }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 16px 10px; min-width: 0; }
+.figure svg { display: block; width: 100%; height: auto; }
+.caption { font-size: 13px; color: var(--muted); margin-top: 6px; max-width: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+td.best { font-weight: 600; }
+ol.findings { margin: 0; padding: 0; list-style: none; display: grid; gap: 14px; }
+ol.findings li { display: grid; grid-template-columns: 112px 1fr; gap: 16px; align-items: baseline; }
+ol.findings .n { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.05; font-variant-numeric: tabular-nums; }
+ol.findings b { font-weight: 600; }
+@media (max-width: 560px) { ol.findings li { grid-template-columns: 1fr; gap: 2px; } }
+dl.defs { display: grid; grid-template-columns: minmax(140px, 190px) 1fr; gap: 9px 20px; margin: 0; }
+dl.defs dt { font-weight: 600; }
+dl.defs dd { margin: 0; min-width: 0; }
+@media (max-width: 560px) { dl.defs { grid-template-columns: 1fr; gap: 2px 0; } dl.defs dd { margin-bottom: 8px; } }
+.mono { font-family: var(--font-mono); font-size: .9em; }
+.muted { color: var(--muted); }
+footer { padding-top: 16px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); display: grid; gap: 4px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Union model factory · round 18 · October 2026</div>
+    <h1>RightSizeGPU Bench: choosing a GPU from code</h1>
+    <span class="status">Initial results · small release (small-1) · a 5× larger release is running</span>
+  </header>
+
+  <div class="abstract">
+    <div class="label">Abstract</div>
+    <p>A GPU task picks its device before it runs. If its peak GPU memory does not fit, it dies with a CUDA out-of-memory error and is retried on a bigger GPU; if the GPU is larger than needed, the cluster pays for idle memory. RightSizeGPU Bench measures how well different approaches predict a PyTorch task's <b>peak GPU memory</b>, which decides the cheapest GPU that holds it (T4 at 15 GiB, L4 at 22 GiB, L40S at 44 GiB on this cluster), and its <b>mean GPU utilization</b>. The small release has 128 runs of generated PyTorch task code from 8 families, each measured on a T4 with NVML, the library Union's GPU monitoring reads, and each lasting 2–3 minutes so it covers at least 4 of the platform's 30-second samples. Every approach sees only the code, the input metadata and the task's earlier runs, and is scored on the share of runs whose predicted peak is <b>within ±20%</b> of the measured one.</p>
+    <p>With 60 training runs, no approach predicts GPU memory reliably yet. The best is a rule on input size at 54.5% of test runs, and a fine-tuned 1.7B model at 50.0% on two families held out of training; a single static request manages 9.1%. Dollars barely separate approaches, because 124 of 126 usable runs fit on a T4, the cheapest GPU, so any prediction up to 15 GiB costs the same. Utilization barely varies either: 108 of 126 runs averaged 90–100%. These results establish that the benchmark measures what the platform measures, end to end, in 40 minutes and 5.7 T4-hours. A release 5 times larger is running to rank the approaches.</p>
+  </div>
+
+  <section>
+    <div class="label">Results</div>
+    <h2>Peak GPU memory predicted within ±20%, by approach</h2>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--rule-c)"></span>rule</span>
+      <span><span class="kind" style="background:var(--tree)"></span>classical ML</span>
+      <span><span class="kind" style="background:var(--warm)"></span>autoregressive LLM</span>
+      <span><span class="kind" style="background:var(--accent)"></span>decision model</span>
+    </div>
+    <div class="figure"><svg id="board" viewBox="0 0 860 420" role="img" aria-label="Share of runs with peak GPU memory predicted within 20 percent, test split and unseen families"></svg>
+      <p class="caption">Bar length is the share of runs whose predicted peak GPU memory was within ±20% of the measured peak (or 0.5 GiB for small peaks). Longer is better; the oracle scores 100%. Solid bars: test split (22 runs). Outlined bars: the two unseen families (30 runs scored on memory). One run is 3 to 5 points; differences under about 20 points are within noise.</p></div>
+    <div class="figure table-wrap"><table id="boardtable"></table>
+      <p class="caption">Within 1 cell: the prediction is the oracle's size or a neighbour. OOM: the first GPU was too small. $ regret: dollars over the oracle, counting failed attempts and a delay penalty per OOM. Util ±10: predicted utilization within 10 points. On unseen families every approach had 0% OOM and 0% regret, because every unseen run fit on a T4. Bold marks the best value in each column.</p></div>
+  </section>
+
+  <section>
+    <h2>Four findings</h2>
+    <ol class="findings">
+      <li><span class="n">55% / 50%</span><span><b>GPU memory is the open problem at this size.</b> The size rule leads on test (54.5%) and fine-tuned SFT on unseen families (50.0%), and the history-based rule is level with both. The 1.7B decision model, trained on only 60 runs, put most of its probability on one size for every run, so its two decodings score identically. It needs the larger release before it says anything.</span></li>
+      <li><span class="n">124 of 126</span><span><b>On this cluster the device choice is almost free.</b> Nearly every run fits on a T4, so a prediction of 4 GiB and one of 12 GiB cost the same. An earlier scoring that decoded for lowest cost made every probabilistic approach predict 15 GiB for everything. Memory accuracy, which a scheduler needs to pack and share GPUs, is therefore the headline, and the device and dollars follow from it.</span></li>
+      <li><span class="n">108 of 126</span><span><b>Utilization saturates.</b> <span class="mono">GPU_UTIL</span> counts the share of time any kernel is running, so a constant "90–100%" is right for about 9 in 10 runs. Only the data-loader family with per-pixel Python augmentation and some recommender runs leave the GPU idle. The zero-shot 27B model does worst here (41% within 10 points on unseen families): it assumes small models idle the GPU, which by this metric they do not.</span></li>
+      <li><span class="n">7 runs</span><span><b>Convolutional nets fill the GPU.</b> cuDNN's algorithm search grows into whatever memory is free, so 7 runs peaked at the T4's full 15 GiB and still succeeded. A platform reading peak memory for such a task sees the GPU's size, not the task's need. These runs are scored on device choice only.</span></li>
+    </ol>
+  </section>
+
+  <section>
+    <div class="label">Setup</div>
+    <h2>How the benchmark works</h2>
+    <dl class="defs">
+      <dt>Workloads</dt><dd>8 families of PyTorch code: a tabular MLP, a CNN, a GPT-style language model, transformer-encoder inference, a two-tower recommender, a CNN starved by its CPU data loader, a blocked similarity matrix, and nearest-neighbour search. A generator varies model width and depth, batch, sequence length, vocabulary, mixed precision, gradient checkpointing, optimizer, and what is kept on the GPU. Each task runs twice, on inputs 0.5× to 2× its base size, for 120 to 180 seconds.</dd>
+      <dt>Labels</dt><dd>Each run executes alone on a T4. NVML is sampled every 0.5 seconds: <span class="mono">memory.used</span> (what <span class="mono">DCGM_FI_DEV_FB_USED</span> reports, including the CUDA context and PyTorch's cached memory) and <span class="mono">utilization.gpu</span>. The memory label is the smallest of 12 sizes (1 to 44 GiB) covering the peak; runs that ran out of memory are re-measured on an L40S. Utilization is labelled in 10-point buckets.</dd>
+      <dt>Splits</dt><dd>Split by task: 60 train, 12 validation and 22 test runs from 6 families, plus 32 runs from 2 families held out entirely (the recommender and nearest-neighbour search). 2 runs that failed even on the 44 GiB L40S are excluded.</dd>
+      <dt>Approaches</dt><dd><b>Rules:</b> one static request; the task's largest past peak times a margin; a power law of input size. <b>Trees:</b> gradient-boosted quantile regression on 70 features, and the same trees read as a distribution. <b>Autoregressive LLMs:</b> a zero-shot 27B model, and Qwen3-1.7B fine-tuned with LoRA to write the answer. <b>Decision model:</b> the same LoRA setup with a head that scores each option written in the prompt. All fine-tuning on one T4.</dd>
+    </dl>
+    <h2>Key terms</h2>
+    <dl class="defs">
+      <dt>Peak GPU memory</dt><dd>The most GPU memory in use at any moment of the run. A run needs a GPU whose usable memory covers it.</dd>
+      <dt>Within ±20%</dt><dd>The predicted peak is within 20% of the measured peak, or within 0.5 GiB for small peaks. The headline metric.</dd>
+      <dt>Device ladder</dt><dd>T4 (15 GiB, $0.53/h), L4 (22 GiB, $0.98/h), L40S (44 GiB, $2.24/h). A prediction runs on the cheapest GPU that holds it. The A10G (22 GiB, $1.21/h) is never the cheapest.</dd>
+      <dt>GPU regret</dt><dd>Dollars to finish every run, counting a failed attempt up to the point of its peak, the retry on the next GPU up, and one oracle-priced run of delay per OOM, divided by the oracle's dollars, minus 1.</dd>
+      <dt>GPU utilization</dt><dd>The share of time a GPU kernel was running, averaged over the run. It does not measure how much of the GPU each kernel used.</dd>
+      <dt>Why 2–3 minutes</dt><dd>Union's dcgm-exporter samples the GPU every 30 seconds, so a run needs a few minutes for the platform to see it. Keeping runs short keeps the benchmark's GPU usage small.</dd>
+    </dl>
+  </section>
+
+  <footer>
+    <div>Full report with methodology, chart reading guides and limits: <a href="https://claude.ai/artifact/VTKpd9U7jW3JS3YLBqj9cw">RightSizeGPU Bench</a>.</div>
+    <div>Source: <span class="mono">model-factory-resource-tuner/resource_tuner/bench_gpu/</span> · research log <span class="mono">research_log/2026-10-23-round-18-rightsize-cpu-gpu.md</span> · run <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-small-4">rsg-small-4</a> on demo.hosted.unionai.cloud.</div>
+  </footer>
+</div>
+
+<script>
+// [test ±20%, test within 1 cell, test MAE GiB, test OOM, test $ regret, test util ±10, unseen ±20%, unseen util ±10]
+const ARMS = {"static":[0.0909,0.5455,2.1935,0.0909,0.165,0.9091,0.2333,0.875],"vpa":[0.4091,0.7727,1.4914,0.0455,0.0838,0.9545,0.4333,0.9375],"size-rule":[0.5455,0.8182,1.3933,0.0455,0.0838,0.9545,0.3667,0.9375],"gbt":[0.3636,0.6818,1.98,0.0909,0.165,0.9091,0.3,0.875],"gbt-dist":[0.5,0.6364,1.9486,0.0909,0.165,0.9091,0.2,0.875],"zeroshot-27b":[0.3636,0.5455,2.7919,0.0455,0.0838,0.6818,0.4,0.4062],"sft-greedy":[0.5,0.5,2.3186,0.0909,0.165,0.9091,0.5,0.875],"sft-sampled":[0.3182,0.5,2.3309,0.0909,0.165,0.9091,0.3667,0.875],"jev-pointer-argmax":[0.3636,0.3636,2.518,0.0909,0.165,0.9091,0.3,0.875],"jev-pointer":[0.3636,0.3636,2.518,0.0909,0.165,0.9091,0.3,0.875]};
+const LABEL = {
+  "static": "static request", "vpa": "history max × margin", "size-rule": "size rule",
+  "gbt": "trees (gbt)", "gbt-dist": "trees, distribution", "zeroshot-27b": "zero-shot 27B",
+  "sft-greedy": "SFT 1.7B, greedy", "sft-sampled": "SFT 1.7B, 8 samples",
+  "jev-pointer-argmax": "decision 1.7B, argmax", "jev-pointer": "decision 1.7B, pointer"
+};
+const ORDER = Object.keys(LABEL);
+const KIND = a => a.startsWith("jev") ? "dec" : a.startsWith("sft") || a.startsWith("zeroshot") ? "llm" : a.startsWith("gbt") ? "tree" : "rule";
+const COLOR = { rule: "var(--rule-c)", tree: "var(--tree)", llm: "var(--warm)", dec: "var(--accent)" };
+const NS = "http://www.w3.org/2000/svg", MONO = "IBM Plex Mono, monospace";
+const pct = x => (x * 100).toFixed(1) + "%";
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+(function () {
+  const svg = document.getElementById("board"), L = 200, R = 56, T = 8, rowH = 39;
+  const W = 860 - L - R, x = v => L + W * v;
+  svg.setAttribute("viewBox", `0 0 860 ${T + rowH * ORDER.length + 28}`);
+  [0, 0.25, 0.5, 0.75, 1].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * ORDER.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * ORDER.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v * 100) + "%");
+  });
+  ORDER.forEach((a, i) => {
+    const d = ARMS[a], y = T + i * rowH, c = COLOR[KIND(a)];
+    el("text", { x: L - 10, y: y + 17, "text-anchor": "end", "font-size": 13, fill: "var(--ink)" }, svg, LABEL[a]);
+    el("rect", { x: L, y: y + 5, width: Math.max(1, x(d[0]) - L), height: 13, rx: 2, fill: c }, svg);
+    el("rect", { x: L, y: y + 21, width: Math.max(1, x(d[6]) - L), height: 11, rx: 2, fill: "none", stroke: c, "stroke-width": 1.5 }, svg);
+    el("text", { x: x(d[0]) + 6, y: y + 16, "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, pct(d[0]));
+    el("text", { x: x(d[6]) + 6, y: y + 31, "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, pct(d[6]));
+  });
+})();
+(function () {
+  const cols = [[0, "test ±20%", 1, pct], [1, "test 1 cell", 1, pct], [2, "test MAE GiB", -1, v => v.toFixed(2)], [3, "test OOM", -1, pct], [4, "test $ regret", -1, pct], [5, "test util ±10", 1, pct], [6, "unseen ±20%", 1, pct], [7, "unseen util ±10", 1, pct]];
+  const best = {};
+  cols.forEach(([k, , dir]) => { const vs = ORDER.map(a => ARMS[a][k]); best[k] = dir > 0 ? Math.max(...vs) : Math.min(...vs); });
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td><span class="kind" style="background:${COLOR[KIND(a)]}"></span>${LABEL[a]}</td>`;
+    cols.forEach(([k, , , f]) => { h += `<td class="${ARMS[a][k] === best[k] ? "best" : ""}">${f(ARMS[a][k])}</td>`; });
+    h += "</tr>";
+  });
+  document.getElementById("boardtable").innerHTML = h + "</tbody>";
+})();
+</script>

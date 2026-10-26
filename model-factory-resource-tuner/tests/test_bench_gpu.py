@@ -162,3 +162,27 @@ def test_a_device_bound_peak_is_not_scored_for_memory_accuracy(splits):
     preds = {r["run_id"]: {"gmem_idx": r["label_gmem_idx"], "util_idx": 0} for r in rows}
     s = scoring.score(rows, preds)
     assert s["n_mem_scored"] == 0 and s["device_exact"] == 1.0
+
+
+def test_encoder_outputs_on_device_are_bounded():
+    """keep_on_gpu flushes to the host every `flush` batches: its peak cannot grow with run time."""
+    seen = 0
+    for seed in range(40):
+        t = make_task("encoder_infer", seed)
+        if t.knobs["keep_on_gpu"]:
+            seen += 1
+            assert f"if len(kept) == {t.knobs['flush']}:" in render_task(t)
+    assert seen
+
+
+def test_big_profile_halves_the_budget():
+    for fam in FAMILIES:
+        assert any(f'"{b}"' in render_harness(make_task(fam, 1, profile="big")) for b in (60, 90, 120)), fam
+
+
+def test_grad_enabled_inference_detaches_its_outputs():
+    """Without inference_mode every kept output pins its forward graph: the peak
+    would grow with the run, not the code (round 19: all such runs OOMed an L40S)."""
+    for seed in range(40):
+        t = make_task("encoder_infer", seed)
+        assert ("emb = emb.detach()" in render_task(t)) == (not t.knobs["no_grad"])

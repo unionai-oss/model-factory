@@ -25,9 +25,11 @@ from ..bench.common import (
     hosted_subsample,
     pred_rows,
     preds_by_variant,
+    profile_for_release,
     read_arm,
     read_rows,
     shard,
+    tasks_for_release,
     usable_by_split,
     write_arm_dir,
     write_parquet,
@@ -38,18 +40,26 @@ from ..bench.versioning import cpu_arms_cache, cpu_corpus_cache
 from ..shared.reporting import Reporter
 from . import arms as cpu_arms
 from . import dataset, grid, scoring
-from .envs import cpu_measure_env, cpubench_env
-from .measure import measure_run
+from .envs import cpu_measure_env, cpu_measure_pair_env, cpubench_env
+from .measure import measure_run, slot_cpus
 from .spec import CPU
 
 TITLE = CPU.title
 
 
+#: Tasks per family by release prefix. A full release is ~4x small: the
+#: learned arms were data-starved at small (GPU jev-pointer fit a constant).
+#: big is RightSizeMem v2's order of magnitude: 11 x 450 x 2 = 9,900 runs.
+RELEASE_TASKS = {"small": 10, "full": 40, "big": 450}
+
+
 @cpubench_env.task(cache=cpu_corpus_cache(), report=True)
-async def generate_cpu_runs(release: str, tasks_per_family: int = 10, seed: int = 0,
+async def generate_cpu_runs(release: str, tasks_per_family: int = 0, seed: int = 0,
                             runs_per_task: int = 2) -> flyte.io.File:
-    rows = dataset.generate_runs(tasks_per_family, seed=seed, runs_per_task=runs_per_task)
-    rep = Reporter(f"{TITLE}: workloads", f"release {release}")
+    tasks_per_family = tasks_per_family or tasks_for_release(release, RELEASE_TASKS)
+    profile = profile_for_release(release)
+    rows = dataset.generate_runs(tasks_per_family, seed=seed, runs_per_task=runs_per_task, profile=profile)
+    rep = Reporter(f"{TITLE}: workloads", f"release {release}, profile {profile}")
     by = pd.DataFrame(rows).groupby(["family", "split"]).size().unstack(fill_value=0)
     rep.kv({"tasks": len({r["task_id"] for r in rows}), "runs": len(rows)})
     rep.table(["family", *by.columns], [[f, *map(str, v)] for f, v in zip(by.index, by.values.tolist())])
@@ -57,9 +67,9 @@ async def generate_cpu_runs(release: str, tasks_per_family: int = 10, seed: int 
     return await flyte.io.File.from_local(write_parquet(rows, "runs.parquet"))
 
 
-def _measure_one(r: dict) -> dict:
+def _measure_one(r: dict, shared: bool = False) -> dict:
     try:
-        m = measure_run(r["harness_code"], json.loads(r["inputs_json"]), seed=r["seed"])
+        m = measure_run(r["harness_code"], json.loads(r["inputs_json"]), seed=r["seed"], shared=shared)
     except Exception as e:  # noqa: BLE001 -- a broken prep is a result, not a crash
         m = {"ok": False, "error": f"prep: {type(e).__name__}: {e}"[:500]}
     print(f"{r['run_id']}: ok={m.get('ok')} peak={m.get('peak_cores', 0):.2f} mean={m.get('mean_cores', 0):.2f} "
@@ -69,20 +79,43 @@ def _measure_one(r: dict) -> dict:
 
 # One workload at a time: CPU is what is measured. retries=3 / max_runtime:
 # interruptible pods (a spot reclaim must become a retry, not a stuck
-# RUNNING action -- rsb-v2-corpus-1).
-@cpu_measure_env.task(retries=3, cache=cpu_corpus_cache(), timeout=flyte.Timeout(max_runtime=3600))
+# RUNNING action -- rsb-v2-corpus-1). A shard of 3 runs takes ~6 min.
+@cpu_measure_env.task(retries=3, cache=cpu_corpus_cache(), timeout=flyte.Timeout(max_runtime=1200))
 async def measure_cpu_shard(rows_json: str) -> str:
     return json.dumps([_measure_one(r) for r in json.loads(rows_json)])
 
 
+def _slot(cpus: set[int], rows: list[dict]) -> list[dict]:
+    # Linux affinity is per thread and inherited by children: input prep and
+    # the workload both run on this slot's cores only.
+    os.sched_setaffinity(0, cpus)
+    return [_measure_one(r, shared=True) for r in rows]
+
+
+# Two pinned slots per pod (big releases), each working through half the
+# shard. 8 runs of ~45 s + prep ~= 4 min of work.
+@cpu_measure_pair_env.task(retries=3, cache=cpu_corpus_cache(), timeout=flyte.Timeout(max_runtime=1200))
+async def measure_cpu_pair_shard(rows_json: str) -> str:
+    rows = json.loads(rows_json)
+    slots = slot_cpus(2)
+    halves = await asyncio.gather(*(asyncio.to_thread(_slot, cpus, rows[i::2]) for i, cpus in enumerate(slots)))
+    return json.dumps([m for h in halves for m in h])
+
+
 @cpubench_env.task(cache=cpu_corpus_cache(), report=True)
-async def measure_cpu_bench(runs: flyte.io.File, shard_size: int = 6) -> flyte.io.File:
+async def measure_cpu_bench(runs: flyte.io.File, shard_size: int = 3, pairing: str = "auto") -> flyte.io.File:
+    """`pairing`: "auto" pairs big releases; "pair" / "single" force it (the pilot
+    measures one set of runs both ways to check the pinned slots against the cgroup)."""
     rows = await read_rows(runs)
+    paired = pairing == "pair" or (pairing == "auto" and bool(rows) and rows[0].get("profile") == "big")
+    shard_size = 8 if paired else shard_size
     shards = shard(rows, ("run_id", "harness_code", "inputs_json", "seed"), shard_size)
-    rep = Reporter(f"{TITLE}: measurement", f"{len(rows)} runs in {len(shards)} shards, one at a time per pod")
+    how = "two pinned slots of 7 cores per pod" if paired else "one at a time per pod"
+    rep = Reporter(f"{TITLE}: measurement", f"{len(rows)} runs in {len(shards)} shards, {how}")
     await rep.flush()
     measured: dict[str, dict] = {}
-    lost = collect(await asyncio.gather(*(measure_cpu_shard(s) for s in shards), return_exceptions=True), measured)
+    run_shard = measure_cpu_pair_shard if paired else measure_cpu_shard
+    lost = collect(await asyncio.gather(*(run_shard(s) for s in shards), return_exceptions=True), measured)
     if lost > 0.1 * len(shards):
         raise RuntimeError(f"{lost}/{len(shards)} measurement shards failed; first error above")
     table = [dataset.attach_measurement(r, measured.get(r["run_id"], {"ok": False, "error": "shard lost"})) for r in rows]
@@ -91,7 +124,9 @@ async def measure_cpu_bench(runs: flyte.io.File, shard_size: int = 6) -> flyte.i
     rep.reset_body()
     rep.kv({"runs": len(df), "measured ok": len(ok), "failed": int((~df["ok"]).sum()), "shards lost": lost,
             "cpu source": ", ".join(sorted(set(ok["cpu_source"]))) if len(ok) else "-",
-            "median wall": f"{ok['wall_s'].median():.0f} s" if len(ok) else "-"})
+            "median wall": f"{ok['wall_s'].median():.0f} s" if len(ok) else "-",
+            "sampled / kernel CPU s (median)": f"{(ok['cpu_s'] / ok['ru_cpu_s'].clip(lower=1e-6)).median():.3f}"
+            if len(ok) and "ru_cpu_s" in ok else "-"})
     fam = ok.groupby("family").agg(runs=("run_id", "size"), peak50=("peak_cores", "median"),
                                    peak_max=("peak_cores", "max"), mean50=("mean_cores", "median"))
     rep.h("Per family (cores)")
@@ -106,7 +141,7 @@ async def measure_cpu_bench(runs: flyte.io.File, shard_size: int = 6) -> flyte.i
 
 
 CPU_ARMS = tuple(cpu_arms.ARMS)
-GPU_ARMS = ("sft", "jev", "jev-pointer")
+GPU_ARMS = ("sft", "jev", "jev-pointer", "jev-pointer-4b")
 HOSTED_ARMS = {"zeroshot-27b": "qwen38-27b-vllm"}
 ALL_ARMS = CPU_ARMS + tuple(HOSTED_ARMS) + GPU_ARMS
 _EVAL_SPLITS = ("val", "test", "ood")
@@ -164,7 +199,8 @@ async def score_cpu_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str) 
 
 
 HEADLINE = ("static", "vpa", "code-rule", "gbt", "gbt-dist", "zeroshot-27b", "sft-greedy", "sft-sampled",
-            "jev-argmax", "jev", "jev-pointer-argmax", "jev-pointer")
+            "jev-argmax", "jev", "jev-pointer-argmax", "jev-pointer",
+            "jev-pointer-4b-argmax", "jev-pointer-4b")
 
 
 @cpubench_env.task(cache=cpu_arms_cache(), report=True)
@@ -218,10 +254,11 @@ async def cpu_peek(corpus: flyte.io.File | None = None, artifact_file: flyte.io.
 
 
 @cpubench_env.task
-async def cpu_pilot(release: str = "pilot", tasks_per_family: int = 1, shard_size: int = 4) -> flyte.io.File:
+async def cpu_pilot(release: str = "pilot", tasks_per_family: int = 1, shard_size: int = 4,
+                    pairing: str = "auto") -> flyte.io.File:
     """generate -> measure, for shaking out the pipeline before a factory run."""
     runs = await generate_cpu_runs(release, tasks_per_family)
-    return await measure_cpu_bench(runs, shard_size)
+    return await measure_cpu_bench(runs, shard_size, pairing)
 
 
 __all__ = ["grid"]

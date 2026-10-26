@@ -33,9 +33,6 @@ ARTIFACT_LEADERBOARD = "rt-cpubench-leaderboard"
 PARTITION_RELEASE = "release"
 PARTITION_ARM = "arm"
 
-#: The small release: 11 families x 10 tasks x 2 runs = 220 measured runs.
-TASKS_PER_FAMILY = 10
-
 
 def _task(name: str):
     return Task.get(name, auto_version="latest")
@@ -44,8 +41,7 @@ def _task(name: str):
 def build_graph() -> factory.Factory:
     runs = factory.build(ARTIFACT_RUNS, partitions={PARTITION_RELEASE: str}, kind="data",
                          description="RightSizeCPU workloads: task code + input specs, one row per run",
-                         ).using(_task("rt-cpubench.generate_cpu_runs"), release=factory.partition(PARTITION_RELEASE),
-                                 tasks_per_family=TASKS_PER_FAMILY)
+                         ).using(_task("rt-cpubench.generate_cpu_runs"), release=factory.partition(PARTITION_RELEASE))
     corpus = factory.build(ARTIFACT_CORPUS, kind="data",
                            description="Every run executed alone in a 9-CPU pod; CPU sampled per second from the cgroup",
                            ).using(_task("rt-cpubench.measure_cpu_bench"), runs=runs)

@@ -25,9 +25,11 @@ from ..bench.common import (
     hosted_subsample,
     pred_rows,
     preds_by_variant,
+    profile_for_release,
     read_arm,
     read_rows,
     shard,
+    tasks_for_release,
     usable_by_split,
     write_arm_dir,
     write_parquet,
@@ -45,11 +47,19 @@ from .spec import GPU
 TITLE = GPU.title
 
 
+#: Tasks per family by release prefix. A full release is ~4x small: the
+#: learned arms were data-starved at small (GPU jev-pointer fit a constant).
+#: big is RightSizeMem v2's order of magnitude: 8 x 625 x 2 = 10,000 runs.
+RELEASE_TASKS = {"small": 8, "full": 40, "big": 625}
+
+
 @gpubench_env.task(cache=gpu_corpus_cache(), report=True)
-async def generate_gpu_runs(release: str, tasks_per_family: int = 8, seed: int = 0,
+async def generate_gpu_runs(release: str, tasks_per_family: int = 0, seed: int = 0,
                             runs_per_task: int = 2) -> flyte.io.File:
-    rows = dataset.generate_runs(tasks_per_family, seed=seed, runs_per_task=runs_per_task)
-    rep = Reporter(f"{TITLE}: workloads", f"release {release}")
+    tasks_per_family = tasks_per_family or tasks_for_release(release, RELEASE_TASKS)
+    profile = profile_for_release(release)
+    rows = dataset.generate_runs(tasks_per_family, seed=seed, runs_per_task=runs_per_task, profile=profile)
+    rep = Reporter(f"{TITLE}: workloads", f"release {release}, profile {profile}")
     by = pd.DataFrame(rows).groupby(["family", "split"]).size().unstack(fill_value=0)
     rep.kv({"tasks": len({r["task_id"] for r in rows}), "runs": len(rows)})
     rep.table(["family", *by.columns], [[f, *map(str, v)] for f, v in zip(by.index, by.values.tolist())])
@@ -68,9 +78,10 @@ def _measure_one(r: dict) -> dict:
     return {"run_id": r["run_id"], **{k: v for k, v in m.items() if k != "result"}}
 
 
-# One workload per GPU. max_runtime: a shard of 5 runs takes ~15-20 min; the
-# timeout turns a node lost mid-shard into a retry.
-@gpu_measure_env.task(retries=2, cache=gpu_corpus_cache(), timeout=flyte.Timeout(max_runtime=3600))
+# One workload per GPU. max_runtime: a shard of 3 runs takes ~10-12 min (6
+# runs of a big release's shorter budgets, about the same); the timeout turns
+# a node lost mid-shard into a retry.
+@gpu_measure_env.task(retries=2, cache=gpu_corpus_cache(), timeout=flyte.Timeout(max_runtime=1800))
 async def measure_gpu_shard(rows_json: str) -> str:
     return json.dumps([_measure_one(r) for r in json.loads(rows_json)])
 
@@ -83,9 +94,11 @@ async def measure_gpu_shard_big(rows_json: str) -> str:
 
 
 @gpubench_env.task(cache=gpu_corpus_cache(), report=True)
-async def measure_gpu_bench(runs: flyte.io.File, shard_size: int = 5) -> flyte.io.File:
+async def measure_gpu_bench(runs: flyte.io.File, shard_size: int = 3) -> flyte.io.File:
     rows = await read_rows(runs)
     keep = ("run_id", "harness_code", "inputs_json", "seed")
+    if rows and rows[0].get("profile") == "big":
+        shard_size = 6  # half-length budgets; ~1,700 shards instead of ~3,300
     shards = shard(rows, keep, shard_size)
     rep = Reporter(f"{TITLE}: measurement", f"{len(rows)} runs in {len(shards)} T4 shards")
     await rep.flush()
@@ -126,7 +139,7 @@ async def measure_gpu_bench(runs: flyte.io.File, shard_size: int = 5) -> flyte.i
 
 
 CPU_ARMS = tuple(gpu_arms.ARMS)
-GPU_ARMS = ("sft", "jev", "jev-pointer")  # LLM arms, trained on a T4
+GPU_ARMS = ("sft", "jev", "jev-pointer", "jev-pointer-4b")  # LLM arms, trained on a T4
 HOSTED_ARMS = {"zeroshot-27b": "qwen38-27b-vllm"}
 ALL_ARMS = CPU_ARMS + tuple(HOSTED_ARMS) + GPU_ARMS
 _EVAL_SPLITS = ("val", "test", "ood")
@@ -153,7 +166,11 @@ async def fit_gpu_arm(corpus: flyte.io.File, arm: str, llm_model: str = "Qwen/Qw
         preds, stats = await asyncio.to_thread(zeroshot_predict, eval_rows, HOSTED_ARMS[arm], spec=GPU)
         meta = {"stats": stats}
     elif arm in GPU_ARMS:
-        return await train_llm_arm(corpus, arm, llm_model, llm_epochs, llm_max_train_rows, bench="gpu")
+        # 14 h, not train_llm_arm's 8: big-1's sft arm (5,129 train runs, ~4,800
+        # to decode greedy + 8 samples) ran past 8 h. Overridden here, not in
+        # gpu_stations.py, which every LLM arm's cache version hashes.
+        return await train_llm_arm.override(timeout=flyte.Timeout(max_runtime=14 * 3600))(
+            corpus, arm, llm_model, llm_epochs, llm_max_train_rows, bench="gpu")
     else:
         raise ValueError(f"unknown arm {arm!r}; choose from {ALL_ARMS}")
     meta["arm"] = arm
@@ -184,7 +201,8 @@ async def score_gpu_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str) 
 
 
 HEADLINE = ("static", "vpa", "size-rule", "gbt", "gbt-dist", "zeroshot-27b", "sft-greedy", "sft-sampled",
-            "jev-argmax", "jev", "jev-pointer-argmax", "jev-pointer")
+            "jev-argmax", "jev", "jev-pointer-argmax", "jev-pointer",
+            "jev-pointer-4b-argmax", "jev-pointer-4b")
 
 
 @gpubench_env.task(cache=gpu_arms_cache(), report=True)

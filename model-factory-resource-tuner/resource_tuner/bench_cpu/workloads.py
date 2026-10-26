@@ -18,7 +18,8 @@ The measurement environment pins BLAS/OpenMP to one thread unless the code
 says otherwise (``measure._base_env``): an unsized pool is one thread here,
 and every prompt says so.
 
-Every workload loops until ``TIME_BUDGET_S`` (60-90 s), so a run spans
+Every workload loops until ``TIME_BUDGET_S`` (60-90 s; 30-60 s in the
+``big`` profile), so a run spans
 several 15-second platform windows and its peak is a sustained window, not
 an import-time spike. ``driver`` names what an arm had to understand:
 
@@ -33,6 +34,7 @@ an import-time spike. ``driver`` names what an arm had to understand:
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 from random import Random
 
 from ..bench.workloads import (
@@ -52,6 +54,26 @@ _BUDGETS = (60, 75, 90)
 #: Inputs vary 4x across a task's runs (RightSizeMem: 16x). Peak CPU barely
 #: moves with size; prep time and pod memory do.
 _SIZES = (0.5, 2.0)
+
+#: Workload profiles, chosen per release. ``big`` (RightSizeMem's scale, ~10^4
+#: runs) measures two workloads per 16-core node, each pinned to 7 cores
+#: (``measure.SLOT_CORES``), so its pools stop at 6; and it halves the time
+#: budget. A 30 s run still spans two 15 s platform windows.
+PROFILES: dict[str, tuple[tuple, tuple]] = {
+    "default": (_POOLS, _BUDGETS),
+    "big": ((1, 2, 2, 3, 4, 4, 6, 6), (30, 45, 60)),
+}
+
+
+@contextmanager
+def _profile(name: str):
+    global _POOLS, _BUDGETS
+    saved = _POOLS, _BUDGETS
+    _POOLS, _BUDGETS = PROFILES[name]
+    try:
+        yield
+    finally:
+        _POOLS, _BUDGETS = saved
 
 
 def _budget(rng: Random) -> str:
@@ -328,10 +350,11 @@ FAMILIES: dict[str, Family] = {
 HELDOUT_FAMILIES: tuple[str, ...] = ("duckdb_sql", "pyarrow_csv")
 
 
-def make_task(family: str, seed: int, n_runs: int = 2) -> Task:
+def make_task(family: str, seed: int, n_runs: int = 2, profile: str = "default") -> Task:
     fam = FAMILIES[family]
     rng = Random(seed)
-    spec = fam.make(rng)
+    with _profile(profile):
+        spec = fam.make(rng)
     lo, hi = fam.size_range
     factors = sorted(_log_uniform(rng, lo, hi) for _ in range(n_runs))
     rng.shuffle(factors)

@@ -207,3 +207,13 @@ dollars follow from the prediction.
   input-bound workloads; measure a subset on L4 to show device dependence.
 - Add the Qwen3-4B decision head and the gbt x decision pool (RightSizeMem's
   best policy) once the corpora are large enough to train them.
+
+## Correction (2026-10-24)
+
+Re-reading the small-1 corpus for the benchmark pages: the GPU arms trained
+on **60** usable runs, not 62 (findings 6 and the results header), and
+**124 of 126** usable GPU runs fit a T4 (98%), not "~95%" (finding 7). The
+rankings are unchanged. Round 19's full releases also overturn finding 3:
+at 4x the data the fine-tuned arms pass the zero-shot 27B on CPU
+([round-19](2026-10-23-round-19-rightsize-cpu-gpu-full.md)).
+

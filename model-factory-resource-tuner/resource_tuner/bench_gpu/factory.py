@@ -33,9 +33,6 @@ ARTIFACT_LEADERBOARD = "rt-gpubench-leaderboard"
 PARTITION_RELEASE = "release"
 PARTITION_ARM = "arm"
 
-#: The small release: 8 families x 8 tasks x 2 runs = 128 measured runs, ~6 T4-hours.
-TASKS_PER_FAMILY = 8
-
 
 def _task(name: str):
     return Task.get(name, auto_version="latest")
@@ -44,8 +41,7 @@ def _task(name: str):
 def build_graph() -> factory.Factory:
     runs = factory.build(ARTIFACT_RUNS, partitions={PARTITION_RELEASE: str}, kind="data",
                          description="RightSizeGPU workloads: PyTorch task code + input specs, one row per run",
-                         ).using(_task("rt-gpubench.generate_gpu_runs"), release=factory.partition(PARTITION_RELEASE),
-                                 tasks_per_family=TASKS_PER_FAMILY)
+                         ).using(_task("rt-gpubench.generate_gpu_runs"), release=factory.partition(PARTITION_RELEASE))
     corpus = factory.build(ARTIFACT_CORPUS, kind="data",
                            description="Every run on a T4 (CUDA OOMs again on an L40S); NVML memory and utilization every 0.5 s",
                            ).using(_task("rt-gpubench.measure_gpu_bench"), runs=runs)

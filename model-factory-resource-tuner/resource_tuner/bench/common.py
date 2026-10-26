@@ -89,6 +89,20 @@ async def read_arm(d: flyte.io.Dir) -> tuple[pd.DataFrame, dict]:
     return preds, meta
 
 
+def tasks_for_release(release: str, sizes: dict[str, int]) -> int:
+    """Tasks per family for a release, keyed by its name's prefix ("full-1" -> "full")."""
+    kind = release.split("-", 1)[0]
+    if kind not in sizes:
+        raise ValueError(f"release {release!r}: prefix must be one of {sorted(sizes)}")
+    return sizes[kind]
+
+
+def profile_for_release(release: str) -> str:
+    """The workload profile a release is generated with: ``big-*`` releases
+    (RightSizeMem's scale) use the ``big`` profile, every other the default."""
+    return "big" if release.split("-", 1)[0] == "big" else "default"
+
+
 def shard(rows: list[dict], keep: tuple[str, ...], size: int, seed: int = 0) -> list[str]:
     """Rows -> JSON shards of `size`, shuffled so heavy families spread out."""
     order = list(range(len(rows)))

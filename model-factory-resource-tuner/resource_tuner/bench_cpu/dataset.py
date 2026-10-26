@@ -32,16 +32,17 @@ def _split_for(task_id: str, family: str) -> str:
 
 
 def generate_runs(tasks_per_family: int, seed: int = 0, runs_per_task: int = 2,
-                  families: list[str] | None = None) -> list[dict]:
+                  families: list[str] | None = None, profile: str = "default") -> list[dict]:
     rng = Random(seed)
     rows: list[dict] = []
     for family in families or sorted(FAMILIES):
         for _ in range(tasks_per_family):
-            task = make_task(family, rng.randint(0, 2**31), n_runs=runs_per_task)
+            task = make_task(family, rng.randint(0, 2**31), n_runs=runs_per_task, profile=profile)
             code, harness = render_task(task), render_harness(task)
             for k in range(runs_per_task):
                 rows.append({
                     "bench": "cpu",
+                    "profile": profile,
                     "run_id": f"{task.task_id}-r{k}",
                     "task_id": task.task_id,
                     "family": family,
@@ -75,6 +76,8 @@ def attach_measurement(row: dict, m: dict) -> dict:
         "prep_s": float(m.get("prep_s") or 0.0),
         "peak_rss_mib": float(m.get("peak_rss_mib") or 0.0),
         "cpu_source": str(m.get("cpu_source") or ""),
+        "cpu_s": float(m.get("cpu_s") or 0.0),
+        "ru_cpu_s": float(m.get("ru_cpu_s") or 0.0),
         "cpu_series_json": json.dumps(m.get("cpu_series") or []),
     })
     out["label_peak_idx"] = grid.label_peak_index(out["peak_cores"])
