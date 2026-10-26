@@ -84,7 +84,8 @@ regret vs oracle (lower is better), v2 corpus (14,234 runs), from
 | **gbt-dist x jev-pointer, pooled** | **20.8%** | **1.7%** | **79.0%** | both |
 
 Full tables, live validation and caveats: [round-17](2026-10-15-round-17-rightsize-bench.md).
-Results page: `benchmarks/rightsize-mem-bench.html` at the repo root.
+Results page: `benchmarks/rightsize-mem-bench.html` at the repo root; every
+bench's pages are indexed in [`benchmarks/README.md`](../../benchmarks/README.md).
 
 The rounds 1-16 tables below were scored against analytic footprints, not
 measurements, and are superseded by the bench.
