@@ -29,6 +29,8 @@ ARTIFACT_CORPUS = "rt-gpubench-corpus"
 ARTIFACT_ARM = "rt-gpubench-arm"
 ARTIFACT_SCORECARD = "rt-gpubench-scorecard"
 ARTIFACT_LEADERBOARD = "rt-gpubench-leaderboard"
+ARTIFACT_POOL = "rt-gpubench-pool"
+ARTIFACT_POOL_SCORECARD = "rt-gpubench-pool-scorecard"
 
 PARTITION_RELEASE = "release"
 PARTITION_ARM = "arm"
@@ -52,8 +54,16 @@ def build_graph() -> factory.Factory:
                               description="Device cost with OOM retries, memory and utilization accuracy -- per split and slice",
                               ).using(_task("rt-gpubench.score_gpu_arm"), corpus=corpus, arm_dir=arm,
                                       arm=factory.partition(PARTITION_ARM))
+    # The pooled hybrids, built from every arm of the release: lineage records
+    # which tree and LLM arm versions each pool combined.
+    pool = factory.build(ARTIFACT_POOL, kind="model",
+                         description="gbt-dist x every distributional LLM variant, log pool, weight tuned on val",
+                         ).using(_task("rt-gpubench.pool_gpu_arms"), corpus=corpus, arm_dirs=arm.all(PARTITION_ARM))
+    pool_card = factory.build(ARTIFACT_POOL_SCORECARD, kind="data", description="The pooled hybrids' scorecard",
+                              ).using(_task("rt-gpubench.score_gpu_arm"), corpus=corpus, arm_dir=pool, arm="pool")
     board = factory.build(ARTIFACT_LEADERBOARD, kind="data", description="All arms side by side for one release",
-                          ).using(_task("rt-gpubench.gpu_leaderboard"), scorecards=scorecard.all(PARTITION_ARM))
+                          ).using(_task("rt-gpubench.gpu_leaderboard"), scorecards=scorecard.all(PARTITION_ARM),
+                                  pool_scorecard=pool_card)
     return factory.Factory(FACTORY_NAME, board,
                            description="RightSizeGPU Bench: predict GPU memory and utilization from code and input metadata")
 

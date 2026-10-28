@@ -16,6 +16,7 @@ from resource_tuner.bench_cpu.stations import (  # noqa: F401
     cpu_peek,
     cpu_pilot,
     fit_cpu_arm,
+    pool_cpu_arms,
     generate_cpu_runs,
     measure_cpu_bench,
     score_cpu_arm,

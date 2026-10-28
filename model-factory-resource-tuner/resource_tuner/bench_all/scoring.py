@@ -80,7 +80,7 @@ def stretch(row: dict, cores: float) -> float:
 def _cpu_task(row: dict, m: int, c: int, g: int) -> tuple[float, int, bool, float]:
     cores = grid.CPU_GRID[c]
     st = stretch(row, cores)
-    gpu_price = grid.DEVICES[grid.device_of(g)][2] if g != grid.NO_GPU else None
+    gpu_price = grid.DEVICES[grid.device_of(g)].price if g != grid.NO_GPU else None
     need, tpf = float(row["need_mib"]), float(row["t_peak_frac"])
     cost, attempts, mi = 0.0, 0, m
     while attempts < MAX_ATTEMPTS:
@@ -103,7 +103,7 @@ def _gpu_task(row: dict, m: int, c: int, g: int) -> tuple[float, int, bool, floa
         cost += dollars_per_hr(grid.MEMORY_GRID_MIB[m], grid.CPU_GRID[c]) * NO_GPU_FAIL_HOURS
         attempts += 1
         g = 1  # the platform's retry: the smallest cell, i.e. a T4
-    c2, att, failed = gpu_scoring.simulate(g - 1, peak, tpf)
+    c2, att, failed = gpu_scoring.simulate(g - 1, peak, tpf, *gpu_scoring.run_fit(row))
     return cost + c2, attempts + att, failed, 1.0
 
 

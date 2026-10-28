@@ -43,11 +43,45 @@ def test_every_family_renders_code_that_compiles(family):
 
 
 def test_device_ladder():
-    assert grid.DEVICES[grid.device_for(10)][0] == "T4"
-    assert grid.DEVICES[grid.device_for(20)][0] == "L4"  # the A10G holds as much and costs more
-    assert grid.DEVICES[grid.device_for(30)][0] == "L40S"
-    assert grid.DEVICES[grid.next_device_up(0)][0] == "L4"
-    assert grid.next_device_up(3) is None
+    name = lambda i: grid.DEVICES[i].name  # noqa: E731
+    assert name(grid.device_for(10)) == "T4"
+    assert name(grid.device_for(20)) == "L4"  # the A10G holds as much and costs more
+    assert name(grid.device_for(30)) == "L40S"
+    assert name(grid.device_for(60)) == "4xL4"
+    assert name(grid.device_for(100)) == "8xT4"
+    assert name(grid.device_for(150)) == "4xL40S"
+    assert name(grid.next_device_up(0)) == "L4"
+    assert name(grid.next_device_up(3)) == "4xL4"
+    assert grid.next_device_up(len(grid.DEVICES) - 1) is None
+
+
+def test_only_sharded_code_uses_a_multi_gpu_machine():
+    l4x4 = [d.name for d in grid.DEVICES].index("4xL4")
+    assert grid.fits(l4x4, 60.0, sharded=True, imbalance=1.0)
+    assert not grid.fits(l4x4, 60.0, sharded=False)  # one 22 GiB L4 does not hold 60
+    assert not grid.fits(l4x4, 80.0, sharded=True, imbalance=1.25)  # its busiest share does not fit
+    # the oracle then asks past 88 GiB, to land on the 8xT4
+    assert grid.DEVICES[grid.oracle_device(80.0, True, 1.25)].name == "8xT4"
+    assert grid.device_for(grid.GPU_MEM_GRID_GIB[grid.oracle_cell(80.0, True, 1.25)]) == grid.oracle_device(80.0, True, 1.25)
+    assert grid.oracle_device(60.0, sharded=False) is None
+
+
+def test_multi_gpu_samples_fold_into_one_peak():
+    """Four GPUs of a sharded run: the per-GPU peaks summed less three extra
+    contexts; on 4 GPUs the modelled busiest share is the measured one."""
+    samples = [(0.5 * i, [8000.0, 6000.0, 6000.0, 9000.0], [50.0] * 4) for i in range(10)]
+    m = measure.summarize(samples, [0.0] * 4, 5.0)
+    assert m["gpu_n_used"] == 4
+    assert m["peak_gpu_mib"] == pytest.approx(29000 - 3 * grid.CONTEXT_GIB * 1024)
+    share = grid.per_gpu_need(m["peak_gpu_mib"] / 1024, 4, True, m["gpu_imbalance"])
+    assert share * 1024 == pytest.approx(9000.0)
+
+
+def test_sharded_runs_climb_past_the_largest_gpu():
+    t4 = grid.mem_index_covering(4)
+    c, att, failed = scoring.simulate(t4, 60.0, 0.1, sharded=True, imbalance=1.1)
+    assert not failed and att == 4  # T4 -> L4 -> L40S -> 4xL4
+    assert scoring.simulate(t4, 60.0, 0.1, sharded=False)[2]  # single-GPU code: nothing holds it
 
 
 def test_oom_retries_up_the_ladder():
@@ -175,9 +209,9 @@ def test_encoder_outputs_on_device_are_bounded():
     assert seen
 
 
-def test_big_profile_halves_the_budget():
+def test_big_profile_shortens_the_budget():
     for fam in FAMILIES:
-        assert any(f'"{b}"' in render_harness(make_task(fam, 1, profile="big")) for b in (60, 90, 120)), fam
+        assert any(f'"{b}"' in render_harness(make_task(fam, 1, profile="big")) for b in (45, 60, 90)), fam
 
 
 def test_grad_enabled_inference_detaches_its_outputs():

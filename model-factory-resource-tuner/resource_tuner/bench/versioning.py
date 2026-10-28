@@ -30,7 +30,7 @@ def _hash(*names: str) -> str:
 
 
 #: What the shared LLM arms depend on, for every bench (train_llm_arm serves all three).
-_SHARED_LLM = ("llm_arms", "gpu_stations", "spec", "mem_spec", "registry", "common",
+_SHARED_LLM = ("llm_arms", "gpu_stations", "spec", "mem_spec", "registry", "common", "hybrid",
                "bench_cpu/spec", "bench_cpu/features", "bench_cpu/scoring", "bench_cpu/grid",
                "bench_gpu/spec", "bench_gpu/features", "bench_gpu/scoring", "bench_gpu/grid")
 

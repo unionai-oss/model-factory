@@ -12,11 +12,11 @@ import re
 
 from ..bench.grid import FLYTE_RUNTIME_OVERHEAD_MIB, parse_memory
 from ..bench.prompting import MAX_DESC_CHARS, _clip, _short_inputs
-from ..bench.spec import snap_up
+from ..bench.spec import snap_up, with_hint
 from ..bench_gpu.grid import DEVICES
 from . import grid
 
-_DEVICES = ", ".join(f"{n} ({g:g} GiB, ${p:.2f}/h)" for n, g, p, _s in DEVICES)
+_DEVICES = ", ".join(f"{d.name} ({d.capacity_gib:g} GiB, ${d.price:.2f}/h)" for d in DEVICES)
 
 SYSTEM = (
     "You size Flyte tasks before they run. Given a task's source code, the metadata of this run's "
@@ -24,8 +24,9 @@ SYSTEM = (
     "memory, CPU cores, and a GPU or none. Memory is a hard limit: below the peak the pod is "
     "OOM-killed and retried with double. CPU below the busiest 15 seconds' use throttles the task and "
     "it finishes late. Thread pools the code does not size get one thread. gpu is the peak GPU memory "
-    f"to provision, or none for a task that does not use CUDA; it lands on the cheapest GPU that holds "
-    f"it -- {_DEVICES} -- and a GPU pod comes with its host memory and cores. A GPU task given no GPU "
+    f"to provision, or none for a task that does not use CUDA; it lands on the cheapest machine that holds "
+    f"it -- {_DEVICES} -- and a GPU pod comes with its host memory and cores. A multi-GPU machine only "
+    "helps code that spreads its model over every visible GPU. A GPU task given no GPU "
     "fails at start; a GPU given to a CPU task is paid for the whole run."
 )
 
@@ -70,7 +71,26 @@ def user_prompt(row: dict) -> str:
 
 
 def messages(row: dict) -> list[dict]:
-    return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user_prompt(row)}]
+    user = with_hint(user_prompt(row), row.get("hint") or "")
+    return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
+
+
+def hint_text(probs: tuple, pick: tuple[int, int, int], top: int = 2) -> str:
+    """The trees' joint estimate (``arms.fit_gbt_dist``), as a stacked arm's prompt carries it."""
+    import numpy as np
+
+    pm, pc, pg = (np.asarray(x, dtype=float) / max(float(np.sum(x)), 1e-12) for x in probs)
+
+    def lead(p, opts):
+        return ", ".join(f"{opts[i]} {p[i]:.0%}" for i in np.argsort(-p)[:top])
+
+    gpu = (f"P(no GPU) {pg[0]:.0%}" + (f", else {lead(pg[1:] / max(pg[1:].sum(), 1e-12), grid.GPU_OPTIONS[1:])}"
+                                        if pg[0] < 0.99 else ""))
+    m, c, g = pick
+    return ("Gradient-boosted trees fit on other tasks' measured runs (they read the input sizes, the API names "
+            f"and numbers in the code, and this task's earlier runs) estimate memory {lead(pm, grid.MEM_OPTIONS)}; "
+            f"cpu {lead(pc, grid.CPU_OPTIONS)}; gpu {gpu}. Their pick: memory {grid.MEM_OPTIONS[m]}, "
+            f"cpu {grid.CPU_OPTIONS[c]}, gpu {grid.GPU_OPTIONS[g]}.")
 
 
 _JSON = re.compile(r"\{[^{}]*\}")

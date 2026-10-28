@@ -1,7 +1,7 @@
 """RightSizeGPU stations: the Flyte tasks the factory wires together.
 
     rt-gpubench-runs        generate_gpu_runs     code + inputs, unmeasured
-    rt-gpubench-corpus      measure_gpu_bench     every run on a T4; CUDA OOMs again on an L40S
+    rt-gpubench-corpus      measure_gpu_bench     every run on a T4; CUDA OOMs climb the machine ladder
     rt-gpubench-arm         fit_gpu_arm           one arm: fit on train, predict val/test/ood
     rt-gpubench-scorecard   score_gpu_arm         device cost, memory and utilization accuracy
     rt-gpubench-leaderboard gpu_leaderboard       all arms side by side
@@ -20,8 +20,11 @@ import flyte.io
 import pandas as pd
 
 from ..bench import charts
+from ..bench import hybrid
 from ..bench.common import (
     collect,
+    hinted_corpus,
+    pooled_arm,
     hosted_subsample,
     pred_rows,
     preds_by_variant,
@@ -40,8 +43,15 @@ from ..bench.versioning import gpu_arms_cache, gpu_corpus_cache
 from ..shared.reporting import Reporter
 from . import arms as gpu_arms
 from . import dataset, grid, scoring
-from .envs import GPU_BIG, gpu_measure_big_env, gpu_measure_env, gpubench_env
-from .measure import measure_run
+from .envs import (
+    gpu_measure_big_env,
+    gpu_measure_env,
+    gpu_measure_l4x4_env,
+    gpu_measure_l40sx4_env,
+    gpu_measure_t4x8_env,
+    gpubench_env,
+)
+from .measure import measure_many, measure_run
 from .spec import GPU
 
 TITLE = GPU.title
@@ -49,8 +59,9 @@ TITLE = GPU.title
 
 #: Tasks per family by release prefix. A full release is ~4x small: the
 #: learned arms were data-starved at small (GPU jev-pointer fit a constant).
-#: big is RightSizeMem v2's order of magnitude: 8 x 625 x 2 = 10,000 runs.
-RELEASE_TASKS = {"small": 8, "full": 40, "big": 625}
+#: big is RightSizeMem v2's order of magnitude: 10 families x 500 x 2 =
+#: 10,000 runs (big-1 had 8 families x 625).
+RELEASE_TASKS = {"small": 8, "full": 40, "big": 500}
 
 
 @gpubench_env.task(cache=gpu_corpus_cache(), report=True)
@@ -67,15 +78,19 @@ async def generate_gpu_runs(release: str, tasks_per_family: int = 0, seed: int =
     return await flyte.io.File.from_local(write_parquet(rows, "runs.parquet"))
 
 
-def _measure_one(r: dict) -> dict:
+def _measure_one(r: dict, gpus: list[int] | None = None) -> dict:
     try:
-        m = measure_run(r["harness_code"], json.loads(r["inputs_json"]), seed=r["seed"])
+        m = measure_run(r["harness_code"], json.loads(r["inputs_json"]), seed=r["seed"], gpus=gpus)
     except Exception as e:  # noqa: BLE001 -- a broken prep is a result, not a crash
         m = {"ok": False, "error": f"prep: {type(e).__name__}: {e}"[:500]}
     print(f"{r['run_id']}: ok={m.get('ok')} oom={m.get('censored')} peak={m.get('peak_gpu_mib', 0):.0f}MiB "
-          f"util={m.get('mean_util', 0):.0f}% wall={m.get('wall_s', 0):.0f}s on {m.get('device_name')} "
-          f"{str(m.get('error', ''))[:120]}", flush=True)
+          f"on {m.get('gpu_n_used', 0)} GPU(s) util={m.get('mean_util', 0):.0f}% wall={m.get('wall_s', 0):.0f}s "
+          f"on {m.get('device_name')} {str(m.get('error', ''))[:120]}", flush=True)
     return {"run_id": r["run_id"], **{k: v for k, v in m.items() if k != "result"}}
+
+
+def _shard(rows_json: str, mode: str) -> str:
+    return json.dumps(measure_many(json.loads(rows_json), _measure_one, mode))
 
 
 # One workload per GPU. max_runtime: a shard of 3 runs takes ~10-12 min (6
@@ -83,22 +98,109 @@ def _measure_one(r: dict) -> dict:
 # a node lost mid-shard into a retry.
 @gpu_measure_env.task(retries=2, cache=gpu_corpus_cache(), timeout=flyte.Timeout(max_runtime=1800))
 async def measure_gpu_shard(rows_json: str) -> str:
-    return json.dumps([_measure_one(r) for r in json.loads(rows_json)])
+    return _shard(rows_json, "per_gpu")
 
 
 @gpu_measure_big_env.task(retries=1, cache=gpu_corpus_cache(),
-                          timeout=flyte.Timeout(max_runtime=3600, max_queued_time=2 * 3600))
+                          timeout=flyte.Timeout(max_runtime=3600, max_queued_time=8 * 3600))
 async def measure_gpu_shard_big(rows_json: str) -> str:
-    """Pass 2: runs that did not fit a T4, on a 48 GB L40S."""
-    return json.dumps([_measure_one(r) for r in json.loads(rows_json)])
+    """Runs that did not fit a smaller GPU, on a 48 GB L40S."""
+    return _shard(rows_json, "per_gpu")
+
+
+@gpu_measure_l4x4_env.task(retries=2, cache=gpu_corpus_cache(),
+                           timeout=flyte.Timeout(max_runtime=3600, max_queued_time=2 * 3600))
+async def measure_gpu_shard_l4x4(rows_json: str) -> str:
+    """Single-GPU runs that did not fit a T4: four at a time, one per L4."""
+    return _shard(rows_json, "per_gpu")
+
+
+@gpu_measure_t4x8_env.task(retries=2, cache=gpu_corpus_cache(),
+                           timeout=flyte.Timeout(max_runtime=3600, max_queued_time=2 * 3600))
+async def measure_gpu_shard_t4x8(rows_json: str) -> str:
+    """Sharded runs that did not fit one T4: each run across all eight."""
+    return _shard(rows_json, "whole")
+
+
+# The g6e.12xlarge pool did not admit a pod in an hour (rt-gpuprobe-1): single-GPU
+# runs wait an hour for it, then fall back to single L40S nodes (`_climb`).
+@gpu_measure_l40sx4_env.task(retries=1, cache=gpu_corpus_cache(),
+                             timeout=flyte.Timeout(max_runtime=3600, max_queued_time=3600))
+async def measure_gpu_shard_l40sx4(rows_json: str) -> str:
+    """Single-GPU runs that did not fit an L4, four at a time, one per L40S."""
+    return _shard(rows_json, "per_gpu")
+
+
+@gpu_measure_l40sx4_env.task(retries=1, cache=gpu_corpus_cache(),
+                             timeout=flyte.Timeout(max_runtime=3600, max_queued_time=2 * 3600))
+async def measure_gpu_shard_l40sx4_whole(rows_json: str) -> str:
+    """The top of the ladder: sharded runs that did not fit 8 T4s, each across all four L40S."""
+    return _shard(rows_json, "whole")
+
+
+#: Rows per shard on each pass: pass 1 is 6 runs on one T4; a 4-GPU node takes
+#: 4 at once; a whole-node shard runs its runs one after another.
+_PASS_SHARD = {"t4": 6, "l4x4": 16, "l40sx4": 12, "l40s": 4, "t4x8": 4, "l40sx4_whole": 3}
+
+
+async def _run_shards(name: str, shards: list[str], call, measured: dict[str, dict]) -> list[str]:
+    """Measure `shards` with `call`; returns the shards that were lost (queue timeout, node loss)."""
+    res = await asyncio.gather(*(call(s) for s in shards), return_exceptions=True)
+    lost = []
+    for s_, r in zip(shards, res):
+        if isinstance(r, BaseException):
+            print(f"{name} shard lost: {type(r).__name__}: {str(r)[:200]}", flush=True)
+            lost.append(s_)
+        else:
+            for m in json.loads(r):
+                measured[m["run_id"]] = m
+    return lost
+
+
+async def _climb(rows: list[dict], measured: dict[str, dict], keep: tuple, rep) -> dict[str, int]:
+    """Re-measure each run that CUDA-OOMed, one machine up its ladder (envs.py).
+
+    The L40S pools admit slowly and either may be full (rt-gpuprobe-1: one
+    g6e.2xlarge in 37 min, the g6e.12xlarge pool not at all), so a 4xL40S
+    shard lost in the queue is re-sent as single-L40S shards. A run whose
+    shards are all lost keeps the OOM below (censored, excluded)."""
+    lost: dict[str, int] = {}
+    sharded = {r["run_id"]: bool(r.get("sharded")) for r in rows}
+
+    def oomed(r):
+        return bool(measured.get(r["run_id"], {}).get("censored"))
+
+    async def one_pass(name: str, todo: list[dict], call, fallback=None) -> None:
+        if not todo:
+            return
+        rep.p(f"{name}: {len(todo)} runs that CUDA-OOMed the machine below")
+        await rep.flush()
+        missed = await _run_shards(name, shard(todo, keep, _PASS_SHARD[name]), call, measured)
+        if missed and fallback is not None:
+            fb_name, fb_call = fallback
+            again = [r for s_ in missed for r in json.loads(s_)]
+            rep.p(f"{name}: {len(missed)} shards lost; {len(again)} runs re-sent to {fb_name}")
+            await rep.flush()
+            missed = await _run_shards(fb_name, shard(again, keep, _PASS_SHARD[fb_name]), fb_call, measured)
+        lost[name] = len(missed)
+
+    await asyncio.gather(
+        one_pass("l4x4", [r for r in rows if oomed(r) and not sharded[r["run_id"]]], measure_gpu_shard_l4x4),
+        one_pass("t4x8", [r for r in rows if oomed(r) and sharded[r["run_id"]]], measure_gpu_shard_t4x8))
+    await asyncio.gather(
+        one_pass("l40sx4", [r for r in rows if oomed(r) and not sharded[r["run_id"]]],
+                 measure_gpu_shard_l40sx4, fallback=("l40s", measure_gpu_shard_big)),
+        one_pass("l40sx4_whole", [r for r in rows if oomed(r) and sharded[r["run_id"]]],
+                 measure_gpu_shard_l40sx4_whole))
+    return lost
 
 
 @gpubench_env.task(cache=gpu_corpus_cache(), report=True)
 async def measure_gpu_bench(runs: flyte.io.File, shard_size: int = 3) -> flyte.io.File:
     rows = await read_rows(runs)
     keep = ("run_id", "harness_code", "inputs_json", "seed")
-    if rows and rows[0].get("profile") == "big":
-        shard_size = 6  # half-length budgets; ~1,700 shards instead of ~3,300
+    if rows and rows[0].get("profile") in ("big", "big2"):
+        shard_size = _PASS_SHARD["t4"]  # short budgets; ~1,700 shards instead of ~3,300
     shards = shard(rows, keep, shard_size)
     rep = Reporter(f"{TITLE}: measurement", f"{len(rows)} runs in {len(shards)} T4 shards")
     await rep.flush()
@@ -106,25 +208,22 @@ async def measure_gpu_bench(runs: flyte.io.File, shard_size: int = 3) -> flyte.i
     lost = collect(await asyncio.gather(*(measure_gpu_shard(s) for s in shards), return_exceptions=True), measured)
     if lost > 0.1 * len(shards):
         raise RuntimeError(f"{lost}/{len(shards)} measurement shards failed; first error above")
-    big = [r for r in rows if measured.get(r["run_id"], {}).get("censored")]
-    lost_big = 0
-    if big:
-        rep.p(f"pass 2: {len(big)} runs hit a CUDA OOM on the T4; re-measuring on {GPU_BIG}")
-        await rep.flush()
-        before = dict(measured)
-        lost_big = collect(await asyncio.gather(*(measure_gpu_shard_big(s) for s in shard(big, keep, 4)),
-                                                return_exceptions=True), measured)
-        for r in big:  # pass 2 lost: keep the T4 OOM (censored, excluded) rather than nothing
-            measured.setdefault(r["run_id"], before[r["run_id"]])
+    lost_up = await _climb(rows, measured, keep, rep)
     table = [dataset.attach_measurement(r, measured.get(r["run_id"], {"ok": False, "error": "shard lost"})) for r in rows]
     df = pd.DataFrame(dataset.attach_history(table))
     ok = df[df["ok"] & ~df["censored"]]
     rep.reset_body()
-    rep.kv({"runs": len(df), "measured ok": len(ok), "CUDA OOM on every device": int(df["censored"].sum()),
-            "failed": int((~df["ok"] & ~df["censored"]).sum()), "shards lost": f"{lost} + {lost_big}",
-            "devices": ", ".join(sorted(set(ok["measured_on"]))) if len(ok) else "-",
+    rep.kv({"runs": len(df), "measured ok": len(ok), "CUDA OOM on every machine": int(df["censored"].sum()),
+            "failed": int((~df["ok"] & ~df["censored"]).sum()),
+            "shards lost": f"t4 {lost}, " + ", ".join(f"{k} {v}" for k, v in lost_up.items()),
+            "machines": ", ".join(sorted(set(ok["measured_on"]))) if len(ok) else "-",
             "median wall": f"{ok['wall_s'].median():.0f} s" if len(ok) else "-",
             "median DCGM samples / run": f"{(ok['wall_s'] / 30).median():.1f}" if len(ok) else "-"})
+    if len(ok):
+        shapes = ok.assign(shape=[grid.DEVICES[grid.oracle_device(p, s, i) or 0].name for p, s, i in
+                                  zip(ok["peak_gpu_gib"], ok["sharded"], ok["gpu_imbalance"])]).groupby("shape").size()
+        rep.h("Cheapest machine that fits (usable runs)")
+        rep.table(["machine", "runs"], [[k, str(int(v))] for k, v in shapes.items()])
     fam = ok.groupby("family").agg(runs=("run_id", "size"), p50=("peak_gpu_gib", "median"),
                                    pmax=("peak_gpu_gib", "max"), util=("mean_util", "median"))
     rep.h("Per family")
@@ -140,8 +239,10 @@ async def measure_gpu_bench(runs: flyte.io.File, shard_size: int = 3) -> flyte.i
 
 CPU_ARMS = tuple(gpu_arms.ARMS)
 GPU_ARMS = ("sft", "jev", "jev-pointer", "jev-pointer-4b")  # LLM arms, trained on a T4
+#: The stacked hybrids (``bench.hybrid``): each LLM arm with the trees' prediction in its prompt.
+STACK_ARMS = tuple(f"{hybrid.STACK_PREFIX}{a}" for a in ("sft", "jev-pointer", "jev-pointer-4b"))
 HOSTED_ARMS = {"zeroshot-27b": "qwen38-27b-vllm"}
-ALL_ARMS = CPU_ARMS + tuple(HOSTED_ARMS) + GPU_ARMS
+ALL_ARMS = CPU_ARMS + tuple(HOSTED_ARMS) + GPU_ARMS + STACK_ARMS
 _EVAL_SPLITS = ("val", "test", "ood")
 HOSTED_RUNS_PER_SPLIT = 300
 
@@ -171,6 +272,13 @@ async def fit_gpu_arm(corpus: flyte.io.File, arm: str, llm_model: str = "Qwen/Qw
         # gpu_stations.py, which every LLM arm's cache version hashes.
         return await train_llm_arm.override(timeout=flyte.Timeout(max_runtime=14 * 3600))(
             corpus, arm, llm_model, llm_epochs, llm_max_train_rows, bench="gpu")
+    elif arm in STACK_ARMS:
+        fit, predict = gpu_arms.ARMS[hybrid.ANCHOR]
+        hinted, hmeta = await hinted_corpus(rows, fit, predict, GPU)
+        rep.kv({k: str(v)[:300] for k, v in hmeta.items()})
+        await rep.flush()
+        return await train_llm_arm.override(timeout=flyte.Timeout(max_runtime=14 * 3600))(
+            hinted, arm, llm_model, llm_epochs, llm_max_train_rows, bench="gpu")
     else:
         raise ValueError(f"unknown arm {arm!r}; choose from {ALL_ARMS}")
     meta["arm"] = arm
@@ -200,15 +308,30 @@ async def score_gpu_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str) 
     return await flyte.io.File.from_local(path)
 
 
+@gpubench_env.task(cache=gpu_arms_cache(), report=True)
+async def pool_gpu_arms(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir]) -> flyte.io.Dir:
+    """The pooled hybrids: gbt-dist x every distributional LLM variant (``bench.hybrid``)."""
+    rows = [r for r in await read_rows(corpus) if dataset.usable(r)]
+    out = await pooled_arm(rows, arm_dirs, GPU)
+    rep = Reporter(f"{TITLE}: pooled hybrids", f"{hybrid.ANCHOR} x each LLM variant, weight tuned on val")
+    _preds, meta = await read_arm(out)
+    rep.table(["pool", "w (trees)", "val headline (lower is better)", "secondary from"],
+              [[v, str(k["w_trees"]), f"{k['val_headline']:.3f}", k["secondary_from"]] for v, k in meta["knobs"].items()])
+    await rep.flush()
+    return out
+
+
 HEADLINE = ("static", "vpa", "size-rule", "gbt", "gbt-dist", "zeroshot-27b", "sft-greedy", "sft-sampled",
             "jev-argmax", "jev", "jev-pointer-argmax", "jev-pointer",
-            "jev-pointer-4b-argmax", "jev-pointer-4b")
+            "jev-pointer-4b-argmax", "jev-pointer-4b",
+            "stack-sft-greedy", "stack-sft-sampled", "stack-jev-pointer-argmax", "stack-jev-pointer",
+            "stack-jev-pointer-4b-argmax", "stack-jev-pointer-4b")
 
 
 @gpubench_env.task(cache=gpu_arms_cache(), report=True)
-async def gpu_leaderboard(scorecards: list[flyte.io.File]) -> flyte.io.File:
+async def gpu_leaderboard(scorecards: list[flyte.io.File], pool_scorecard: flyte.io.File | None = None) -> flyte.io.File:
     cards = []
-    for f in scorecards:
+    for f in [*scorecards, *([pool_scorecard] if pool_scorecard is not None else [])]:
         with open(await f.download()) as fh:
             cards.append(json.load(fh))
     board, fronts = {}, {}

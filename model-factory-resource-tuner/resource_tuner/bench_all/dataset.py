@@ -24,6 +24,7 @@ import json
 
 from ..bench import dataset as mem_dataset
 from ..bench.grid import required_memory_mib
+from ..bench_gpu import grid as gpu_grid
 from . import grid
 
 SPLITS = mem_dataset.SPLITS
@@ -66,18 +67,21 @@ def unify_row(r: dict, source: str) -> dict:
         out.update(need_mib=need, t_peak_frac=float(r.get("t_peak_frac") or 0.5),
                    need_cores=cores, mean_cores=float(r.get("avg_cores") if source == "mem" else r["mean_cores"]),
                    cpu_series_json=(r.get("cpu_series_json") or "[]") if source == "cpu" else "[]",
-                   peak_gpu_gib=float("nan"))
+                   peak_gpu_gib=float("nan"), sharded=False, gpu_imbalance=1.0)
         out["label_mem"] = grid.mem_cell(need)
         out["label_cpu"] = grid.cpu_cell(cores)
         out["label_gpu"] = grid.NO_GPU
     else:
         peak = float(r["peak_gpu_gib"])
+        sharded = bool(r.get("sharded"))
+        imb = float(r.get("gpu_imbalance") or gpu_grid.DEFAULT_IMBALANCE)
         out.update(need_mib=float("nan"), t_peak_frac=float(r.get("t_peak_frac") or 0.1),
                    need_cores=float(r.get("mean_cpu_cores") or 0.0), mean_cores=float(r.get("mean_cpu_cores") or 0.0),
-                   cpu_series_json="[]", peak_gpu_gib=peak)
+                   cpu_series_json="[]", peak_gpu_gib=peak, sharded=sharded, gpu_imbalance=imb)
         out["label_mem"] = -1
         out["label_cpu"] = -1
-        out["label_gpu"] = grid.gpu_cell(peak)
+        # the cheapest shape the run fits (a sharded run's share may need 8xT4, not 4xL4)
+        out["label_gpu"] = 1 + gpu_grid.oracle_cell(peak, sharded, imb)
     # unscoreable: a CPU-bench row whose RSS was not recorded, or a need above the top cell
     if source == "cpu" and not float(r.get("peak_rss_mib") or 0.0):
         out["ok"] = False

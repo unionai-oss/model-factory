@@ -17,7 +17,7 @@ import flyte
 import flyte.io
 import pandas as pd
 
-from . import dataset
+from . import dataset, hybrid
 from .spec import BenchSpec
 
 
@@ -122,3 +122,34 @@ def collect(results, measured: dict[str, dict]) -> int:
         for m in json.loads(res):
             measured[m["run_id"]] = m
     return lost
+
+
+async def hinted_corpus(rows: list[dict], fit, predict, spec: BenchSpec) -> tuple[flyte.io.File, dict]:
+    """The corpus a stacked arm trains on: every usable row with the trees'
+    prediction in a ``hint`` column (out-of-fold on train, ``hybrid.crossfit``)."""
+    import time
+
+    splits = usable_by_split(rows)
+    eval_rows = [r for s in ("val", "test", "ood") for r in splits[s]]
+    t0 = time.perf_counter()
+    preds = hybrid.crossfit(splits["train"], splits["val"], eval_rows, fit, predict)
+    hinted = hybrid.with_hints([r for s in dataset.SPLITS for r in splits[s]], preds, spec)
+    meta = {"hint_anchor": hybrid.ANCHOR, "hint_folds": hybrid.FOLDS, "hinted_rows": len(preds),
+            "crossfit_s": time.perf_counter() - t0, "hint_example": next((r["hint"] for r in hinted if r["hint"]), "")}
+    return await flyte.io.File.from_local(write_parquet(hinted, "hinted.parquet")), meta
+
+
+async def pooled_arm(rows: list[dict], arm_dirs: list, spec: BenchSpec) -> flyte.io.Dir:
+    """Every distributional LLM variant of a release pooled with its trees (``hybrid.pool_variants``)."""
+    variants: dict[str, dict[str, dict]] = {}
+    for d in arm_dirs:
+        preds, _meta = await read_arm(d)
+        variants.update(preds_by_variant(preds, spec))
+    if hybrid.ANCHOR not in variants:
+        raise ValueError(f"pooled_arm: no {hybrid.ANCHOR!r} arm among the {len(arm_dirs)} built for this release")
+    pooled, knobs = hybrid.pool_variants(rows, variants, spec)
+    table = []
+    for v, p in pooled.items():
+        table += pred_rows(v, p, rows, spec)
+    return await write_arm_dir(table, {"arm": "pool", "anchor": hybrid.ANCHOR, "members": hybrid.poolable(variants, spec),
+                                       "knobs": knobs})

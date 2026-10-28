@@ -38,6 +38,31 @@ Conventions:
 | 2026-10-23 | [round-18-rightsize-cpu-gpu](2026-10-23-round-18-rightsize-cpu-gpu.md) | RightSize Bench renamed **RightSizeMem**; **RightSizeCPU** (peak cores in Union's 15 s monitoring window, cgroup-measured) and **RightSizeGPU** (peak GPU memory -> device on the T4/L4/L40S ladder, mean utilization; NVML at DCGM's 30 s cadence) small releases, one factory materialization each. CPU: zero-shot 27B 79%/93% within ±25%, code-rule 81%/95% (fails the GIL), 1.7B decision head 71%/83% from 116 rows. GPU: no arm above 55% within ±20% at 62 training rows; utilization saturates (88% of runs 90-100%). Factory deploy pins station versions (rsg-small-3 re-ran old code) |
 | 2026-10-24 | [round-19-rightsize-cpu-gpu-full](2026-10-23-round-19-rightsize-cpu-gpu-full.md) | Full releases (880 CPU / 640 GPU runs; 3-run shards, `full-*` sizing, 4B decision arm). **CPU ordering flips**: 4B decision head 89.6% / 88.7% within ±25% (test / unseen), trees 89.6% / 76.2%, zero-shot 27B falls to 74.6% / 83.8% and still fails phased code (8%). **GPU memory stays near 50%** (gbt-dist 50.5% test, SFT 37.3% unseen); 26 encoder runs unmeasurable (outputs accumulate on device); utilization still saturated |
 | 2026-10-26 | [round-20-rightsize-big-and-combined](2026-10-24-round-20-rightsize-big-and-combined.md) | **big** releases at ~10^4 runs, plus a combined memory+CPU+GPU bench with a GRPO-style RL arm. CPU big-1 (rsc-big-1, 23 h): 1.7B decision head 97.9% within ±25% on test, but unseen families stay at 84-86% (4B 86.1%, 27B zero-shot 83.7%, gbt-dist 68.4%), no better than full-1. Combined shakedown (rsa-full-3): RL head argmax 12.6% test regret vs 23.6% supervised. **Combined big-1 (rsa-big-1)**: with 10,500 supervised runs the decision model reaches 9.7% and RL argmax 8.0% (lead 11 -> 1.7 points); on unseen families RL is worse (37.3% vs 34.1%) and `rules` is best (32.5%). **GPU big-1 (rsg-big-3)**: gbt-dist 71.3% within ±20% on test, 4B decision model 50.5% on unseen (trees 25.7%); accuracy decoding never leaves the T4 (6.4% OOM), argmax reads cost 13-16% |
+| 2026-10-28 | [round-21-gpu-big-2-hybrids](2026-10-26-round-21-gpu-big-2-hybrids.md) | **GPU big-2** on the cluster's whole machine ladder (T4 -> 4xL40S; sharded lm_finetune / llm_generate / recsys_train): 74.7% of runs fit a T4 (big-1: 94.8%), but 4xL4 / 4xL40S capacity never came and 1,569 large runs are censored. **Trees x LLM hybrids** (stacked hints, log pools) on CPU, GPU and combined: best in distribution everywhere (CPU 98.5%, GPU 74.8%, combined **3.2% regret** for RL from the stacked model), worst learned arm on unseen families (combined 77-126% vs rl-pointer 35.5%): the trust in the trees is learned where the trees are right. Only the combined pool beats its LLM on both splits |
+
+## Standing results — round 21: big releases with trees x LLM hybrids (as of 2026-10-28)
+
+From [rsc-big-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-big-2)
+(CPU big-1, test n=1,634 / unseen n=1,800),
+[rsg-big2-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big2-1)
+(GPU big-2, new workloads over the whole machine ladder, n=1,202 / 2,390)
+and [rsa-big-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-big-2)
+(combined: v2 + CPU big-1 + GPU big-2, n=5,095 / 6,416). The GPU big-2
+numbers are not comparable with GPU big-1 below.
+
+| arm | CPU: within ±25% (test / unseen) | GPU big-2: within ±20% (test / unseen) | combined: regret (test / unseen) |
+|---|---|---|---|
+| rules (code-rule / size-rule) | 73.6% / 79.4% | 37.1% / 31.6% | 39.4% / 48.0% |
+| gbt-dist | 94.6% / 68.4% | 71.9% / 9.8% | 15.4% / 90.8% |
+| jev-pointer (1.7B) | 97.7% / 85.6% | 58.2% / 33.6% | 14.0% / 58.8% |
+| jev-pointer-4b | 97.9% / **86.3%** | 55.5% / **42.1%** | -- |
+| rl-pointer / -argmax | -- | -- | 20.3% / **35.5%** ; 9.8% / 47.8% |
+| stack-jev-pointer | **98.5%** / 71.7% | 73.4% / 20.5% | 10.1% / 94.6% |
+| stack-rl-pointer-argmax | -- | -- | **3.2%** / 102.0% |
+| pool-jev-pointer | 97.6% / 73.1% | 73.7% / 27.7% | 6.9% / 52.2% |
+| best pool | pool-jev-pointer-4b 98.3% / 82.2% | pool-stack-jev-pointer **74.8%** / 16.2% | pool-jev-pointer 6.9% / 52.2% |
+
+Details: [round-21](2026-10-26-round-21-gpu-big-2-hybrids.md).
 
 ## Standing results — RightSizeCPU / RightSizeGPU big-1 (as of 2026-10-26)
 

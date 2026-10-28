@@ -1,0 +1,626 @@
+<title>RightSizeCPU Bench Hybrids</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column, same tokens as the RightSizeMem Bench report. Definitions and methodology come first; each result is a claim, a chart drawn from the bench's own numbers, and a "how to read this" note. */
+:root {
+  --bg: #f5f6f9;
+  --panel: #ffffff;
+  --ink: #161823;
+  --muted: #5d6273;
+  --rule: #dcdfe8;
+  --tint: #eef0fb;
+  --accent: #4d65ff;     /* decision model */
+  --warm: #c9760a;       /* autoregressive LLM */
+  --tree: #1f9b6a;       /* classical ML */
+  --rule-c: #8a8fa0;     /* rules */
+  --hyb: #9a4fd0;        /* trees x LLM hybrid */
+  --bad: #d4383b;
+  --d-threads: #4d65ff; --d-gil: #c9760a; --d-proc: #1f9b6a; --d-serial: #8a8fa0; --d-io: #d4383b; --d-phases: #9a4fd0;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+    --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --hyb: #c48bf2; --bad: #ff6b6b;
+    --d-threads: #7d8fff; --d-gil: #f0a23a; --d-proc: #43c693; --d-serial: #8f94a8; --d-io: #ff6b6b; --d-phases: #c48bf2;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+  --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --hyb: #c48bf2; --bad: #ff6b6b;
+  --d-threads: #7d8fff; --d-gil: #f0a23a; --d-proc: #43c693; --d-serial: #8f94a8; --d-io: #ff6b6b; --d-phases: #c48bf2;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 980px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 72px; }
+header { display: grid; gap: 14px; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(40px, 7vw, 64px); line-height: 1; margin: 0; letter-spacing: -.01em; }
+.lede { font-size: 19px; max-width: 64ch; margin: 0; text-wrap: pretty; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 22px; font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; }
+.status { justify-self: start; font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; color: var(--warm); border: 1px solid color-mix(in srgb, var(--warm) 45%, transparent); border-radius: 999px; padding: 3px 12px; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; }
+nav.toc a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--rule); }
+nav.toc a:hover { color: var(--accent); border-color: var(--accent); }
+section { padding-block: 36px 8px; display: grid; gap: 14px; min-width: 0; }
+.part { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-top: 28px; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.15; margin: 0; text-wrap: balance; }
+h3 { font-family: var(--font-display); font-weight: 600; font-size: 20px; line-height: 1.2; margin: 10px 0 0; }
+p { margin: 0; max-width: 70ch; }
+.muted { color: var(--muted); }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 18px 12px; min-width: 0; }
+.figure svg { display: block; width: 100%; height: auto; }
+.caption { font-size: 13px; color: var(--muted); margin-top: 8px; max-width: none; }
+.howto { background: var(--tint); border-radius: 6px; padding: 14px 16px; display: grid; gap: 6px; font-size: 14.5px; }
+.howto .t { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.howto ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; max-width: none; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+table.num td { white-space: nowrap; }
+table.text td, table.text th { text-align: left; white-space: normal; }
+table.text td:first-child { white-space: nowrap; font-family: var(--font-mono); font-size: 13px; }
+td.best { font-weight: 600; }
+td.heat { color: var(--ink); }
+.kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.stat { display: grid; gap: 4px; align-content: start; }
+.stat .n { font-family: var(--font-display); font-size: 34px; font-weight: 600; line-height: 1.05; }
+.stat .l { font-size: 14px; color: var(--muted); }
+code, .mono { font-family: var(--font-mono); font-size: .9em; }
+ul, ol { margin: 0; padding-left: 22px; display: grid; gap: 6px; max-width: 70ch; }
+dl.defs { display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 10px 22px; margin: 0; }
+dl.defs dt { font-weight: 600; }
+dl.defs dd { margin: 0; color: var(--ink); min-width: 0; }
+@media (max-width: 620px) { dl.defs { grid-template-columns: 1fr; gap: 2px 0; } dl.defs dd { margin-bottom: 10px; } }
+pre.block { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; color: var(--ink); white-space: pre; overflow-x: auto; margin: 0; }
+.steps { counter-reset: s; display: grid; gap: 10px; padding: 0; list-style: none; max-width: 72ch; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 30px 1fr; gap: 10px; }
+.steps li::before { content: counter(s); font-family: var(--font-mono); font-size: 13px; color: var(--accent); border: 1px solid var(--rule); border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; }
+.tldr { display: grid; gap: 8px; padding: 0; list-style: none; }
+.tldr li { padding-left: 16px; border-left: 3px solid var(--accent); }
+footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); display: grid; gap: 6px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 520px) { .lede { font-size: 17px; } h2 { font-size: 24px; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Union model factory · resource right-sizing · round 21 · October 2026</div>
+    <h1>RightSizeCPU Bench: trees × LLM hybrids</h1>
+    <p class="lede">A task's CPU request is a guess made before it runs. This benchmark measures how well different approaches predict a task's peak CPU from its code and its input metadata. In round 20, gradient-boosted trees and fine-tuned language models made different mistakes. This round reruns the same 9,900-run release and adds approaches that combine the two, to see whether the combination beats both.</p>
+    <span class="status">Big release (big-1) · round 21 rerun · 9 approaches re-fit, 3 stacked hybrids, 1 pool</span>
+    <div class="facts">
+      <span><b>9,900</b> measured runs, reused from round 20</span>
+      <span><b>1,634</b> test runs, <b>1,800</b> from <b>2</b> unseen families</span>
+      <span><b>30</b> decision rules on the leaderboard, <b>18</b> of them new</span>
+      <span>run <b>rsc-big-2</b></span>
+    </div>
+    <nav class="toc" aria-label="Sections">
+      <a href="#summary">Summary</a><a href="#terms">Terms</a><a href="#bench">The bench in brief</a><a href="#why">Why combine</a><a href="#stacked">Stacked</a><a href="#pooled">Pooled</a><a href="#runs">How it ran</a><a href="#results">Results</a><a href="#delta">Gain and loss</a><a href="#families">Unseen families</a><a href="#weights">Pool weights</a><a href="#full">Full leaderboard</a><a href="#repro">Reproducibility</a><a href="#limits">Assumptions and limits</a>
+    </nav>
+  </header>
+
+  <section id="summary">
+    <h2>Summary</h2>
+    <ul class="tldr">
+      <li><b>On familiar code, the hybrids are slightly the best.</b> The stacked 1.7B decision model predicts the peak within ±25% on 98.5% of test runs, against 97.7% for the same model alone and 94.6% for the trees. The pooled 4B has the lowest error (0.21 cores). These gains are under a point, about the size of the noise.</li>
+      <li><b>On unseen families, every hybrid is worse than the LLM it is built from,</b> by 4 to 17 points, and most land near the trees. The stacked 1.7B scores 71.7% there, against 85.6% for the decision model alone and 68.4% for the trees.</li>
+      <li><b>The loss is in one family.</b> On DuckDB SQL, where the trees are right (88.8%), most hybrids gain 3.5 to 8.5 points over their LLM. On pyarrow's CSV reader, where the trees are wrong (48.0%), the hybrids fall from about 89% to 50–77%. The hybrids follow the trees.</li>
+      <li><b>The likely reason: both hybrids learn how far to trust the trees on data where the trees are right.</b> The stacked model's training hints are right about 95% of the time, so copying them is what training rewards. The pool's weight is tuned on the validation split, which comes from the training families, so it settles at 0.4–0.7 for the trees.</li>
+      <li><b>The pool with the lowest trees weight loses least.</b> The pooled 4B (weight 0.5) drops 4.1 points on unseen families; the two pools at weight 0.7 drop 12.5 and 12.6.</li>
+    </ul>
+  </section>
+
+  <div class="part">Part 1 · Definitions</div>
+  <section id="terms">
+    <h2>Terms used on this page</h2>
+    <p>The first eight terms are the bench's own, unchanged from <a href="rightsize-cpu-bench-big.html">the round-20 report</a>. The rest are new this round.</p>
+    <dl class="defs">
+      <dt>Task, run</dt><dd>A <b>task</b> is one piece of code, such as a scikit-learn job that fits a random forest. A <b>run</b> is that task executed once on a particular set of input files. Each task runs twice, on inputs of different sizes.</dd>
+      <dt>Peak CPU <span class="muted">(the label)</span></dt><dd>The highest average core usage in any 15-second window of the run. This is the busiest value Union's task monitoring can show.</dd>
+      <dt>Cell</dt><dd>Predictions are chosen from a fixed list of 16 core counts: 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8. One entry is a <b>cell</b>.</dd>
+      <dt>Within ±25% <span class="muted">(headline metric)</span></dt><dd>The share of runs whose predicted peak is within 25% of the measured peak, or within 0.25 core for small peaks. Higher is better. An oracle that knows each peak scores 100%.</dd>
+      <dt>Under-predicted</dt><dd>The share of runs predicted below the measured peak, by any amount. These runs would be throttled: the kernel slows them down, it does not kill them.</dd>
+      <dt>CPU regret</dt><dd>Core-seconds reserved, plus a penalty for each second a throttled run finishes late, divided by the oracle's total, minus 1. 0% equals the oracle. Negative means brief throttling cost less than the oracle's idle headroom.</dd>
+      <dt>Test, unseen families</dt><dd><b>Test</b>: runs of tasks no approach trained on, from the 9 training families. <b>Unseen families</b>: runs from DuckDB SQL and pyarrow's CSV reader, two families left out of training entirely. Validation (838 runs) comes from the training families, like test.</dd>
+      <dt>Arm, decoding</dt><dd>An <b>arm</b> is one approach. Arms that output a probability for each cell are turned into one prediction by a <b>decoder</b> that picks the cell most likely to be within ±25% of the peak. <b>Argmax</b> instead picks the single most likely cell.</dd>
+      <dt>Trees <span class="muted">(gbt-dist)</span></dt><dd>The bench's gradient-boosted tree arm read as a distribution: 19 quantile models over 71 numeric features, turned into a probability for each cell. In this round it is the <b>anchor</b>: the one tree model every hybrid uses.</dd>
+      <dt>LLM arm</dt><dd>One of the three trained language-model arms: <b>SFT 1.7B</b> (Qwen3-1.7B fine-tuned to write its answer as text), <b>decision 1.7B</b> and <b>decision 4B</b> (Qwen3 with a head that scores each cell written in the prompt). All read the task's source code.</dd>
+      <dt>Hybrid</dt><dd>An arm that uses both the trees and an LLM arm. This round has two kinds, stacked and pooled.</dd>
+      <dt>Stacked <span class="muted">(stack-&lt;arm&gt;)</span></dt><dd>The trees' prediction is written into the LLM's prompt, and the LLM arm is trained and scored with it there. The LLM makes the final call.</dd>
+      <dt>Out-of-fold</dt><dd>A prediction for a training run from a tree model that was fitted without that run's task. It is what the trees would say about code they have not seen.</dd>
+      <dt>Pooled <span class="muted">(pool-&lt;arm&gt;)</span></dt><dd>The trees' probabilities and the LLM's probabilities are multiplied together, cell by cell, with a weight on each. Nothing is retrained.</dd>
+      <dt>w, the trees weight</dt><dd>How much the pool listens to the trees: 0 is the LLM alone, 1 is the trees alone. It is chosen on the validation split.</dd>
+    </dl>
+  </section>
+
+  <div class="part">Part 2 · Methodology</div>
+  <section id="bench">
+    <h2>The bench in brief</h2>
+    <p>Everything in this section is the same as in round 20. The corpus is the same artifact: the factory found it already built and reused it. The <a href="rightsize-cpu-bench-big.html">round-20 report</a> has the full dataset, measurement and scoring methodology.</p>
+    <dl class="defs">
+      <dt>Workloads</dt><dd>11 families of generated Flyte task code: NumPy BLAS, polars, DuckDB SQL, scikit-learn ensembles, pandas, Python thread pools, process pools, PyTorch on CPU, pyarrow CSV, I/O-bound fetch loops, and a serial phase followed by a parallel one. A generator varies the code choices that decide parallelism, such as pool sizes (up to 6), whether the work holds Python's GIL, and how many chunks of work there are. 450 tasks per family, 2 runs each, 30 to 60 seconds per run.</dd>
+      <dt>Measurement</dt><dd>Each run gets 7 cores of its own (two runs per 15-CPU spot pod, pinned to disjoint cores) and samples its CPU time once per second. The label is the smallest cell that covers the busiest sliding 15-second window.</dd>
+      <dt>Splits</dt><dd>Split by task, so both runs of a task land together: 5,628 train, 838 validation and 1,634 test runs from 9 families, plus 1,800 runs from the 2 unseen families. Settings are tuned on validation; test and unseen are scored once.</dd>
+      <dt>What arms see</dt><dd>Only what a scheduler has at submit time: the task's source code, each input file's metadata, and the task's earlier runs. The first run of each task has no earlier runs (a <b>cold start</b>); the second sees the first (<b>warm</b>).</dd>
+      <dt>Scoring</dt><dd>Accuracy is the headline. Cost is replayed against each run's per-second CPU series, with the prediction as the limit: each second that wanted u cores under a limit L takes max(1, u ÷ L) seconds.</dd>
+    </dl>
+    <h3>The single arms</h3>
+    <p>The 9 single approaches from round 20 were re-fit from scratch in the same run. They are the baselines the hybrids are measured against.</p>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>approach</th><th>kind</th><th>in one line</th></tr></thead>
+      <tbody>
+        <tr><td><span class="kind" style="background:var(--rule-c)"></span>static, vpa, code-rule</td><td>rules</td><td>One fixed request; the task's largest past peak times a margin; the largest pool size the code declares, times a factor.</td></tr>
+        <tr><td><span class="kind" style="background:var(--tree)"></span>gbt, gbt-dist</td><td>classical ML</td><td>Gradient-boosted quantile regression on 71 features (input sizes, 44 code-token flags, declared pool sizes, history). gbt-dist reads 19 quantiles as a distribution over cells.</td></tr>
+        <tr><td><span class="kind" style="background:var(--warm)"></span>zero-shot 27B</td><td>LLM, generates text</td><td>A hosted 27B Qwen model, untrained, scored on a 300-run sample of each split.</td></tr>
+        <tr><td><span class="kind" style="background:var(--warm)"></span>SFT 1.7B</td><td>LLM, generates text</td><td>Qwen3-1.7B with LoRA adapters, trained to write the answer as JSON. Read greedily, or as a distribution from 8 samples.</td></tr>
+        <tr><td><span class="kind" style="background:var(--accent)"></span>decision 1.7B, 4B</td><td>decision model</td><td>The same LoRA setup on Qwen3-1.7B and Qwen3-4B, with a pointer head that scores each of the 16 cells in one forward pass, temperature-calibrated on validation.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section id="why">
+    <h2>Why combine trees and LLMs</h2>
+    <p>The trees and the LLMs are good at different things. The trees read numbers exactly: input sizes, the pool size written in the code, the peak of the task's earlier run. But they only know the code through 44 hand-picked tokens, so code that uses an API they have no feature for looks like nothing they have seen. The LLMs read the whole source, so they can recognize a new pool-size API, but they read numbers as text.</p>
+    <div class="cols">
+      <div class="stat"><span class="n">94.6% / 68.4%</span><span class="l">trees (gbt-dist), test / unseen families. Strong on familiar code, weak on new code.</span></div>
+      <div class="stat"><span class="n">97.7% / 85.6%</span><span class="l">decision 1.7B alone, test / unseen families. It drops less on new code.</span></div>
+      <div class="stat"><span class="n">48.0% vs 88.7%</span><span class="l">trees vs decision 1.7B on pyarrow's CSV reader, the unseen family whose API the trees have no feature for.</span></div>
+    </div>
+    <p>If the two fail on different runs, a combination could be right where either one is. The question this round asks is whether it is, and whether the combination knows which member to believe on a given run.</p>
+  </section>
+
+  <section id="stacked">
+    <h2>Stacked hybrids: the trees' estimate in the prompt</h2>
+    <p>A stacked arm is an ordinary LLM arm with one change: its prompt carries the trees' prediction for this run, and it is trained that way. The LLM still reads the code, the inputs and the history, and it still makes the final choice. It can follow the trees, or overrule them. There are three: <span class="mono">stack-sft</span>, <span class="mono">stack-jev-pointer</span> (decision 1.7B) and <span class="mono">stack-jev-pointer-4b</span> (decision 4B).</p>
+    <h3>What the hint says</h3>
+    <p>The hint is a short section placed just before the options. It gives the trees' three most likely peak cells with their probabilities, the cell the trees would pick, and their mean CPU cell. In the template below, the values in angle brackets are filled in per run.</p>
+    <div class="figure"><pre class="block">### Task code
+```python
+… unchanged …
+```
+
+### This run's inputs
+… unchanged …
+
+### Earlier runs of this task
+… unchanged …
+
+### A tree model's estimate                                         ← new section
+Gradient-boosted trees fit on other tasks' measured runs (they read the input sizes,
+the API names and numbers in the code, and this task's earlier runs) put peak_cpu at
+&lt;cell&gt; &lt;p&gt;%, &lt;cell&gt; &lt;p&gt;%, &lt;cell&gt; &lt;p&gt;%; their pick: &lt;cell&gt;. Their mean_cpu: &lt;cell&gt;.
+
+### Options                                                         ← unchanged from here on
+peak_cpu: 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8
+mean_cpu: 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8
+
+Answer with JSON only: {"peak_cpu": "&lt;one peak_cpu option&gt;", "mean_cpu": "&lt;one mean_cpu option&gt;"}</pre></div>
+    <p><b>Why it goes before the options.</b> The decision model's head finds each option's token by its distance from the end of the prompt. Putting the hint before <span class="mono">### Options</span> leaves everything after it, and so those distances, unchanged. Prompts are cut from the left to 2,048 tokens, so the hint is always kept; on a prompt already at the limit, it pushes a few more lines of code off the top. A unit test (<span class="mono">tests/test_hybrid.py</span>) checks that the hinted prompt ends with exactly the plain prompt's suffix.</p>
+
+    <h3>Where the hints come from: cross-fitting</h3>
+    <p>The obvious way to make hints for the training runs is wrong. Trees fitted on all 5,628 training runs have seen those runs, so their predictions on them are better than anything they would say about new code. An LLM trained on those hints would learn to trust the trees too much. So each training run gets an <b>out-of-fold</b> hint:</p>
+    <div class="figure"><pre class="block">training runs (5,628) split into 5 folds by task (a hash of the task id), so both runs of a task share a fold
+
+fold 1 held out  ──►  trees fitted on folds 2–5    ──►  hints for fold 1   ┐
+fold 2 held out  ──►  trees fitted on folds 1, 3–5 ──►  hints for fold 2   │
+   …                                                                       ├──►  every training run has a hint from
+fold 5 held out  ──►  trees fitted on folds 1–4    ──►  hints for fold 5   ┘     trees that never saw its task
+
+validation, test, unseen  ──►  trees fitted on all of train  ──►  hints      (what the arm would get in use)</pre></div>
+    <ol class="steps">
+      <li><span><b>Fit the trees five times.</b> Each fit leaves out one fold of tasks and predicts that fold. A run's hint never comes from trees that saw its own task, or its sibling run. The unit test checks this.</span></li>
+      <li><span><b>Fit once more on all of train</b>, and predict validation, test and the unseen families. These hints are what a deployed arm would see.</span></li>
+      <li><span><b>Write the hint into every prompt</b> and train the LLM arm exactly as its plain version is trained (same model, adapters, epochs and loss), on the hinted corpus.</span></li>
+      <li><span><b>Score it</b> like any other arm. The stacked decision models are also read by argmax, and the stacked SFT both greedily and with 8 samples, which gives 6 stacked rows.</span></li>
+    </ol>
+    <p>The intent is that the LLM learns how far to trust the trees on code they did not fit. The catch, which the results bear out, is that "code they did not fit" here still means code from the same 9 families. The out-of-fold hints are right about 95% of the time.</p>
+  </section>
+
+  <section id="pooled">
+    <h2>Pooled hybrids: multiply the two distributions</h2>
+    <p>The trees and every distributional LLM arm already give a probability for each of the 16 cells. A pool combines them without retraining anything. This bench uses a <b>logarithmic opinion pool</b>: each cell's pooled probability is the trees' probability raised to the power w, times the LLM's raised to 1 − w, renormalized so the 16 values sum to 1.</p>
+    <div class="figure"><pre class="block">trees (gbt-dist):   p_trees(j)   for the 16 cells j   ┐
+                                                       ├──►  p(j) ∝ p_trees(j)^w · p_llm(j)^(1 − w)  ──►  decoder (±25%)  or  argmax
+LLM arm:            p_llm(j)     for the 16 cells j   ┘
+
+w = 1: the trees alone      w = 0: the LLM alone      w is picked on validation from 0, 0.1, 0.2, … 1.0 (11 values)</pre></div>
+    <div class="howto"><span class="t">Worked example</span>
+      <p>The unit test pools two distributions over three cells: trees (0.7, 0.2, 0.1) and LLM (0.1, 0.3, 0.6). They disagree about which cell is likely.</p>
+      <ul>
+        <li>At w = 0.5, each cell gets the square root of the product: √0.07, √0.06, √0.06. Renormalized, that is about (0.35, 0.33, 0.33).</li>
+        <li>Where the two disagree, the pool spreads its probability. Where both put most of it on the same cell, so does the pool.</li>
+        <li>A cell that either member gives near-zero probability is pushed far down. That is the difference from averaging the two: one confident "no" is enough to rule a cell out.</li>
+      </ul>
+    </div>
+    <dl class="defs">
+      <dt>Tuning w</dt><dd>For each pool, all 11 values of w are tried on the 838 validation runs, each decoded with the bench's ±25% decoder. The w with the highest validation score is kept. Ties go to the larger w. Both ends of the range are tried, so on validation a pool is never worse than either of its members.</dd>
+      <dt>Members</dt><dd>Every LLM variant that outputs a distribution on every run: SFT with 8 samples, decision 1.7B and 4B, and the three stacked versions of those. That gives 6 pools. Each is also read by argmax, for 12 pooled rows.</dd>
+      <dt>Mean CPU</dt><dd>The second decision is taken from whichever member gets it right more often on validation. In all 6 pools that was the LLM.</dd>
+    </dl>
+  </section>
+
+  <section id="rows">
+    <h2>The 18 new rows</h2>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>rows</th><th>what they are</th></tr></thead>
+      <tbody>
+        <tr><td>stack-sft-greedy, stack-sft-sampled</td><td>SFT 1.7B trained with hints; read greedily or from 8 samples</td></tr>
+        <tr><td>stack-jev-pointer[-argmax]</td><td>decision 1.7B trained with hints; decoded for ±25%, or argmax</td></tr>
+        <tr><td>stack-jev-pointer-4b[-argmax]</td><td>decision 4B trained with hints</td></tr>
+        <tr><td>pool-sft-sampled[-argmax]</td><td>trees pooled with SFT's 8-sample distribution (w = 0.7)</td></tr>
+        <tr><td>pool-jev-pointer[-argmax]</td><td>trees pooled with decision 1.7B (w = 0.7)</td></tr>
+        <tr><td>pool-jev-pointer-4b[-argmax]</td><td>trees pooled with decision 4B (w = 0.5)</td></tr>
+        <tr><td>pool-stack-…[-argmax]</td><td>trees pooled with each stacked arm, so the trees count twice (w = 0.4, 0.4 and 0.1)</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section id="runs">
+    <h2>How the experiment ran</h2>
+    <p>The benchmark is one Union factory, <span class="mono">rightsize-cpu-bench</span>. Each arm is a value of the <span class="mono">arm</span> partition. This round adds the three stacked arms as new partition values, and two artifacts built from every arm of the release: the pool and its scorecard. The pool's lineage records which tree and LLM versions it combined.</p>
+    <div class="figure"><pre class="block">rt-cpubench-corpus [release]          reused from round 20 (cache hit)
+      ├──────────────┬──── … ────┐        one per arm, now with stack-sft, stack-jev-pointer, stack-jev-pointer-4b
+rt-cpubench-arm [release, arm]        fit_cpu_arm        stacked: cross-fit trees → hinted corpus → LLM on a T4
+rt-cpubench-scorecard [release, arm]  score_cpu_arm
+      │
+rt-cpubench-pool [release]            pool_cpu_arms      (new) gbt-dist × each distributional LLM variant
+rt-cpubench-pool-scorecard [release]  score_cpu_arm      (new)
+      └─────────── .all("arm") + pool scorecard ───────────┘
+rt-cpubench-leaderboard [release]     cpu_leaderboard    30 rows</pre></div>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>run</th><th>what</th><th>outcome</th></tr></thead>
+      <tbody>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-big-1">rsc-big-1</a></td><td>Round 20: measured the 9,900 runs, fitted 9 approaches</td><td>The corpus this round reuses, and the baseline numbers.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-big-2">rsc-big-2</a></td><td>Round 21: corpus reused; 9 arms re-fit, 3 stacked arms, the pool, leaderboard</td><td>Succeeded. The results on this page.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <div class="part">Part 3 · Results</div>
+  <section id="results">
+    <h2>The leaderboard: best in distribution, near the trees on new code</h2>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--rule-c)"></span>rule</span>
+      <span><span class="kind" style="background:var(--tree)"></span>classical ML</span>
+      <span><span class="kind" style="background:var(--warm)"></span>autoregressive LLM</span>
+      <span><span class="kind" style="background:var(--accent)"></span>decision model</span>
+      <span><span class="kind" style="background:var(--hyb)"></span>trees × LLM hybrid</span>
+    </div>
+    <div class="figure"><svg id="board" viewBox="0 0 900 490" role="img" aria-label="Share of runs with peak predicted within plus or minus 25 percent, test and unseen families, for single arms and hybrids"></svg>
+      <p class="caption">Solid bar: test split (1,634 runs). Outline: unseen families (1,800 runs). The zero-shot 27B row is a 297 + 300 run subsample. Each LLM arm is followed by its stacked and pooled hybrids. Higher is better; the oracle scores 100%. All 30 rows are in the <a href="#full">full leaderboard</a>.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>Compare each purple pair with the LLM row just above it. On test (solid), the bars are nearly the same length: 97–98.5% for the decision models and their hybrids.</li>
+        <li>On unseen families (outline), the purple bars are shorter than their LLM's, and most end near the trees' 68.4%. The pooled 4B (82.2%) is the exception.</li>
+        <li>With 1,634 test runs, a share near 98% has a 95% interval of about ±0.7 points. Differences of under a point on test are within that.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="delta">
+    <h2>Each hybrid against the LLM it is built from</h2>
+    <p>The chart subtracts each LLM arm's score from its hybrids' scores, so 0 means "no different from the LLM alone". The stacked rows are trained with hints; the pooled rows combine the trees with the plain LLM; the "pooled stacked" rows combine the trees with the stacked LLM, so the trees count twice.</p>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--hyb)"></span>test split</span>
+      <span><span class="kind" style="background:transparent;border:1.5px solid var(--hyb)"></span>unseen families</span>
+    </div>
+    <div class="figure"><svg id="deltachart" viewBox="0 0 900 420" role="img" aria-label="Change in share within plus or minus 25 percent, each hybrid minus its LLM arm alone, test and unseen families"></svg>
+      <p class="caption">Percentage points, hybrid minus the plain LLM arm (SFT 8 samples, decision 1.7B, decision 4B). All rows use the ±25% decoder.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>On test, every bar is within a point of zero except the two pools of SFT, which gain 3.4 and 3.6 points (93.9% to 97.3% and 97.6%). SFT's distribution comes from only 8 samples, so it is coarse; the trees' smooth one fills it in.</li>
+        <li>On unseen families, every bar is negative: from −4.1 points (pooled 4B) to −16.6 (pooled stacked 1.7B).</li>
+        <li>Between round 20 and this round, the same unseen-family score moved by up to 7.1 points from re-fitting alone (see <a href="#repro">Reproducibility</a>). The drops of 10 points or more are larger than that.</li>
+      </ul>
+    </div>
+    <div class="figure table-wrap"><table id="costtable" class="num"></table>
+      <p class="caption">The same rows on cost. Under is the share of runs predicted below the peak. Bold marks the best value in each column.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>On test, the hybrids have the lowest error and cost of any arm: the pooled 4B has 0.21 cores MAE and −5.6% CPU regret.</li>
+        <li>On unseen families they under-predict more often (34% for the decision 1.7B alone, 42% stacked), so more runs would be throttled. Unseen regret rises from 7.3% for the decision 1.7B alone to 23.0% stacked, about the trees' 21.9%.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="families">
+    <h2>The hybrids follow the trees, right or wrong</h2>
+    <p>The two unseen families split the result in two. DuckDB's <span class="mono">SET threads = k</span> looks enough like training code for the trees to get it right. pyarrow's <span class="mono">pa.set_cpu_count</span> and <span class="mono">use_threads=False</span> do not.</p>
+    <div class="figure table-wrap"><table id="famtable" class="num"></table>
+      <p class="caption">Share within ±25% on each unseen family (900 runs each; about 150 each for the 27B), and on the unseen families split by history: cold starts (the task's first run, no history, 900 runs) and warm runs (the second run, which sees the first, 900 runs). Cell shading is proportional to the value.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li><b>DuckDB:</b> the trees (88.8%) beat the decision 1.7B (82.6%). Every hybrid but the stacked SFT moves toward the trees, to 87–89%: a gain of 3.5 to 8.5 points over its LLM. The stacked SFT stays at 81.1%.</li>
+        <li><b>pyarrow:</b> the trees (48.0%) are far behind the decision 1.7B (88.7%). The hybrids move toward the trees again and lose, to 50–65%: the stacked 1.7B scores 55.6%. The pooled 4B, with the lowest trees weight of the plain pools, keeps the most (77.1%).</li>
+        <li><b>Cold starts:</b> with no history, the trees score 52.8% on unseen families and the decision 1.7B 76.6%. Its stacked version scores 56.4%, 20 points below the model alone. On warm runs the gap is 8 points (94.7% to 86.9%).</li>
+        <li>Neither hybrid tells the LLM when the trees are out of their depth. The pool applies one weight to every run. The stacked model could in principle learn to overrule a wrong hint, but training never shows it a family where the hints are often wrong.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>The stacked models are confidently wrong on new code</h2>
+    <p>The decision models, the trees and the hybrids all output probabilities, so their calibration can be compared. The Brier score and the negative log-likelihood (NLL) measure how much probability each arm put on the true peak cell; lower is better for both, and NLL punishes confident mistakes most.</p>
+    <div class="figure table-wrap"><table id="caltable" class="num"></table>
+      <p class="caption">Brier score and NLL of the peak distribution against the true cell. Lower is better.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>On test, the hybrids score close to their LLMs. The stacked 1.7B has the lowest NLL (0.38) and the pooled 4B the lowest Brier score (0.210).</li>
+        <li>On unseen families, the stacked decision 1.7B has a higher NLL (2.53) than the trees whose hint it reads (2.12). It does not just copy the trees' answer; it is more certain of it than the trees are.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="weights">
+    <h2>Why the pool weight lands where it does</h2>
+    <p>Each pool's trees weight is the one that scores best on the 838 validation runs. The chart shows the validation score at every weight tried.</p>
+    <div class="legend" id="wlegend"></div>
+    <div class="figure"><svg id="wchart" viewBox="0 0 900 340" role="img" aria-label="Validation share within plus or minus 25 percent at each trees weight, for the three plain pools"></svg>
+      <p class="caption">Validation split (838 runs). Large dots mark the chosen weight. At w = 1 every pool is the trees alone (95.0%). One validation run is 0.12 points.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>At w = 0 each pool is its LLM alone (decision 1.7B 98.0%, 4B 98.1%, SFT 93.2%). At w = 1 it is the trees (95.0%). In between, every curve rises above both ends, so on validation the pool helps.</li>
+        <li>The peaks are small: the decision 1.7B's pool gains 7 validation runs over the model alone. For the 1.7B, w = 0.4 and w = 0.7 tie at 98.8%; the tie rule picked 0.7.</li>
+        <li>Validation comes from the training families, where the trees miss 5.0% and the LLM 2.0%. That is why a weight of 0.5–0.7 looks safe. On the unseen families, the trees miss 31.6%, and no validation run shows what that costs.</li>
+        <li>The pools of the stacked arms tuned lower weights (0.4, 0.4 and 0.1), consistent with those LLMs already carrying the trees' estimate in their prompts.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>On familiar code, by driver</h2>
+    <p>The test split broken down by driver: what an approach has to understand to get a run right (explicit thread pools, Python thread pools under the GIL, process pools, serial code, I/O waits, and a serial phase followed by a parallel one).</p>
+    <div class="figure table-wrap"><table id="drivertable" class="num"></table>
+      <p class="caption">Share of test runs predicted within ±25%, by driver. Counts in brackets are test runs per driver. Cell shading is proportional to the value.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>The largest driver, explicit thread pools (736 runs), is where stacking helps most: 96.2% to 98.2% for the 1.7B, 96.5% to 97.8% for the 4B. The trees read declared pool sizes exactly.</li>
+        <li>The stacked 4B loses on I/O waits (98.3% to 92.6%) and phased code (96.7% to 91.3%), where the trees are weakest (85.2%, 91.3%). Pooling it instead keeps both near the model alone.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="full">
+    <h2>The full leaderboard</h2>
+    <div class="figure table-wrap"><table id="boardtable" class="num"></table>
+      <p class="caption">All 30 rows of rsc-big-2. Test n = 1,634, unseen n = 1,800, except the zero-shot 27B (297 + 300). Bold marks the best value in each column.</p></div>
+    <div class="howto"><span class="t">Columns</span>
+      <ul>
+        <li><b>within ±25%</b>: the headline, on each split (higher is better).</li>
+        <li><b>under</b>: share of runs predicted below the peak by any amount. Argmax rows rarely under-predict; the ±25% decoder often picks the cell just under a peak, inside the margin.</li>
+        <li><b>MAE</b>: mean absolute error of the predicted peak, in cores (lower is better).</li>
+        <li><b>CPU regret</b>: cost over the oracle when the prediction is used as the limit (lower is better).</li>
+        <li><b>mean ±25%</b>: the same accuracy measure for the second decision, mean CPU.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="repro">
+    <h2>Did the re-fit reproduce round 20?</h2>
+    <p>Every single arm was re-fit on the same corpus. The rules and trees match round 20 exactly. The LLM arms train with random shuffling and dropout, so they move a little; the zero-shot 27B is a call to a shared hosted model.</p>
+    <div class="figure table-wrap"><table id="reprotable" class="num"></table>
+      <p class="caption">Within ±25%, round 20 (rsc-big-1) against round 21 (rsc-big-2), same corpus. Change in percentage points.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>On test, every arm is within 0.8 points of round 20.</li>
+        <li>On unseen families, the decision 1.7B's argmax row moved 7.1 points (74.7% to 81.7%) with nothing changed but the training run. Single-run differences of a few points on unseen families are not reliable; the hybrids' drops of 10 to 17 points are larger than any move seen here.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>What this round supports</h2>
+    <ul>
+      <li><b>Combining the trees with an LLM helps a little on familiar code.</b> The best test score is the stacked 1.7B's 98.5%, and the pooled 4B has the lowest error (0.21 cores) and cost (−5.6% CPU regret). The gains over the best single arm are under a point.</li>
+      <li><b>It hurts on new code.</b> Every hybrid scores 4 to 17 points below its LLM alone on the unseen families, and most land within a few points of the trees.</li>
+      <li><b>The hybrids inherit the trees' mistakes</b>: they gain where the trees are right (DuckDB) and lose where they are wrong (pyarrow, cold starts).</li>
+      <li><b>The trust is learned where the trees are right.</b> Out-of-fold hints from the training families are right about 95% of the time, and validation comes from those families too. Nothing in training or tuning shows a case like pyarrow, where the trees miss half the time.</li>
+      <li><b>The same pattern holds on the other benches</b> in this round (research log): RightSizeGPU's hybrids reach 74.8% in distribution against 71.9% for the trees, and fall to 5–28% on unseen families against 42.1% for the 4B decision model alone.</li>
+      <li><b>Not yet tried:</b> tuning the pool weight on held-out families (folds by family, not by task), or giving the stacked arm hints from trees fitted without the run's family, so the hint is as wrong in training as it is on new families.</li>
+    </ul>
+  </section>
+
+  <section id="limits">
+    <h2>Assumptions and limits</h2>
+    <ul>
+      <li><b>One training run per arm.</b> The reproducibility check shows unseen-family scores can move by several points between runs of the same arm. The hybrids' unseen drops are larger than that; their test gains are not.</li>
+      <li><b>Only one tree model is combined</b> (gbt-dist), and only with the three trained LLM arms. The zero-shot 27B was not stacked or pooled.</li>
+      <li><b>Unseen families are only two.</b> One happens to suit the trees and one does not. With more families, the average loss could be larger or smaller.</li>
+      <li><b>The pool uses one weight for every run.</b> A weight that depended on the run (for example, on whether it has history) was not tried.</li>
+      <li><b>The stacked arms' hints are the trees' own output</b>, with 3 cells and their probabilities. Other hint formats, or no probabilities, were not tried.</li>
+      <li>The round-20 limits still apply: short workloads (30–60 s), pools of at most 6 compute threads, two workloads per pod, and baselines written by the person who wrote the generator.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <div>Short version: <a href="rightsize-cpu-bench-big-hybrids-abstract.html">RightSizeCPU Bench Hybrids Abstract</a>. Round 20 on the same corpus: <a href="https://claude.ai/artifact/EVom2ZzCJdA8eV4tW9VCAP">RightSizeCPU Bench (big-1)</a>. Sibling benchmarks: RightSizeMem (memory), RightSizeGPU (GPU memory and utilization), and the combined RightSize Bench.</div>
+    <div>Source: <span class="mono">model-factory-resource-tuner/resource_tuner/bench/hybrid.py</span>, <span class="mono">bench/spec.py</span> (<span class="mono">with_hint</span>), <span class="mono">bench/common.py</span> (<span class="mono">hinted_corpus</span>, <span class="mono">pooled_arm</span>), <span class="mono">bench_cpu/stations.py</span> · research log <span class="mono">research_log/2026-10-26-round-21-gpu-big-2-hybrids.md</span> · run <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-big-2">rsc-big-2</a> on demo.hosted.unionai.cloud.</div>
+    <div>Reproduce: <span class="mono">flyte factory materialize rightsize-cpu-bench rt-cpubench-leaderboard --partition release=big-1 --partition arm=static,vpa,code-rule,gbt,gbt-dist,zeroshot-27b,sft,jev-pointer,jev-pointer-4b,stack-sft,stack-jev-pointer,stack-jev-pointer-4b</span></div>
+  </footer>
+</div>
+
+<script>
+const ARMS = {"static":{"tw":0.30967,"tu":0.416769,"tm":1.314878,"tr":0.530509,"tmw":0.274786,"ow":0.266667,"ou":0.481111,"om":1.300694,"orr":0.581306,"tn":1634,"on":1800,"duck":0.3,"pya":0.233333,"oc":0.263333,"ow2":0.27,"drv":{"threads":0.349185,"gil":0.260638,"processes":0.462366,"serial":0.0,"io":0.0,"phases":0.619565}},"vpa":{"tw":0.645655,"tu":0.270502,"tm":0.70607,"tr":0.221246,"tmw":0.622399,"ow":0.606111,"ou":0.472222,"om":0.769762,"orr":0.28058,"tn":1634,"on":1800,"duck":0.596667,"pya":0.615556,"oc":0.263333,"ow2":0.948889,"drv":{"threads":0.658967,"gil":0.62766,"processes":0.725806,"serial":0.5,"io":0.494318,"phases":0.804348}},"code-rule":{"tw":0.73623,"tu":0.413097,"tm":0.886242,"tr":0.197806,"tmw":0.496328,"ow":0.793889,"ou":0.561667,"om":0.738262,"orr":0.140816,"tn":1634,"on":1800,"duck":0.812222,"pya":0.775556,"oc":0.798889,"ow2":0.788889,"drv":{"threads":0.90625,"gil":0.62766,"processes":0.650538,"serial":1.0,"io":0.0,"phases":0.722826}},"gbt":{"tw":0.924113,"tu":0.044676,"tm":0.34686,"tr":-0.001169,"tmw":0.896573,"ow":0.658333,"ou":0.247778,"om":0.692759,"orr":0.222655,"tn":1634,"on":1800,"duck":0.754444,"pya":0.562222,"oc":0.492222,"ow2":0.824444,"drv":{"threads":0.918478,"gil":0.989362,"processes":0.946237,"serial":1.0,"io":0.801136,"phases":0.907609}},"gbt-dist":{"tw":0.945532,"tu":0.242962,"tm":0.260751,"tr":-0.027467,"tmw":0.896573,"ow":0.683889,"ou":0.342778,"om":0.662003,"orr":0.219154,"tn":1634,"on":1800,"duck":0.887778,"pya":0.48,"oc":0.527778,"ow2":0.84,"drv":{"threads":0.944293,"gil":0.994681,"processes":0.973118,"serial":1.0,"io":0.852273,"phases":0.913043},"tbrier":0.295951,"tnll":0.632026,"obrier":0.751978,"onll":2.124087},"zeroshot-27b":{"tw":0.680135,"tu":0.262626,"tm":0.594842,"tr":0.368904,"tmw":0.693603,"ow":0.833333,"ou":0.323333,"om":0.550676,"orr":0.409645,"tn":297,"on":300,"duck":0.773333,"pya":0.893333,"oc":0.738854,"ow2":0.937063,"drv":{"threads":0.795455,"gil":0.727273,"processes":0.636364,"serial":1.0,"io":0.515152,"phases":0.060606}},"sft-greedy":{"tw":0.951652,"tu":0.025092,"tm":0.39349,"tr":0.017229,"tmw":0.95104,"ow":0.744444,"ou":0.053333,"om":0.693575,"orr":0.111263,"tn":1634,"on":1800,"duck":0.626667,"pya":0.862222,"oc":0.551111,"ow2":0.937778,"drv":{"threads":0.933424,"gil":1.0,"processes":0.951613,"serial":1.0,"io":0.931818,"phases":0.951087}},"sft-sampled":{"tw":0.939412,"tu":0.090575,"tm":0.307381,"tr":-0.015671,"tmw":0.959608,"ow":0.843889,"ou":0.118333,"om":0.514543,"orr":0.056548,"tn":1634,"on":1800,"duck":0.805556,"pya":0.882222,"oc":0.736667,"ow2":0.951111,"drv":{"threads":0.918478,"gil":1.0,"processes":0.973118,"serial":1.0,"io":0.988636,"phases":0.826087},"tbrier":0.2364,"tnll":0.554056,"obrier":0.565546,"onll":1.510064},"jev-pointer-argmax":{"tw":0.950428,"tu":0.026316,"tm":0.395644,"tr":0.012713,"tmw":0.95716,"ow":0.817222,"ou":0.037778,"om":0.635476,"orr":0.093388,"tn":1634,"on":1800,"duck":0.752222,"pya":0.882222,"oc":0.715556,"ow2":0.918889,"drv":{"threads":0.919837,"gil":1.0,"processes":0.967742,"serial":1.0,"io":0.960227,"phases":0.951087},"tbrier":0.227534,"tnll":0.410433,"obrier":0.557779,"onll":1.553268},"jev-pointer":{"tw":0.977356,"tu":0.320073,"tm":0.246855,"tr":-0.044689,"tmw":0.95716,"ow":0.856111,"ou":0.342222,"om":0.539012,"orr":0.073265,"tn":1634,"on":1800,"duck":0.825556,"pya":0.886667,"oc":0.765556,"ow2":0.946667,"drv":{"threads":0.961957,"gil":1.0,"processes":1.0,"serial":1.0,"io":0.982955,"phases":0.967391},"tbrier":0.227534,"tnll":0.410433,"obrier":0.557779,"onll":1.553268},"jev-pointer-4b-argmax":{"tw":0.949204,"tu":0.019584,"tm":0.397229,"tr":0.014428,"tmw":0.957772,"ow":0.79,"ou":0.021111,"om":0.64101,"orr":0.095378,"tn":1634,"on":1800,"duck":0.697778,"pya":0.882222,"oc":0.676667,"ow2":0.903333,"drv":{"threads":0.919837,"gil":1.0,"processes":0.962366,"serial":1.0,"io":0.931818,"phases":0.972826},"tbrier":0.219352,"tnll":0.395509,"obrier":0.496285,"onll":1.37405},"jev-pointer-4b":{"tw":0.97858,"tu":0.28519,"tm":0.23255,"tr":-0.049708,"tmw":0.957772,"ow":0.862778,"ou":0.346667,"om":0.52178,"orr":0.067548,"tn":1634,"on":1800,"duck":0.837778,"pya":0.887778,"oc":0.771111,"ow2":0.954444,"drv":{"threads":0.964674,"gil":1.0,"processes":1.0,"serial":1.0,"io":0.982955,"phases":0.967391},"tbrier":0.219352,"tnll":0.395509,"obrier":0.496285,"onll":1.37405},"stack-sft-greedy":{"tw":0.959608,"tu":0.01836,"tm":0.382349,"tr":0.007395,"tmw":0.967564,"ow":0.607778,"ou":0.156111,"om":0.779566,"orr":0.220019,"tn":1634,"on":1800,"duck":0.644444,"pya":0.571111,"oc":0.415556,"ow2":0.8,"drv":{"threads":0.952446,"gil":1.0,"processes":0.962366,"serial":1.0,"io":0.943182,"phases":0.923913}},"stack-sft-sampled":{"tw":0.94186,"tu":0.078335,"tm":0.284092,"tr":-0.0275,"tmw":0.968176,"ow":0.684444,"ou":0.212222,"om":0.662662,"orr":0.214441,"tn":1634,"on":1800,"duck":0.811111,"pya":0.557778,"oc":0.543333,"ow2":0.825556,"drv":{"threads":0.925272,"gil":1.0,"processes":0.967742,"serial":1.0,"io":0.954545,"phases":0.858696},"tbrier":0.225614,"tnll":0.511586,"obrier":0.80671,"onll":2.605541},"stack-jev-pointer-argmax":{"tw":0.953488,"tu":0.016524,"tm":0.38187,"tr":0.007635,"tmw":0.965728,"ow":0.593333,"ou":0.18,"om":0.818314,"orr":0.262728,"tn":1634,"on":1800,"duck":0.627778,"pya":0.558889,"oc":0.376667,"ow2":0.81,"drv":{"threads":0.949728,"gil":1.0,"processes":0.962366,"serial":1.0,"io":0.886364,"phases":0.934783},"tbrier":0.212495,"tnll":0.382479,"obrier":0.810462,"onll":2.525432},"stack-jev-pointer":{"tw":0.985312,"tu":0.30355,"tm":0.227557,"tr":-0.051543,"tmw":0.965728,"ow":0.716667,"ou":0.417222,"om":0.661691,"orr":0.229713,"tn":1634,"on":1800,"duck":0.877778,"pya":0.555556,"oc":0.564444,"ow2":0.868889,"drv":{"threads":0.982337,"gil":1.0,"processes":0.994624,"serial":1.0,"io":0.965909,"phases":0.978261},"tbrier":0.212495,"tnll":0.382479,"obrier":0.810462,"onll":2.525432},"stack-jev-pointer-4b-argmax":{"tw":0.939412,"tu":0.018972,"tm":0.4036,"tr":0.014981,"tmw":0.957772,"ow":0.622222,"ou":0.181667,"om":0.806742,"orr":0.252232,"tn":1634,"on":1800,"duck":0.592222,"pya":0.652222,"oc":0.356667,"ow2":0.887778,"drv":{"threads":0.941576,"gil":1.0,"processes":0.962366,"serial":1.0,"io":0.920455,"phases":0.809783},"tbrier":0.223696,"tnll":0.408132,"obrier":0.718267,"onll":2.046916},"stack-jev-pointer-4b":{"tw":0.971848,"tu":0.328641,"tm":0.247569,"tr":-0.041593,"tmw":0.957772,"ow":0.76,"ou":0.413889,"om":0.62903,"orr":0.208278,"tn":1634,"on":1800,"duck":0.873333,"pya":0.646667,"oc":0.587778,"ow2":0.932222,"drv":{"threads":0.978261,"gil":1.0,"processes":0.994624,"serial":1.0,"io":0.926136,"phases":0.913043},"tbrier":0.223696,"tnll":0.408132,"obrier":0.718267,"onll":2.046916},"pool-jev-pointer":{"tw":0.976132,"tu":0.29131,"tm":0.211947,"tr":-0.053691,"tmw":0.95716,"ow":0.730556,"ou":0.394444,"om":0.626985,"orr":0.142075,"tn":1634,"on":1800,"duck":0.874444,"pya":0.586667,"oc":0.592222,"ow2":0.868889,"drv":{"threads":0.967391,"gil":1.0,"processes":0.989247,"serial":1.0,"io":0.960227,"phases":0.967391},"tbrier":0.225989,"tnll":0.427286,"obrier":0.691171,"onll":1.592903},"pool-jev-pointer-4b":{"tw":0.983476,"tu":0.283354,"tm":0.210795,"tr":-0.056033,"tmw":0.957772,"ow":0.822222,"ou":0.396111,"om":0.526979,"orr":0.088585,"tn":1634,"on":1800,"duck":0.873333,"pya":0.771111,"oc":0.685556,"ow2":0.958889,"drv":{"threads":0.971467,"gil":1.0,"processes":1.0,"serial":1.0,"io":0.988636,"phases":0.978261},"tbrier":0.209828,"tnll":0.387251,"obrier":0.597572,"onll":1.366051},"pool-jev-pointer-4b-argmax":{"tw":0.94492,"tu":0.016524,"tm":0.393478,"tr":0.012629,"tmw":0.957772,"ow":0.765556,"ou":0.152222,"om":0.648555,"orr":0.10484,"tn":1634,"on":1800,"duck":0.656667,"pya":0.874444,"oc":0.624444,"ow2":0.906667,"drv":{"threads":0.925272,"gil":1.0,"processes":0.94086,"serial":1.0,"io":0.926136,"phases":0.940217},"tbrier":0.209828,"tnll":0.387251,"obrier":0.597572,"onll":1.366051},"pool-jev-pointer-argmax":{"tw":0.946144,"tu":0.020196,"tm":0.388314,"tr":0.00946,"tmw":0.95716,"ow":0.713333,"ou":0.158333,"om":0.697818,"orr":0.121269,"tn":1634,"on":1800,"duck":0.648889,"pya":0.777778,"oc":0.612222,"ow2":0.814444,"drv":{"threads":0.932065,"gil":1.0,"processes":0.94086,"serial":1.0,"io":0.948864,"phases":0.902174},"tbrier":0.225989,"tnll":0.427286,"obrier":0.691171,"onll":1.592903},"pool-sft-sampled":{"tw":0.97552,"tu":0.240514,"tm":0.232218,"tr":-0.046296,"tmw":0.959608,"ow":0.718889,"ou":0.326111,"om":0.640687,"orr":0.207951,"tn":1634,"on":1800,"duck":0.877778,"pya":0.56,"oc":0.588889,"ow2":0.848889,"drv":{"threads":0.967391,"gil":0.994681,"processes":0.973118,"serial":1.0,"io":0.994318,"phases":0.951087},"tbrier":0.227786,"tnll":0.481237,"obrier":0.676878,"onll":1.583788},"pool-sft-sampled-argmax":{"tw":0.94186,"tu":0.017136,"tm":0.389776,"tr":0.009576,"tmw":0.959608,"ow":0.593333,"ou":0.155556,"om":0.834205,"orr":0.252124,"tn":1634,"on":1800,"duck":0.606667,"pya":0.58,"oc":0.403333,"ow2":0.783333,"drv":{"threads":0.92663,"gil":1.0,"processes":0.946237,"serial":1.0,"io":0.9375,"phases":0.891304},"tbrier":0.227786,"tnll":0.481237,"obrier":0.676878,"onll":1.583788},"pool-stack-jev-pointer":{"tw":0.982252,"tu":0.291922,"tm":0.221638,"tr":-0.052472,"tmw":0.965728,"ow":0.69,"ou":0.434444,"om":0.663446,"orr":0.222427,"tn":1634,"on":1800,"duck":0.878889,"pya":0.501111,"oc":0.532222,"ow2":0.847778,"drv":{"threads":0.980978,"gil":1.0,"processes":0.989247,"serial":1.0,"io":0.965909,"phases":0.961957},"tbrier":0.215799,"tnll":0.392838,"obrier":0.787056,"onll":2.266519},"pool-stack-jev-pointer-4b":{"tw":0.976132,"tu":0.324969,"tm":0.242833,"tr":-0.043178,"tmw":0.957772,"ow":0.724444,"ou":0.418333,"om":0.648785,"orr":0.213916,"tn":1634,"on":1800,"duck":0.884444,"pya":0.564444,"oc":0.597778,"ow2":0.851111,"drv":{"threads":0.97962,"gil":1.0,"processes":0.994624,"serial":1.0,"io":0.943182,"phases":0.929348},"tbrier":0.22443,"tnll":0.412128,"obrier":0.757298,"onll":1.979645},"pool-stack-jev-pointer-4b-argmax":{"tw":0.936965,"tu":0.023868,"tm":0.405089,"tr":0.015314,"tmw":0.957772,"ow":0.568333,"ou":0.171111,"om":0.851878,"orr":0.268309,"tn":1634,"on":1800,"duck":0.567778,"pya":0.568889,"oc":0.363333,"ow2":0.773333,"drv":{"threads":0.942935,"gil":1.0,"processes":0.94086,"serial":1.0,"io":0.920455,"phases":0.804348},"tbrier":0.22443,"tnll":0.412128,"obrier":0.757298,"onll":1.979645},"pool-stack-jev-pointer-argmax":{"tw":0.94798,"tu":0.017136,"tm":0.384995,"tr":0.008593,"tmw":0.965728,"ow":0.595556,"ou":0.177778,"om":0.811858,"orr":0.26038,"tn":1634,"on":1800,"duck":0.632222,"pya":0.558889,"oc":0.395556,"ow2":0.795556,"drv":{"threads":0.949728,"gil":1.0,"processes":0.94086,"serial":1.0,"io":0.886364,"phases":0.907609},"tbrier":0.215799,"tnll":0.392838,"obrier":0.787056,"onll":2.266519},"pool-stack-sft-sampled":{"tw":0.973072,"tu":0.241738,"tm":0.247446,"tr":-0.040103,"tmw":0.968176,"ow":0.698333,"ou":0.336111,"om":0.640714,"orr":0.214326,"tn":1634,"on":1800,"duck":0.891111,"pya":0.505556,"oc":0.545556,"ow2":0.851111,"drv":{"threads":0.96875,"gil":0.994681,"processes":0.973118,"serial":1.0,"io":0.954545,"phases":0.961957},"tbrier":0.222125,"tnll":0.490283,"obrier":0.803513,"onll":2.524949},"pool-stack-sft-sampled-argmax":{"tw":0.946756,"tu":0.019584,"tm":0.390365,"tr":0.011098,"tmw":0.968176,"ow":0.604444,"ou":0.162222,"om":0.788209,"orr":0.234387,"tn":1634,"on":1800,"duck":0.633333,"pya":0.575556,"oc":0.415556,"ow2":0.793333,"drv":{"threads":0.938859,"gil":1.0,"processes":0.951613,"serial":1.0,"io":0.926136,"phases":0.891304},"tbrier":0.222125,"tnll":0.490283,"obrier":0.803513,"onll":2.524949}};
+const POOLW = {"pool-jev-pointer":{"w":0.7,"curve":[0.979714,0.983294,0.984487,0.98568,0.988067,0.98568,0.986874,0.988067,0.980907,0.97136,0.949881]},"pool-jev-pointer-4b":{"w":0.5,"curve":[0.980907,0.9821,0.9821,0.9821,0.984487,0.98926,0.986874,0.983294,0.97852,0.966587,0.949881]},"pool-sft-sampled":{"w":0.7,"curve":[0.931981,0.977327,0.977327,0.97852,0.979714,0.980907,0.983294,0.984487,0.979714,0.97136,0.949881]},"pool-stack-jev-pointer":{"w":0.4,"curve":[0.991647,0.991647,0.99284,0.99284,0.99284,0.988067,0.984487,0.980907,0.972554,0.965394,0.949881]},"pool-stack-jev-pointer-4b":{"w":0.4,"curve":[0.97136,0.973747,0.97494,0.97494,0.97494,0.972554,0.97136,0.970167,0.966587,0.963007,0.949881]},"pool-stack-sft-sampled":{"w":0.1,"curve":[0.945107,0.98568,0.984487,0.983294,0.980907,0.980907,0.980907,0.980907,0.97494,0.96778,0.949881]}};
+const R20 = {"static":[0.30967,0.266667],"vpa":[0.645655,0.606111],"code-rule":[0.73623,0.793889],"gbt":[0.924113,0.658333],"gbt-dist":[0.945532,0.683889],"zeroshot-27b":[0.683502,0.836667],"sft-greedy":[0.949204,0.752222],"sft-sampled":[0.940636,0.830556],"jev-pointer":[0.97858,0.839444],"jev-pointer-argmax":[0.947368,0.746667],"jev-pointer-4b":[0.97552,0.861111],"jev-pointer-4b-argmax":[0.941248,0.807222]};
+const DRIVERS = [["threads", "explicit pool"], ["gil", "thread pool (GIL)"], ["processes", "process pool"], ["serial", "serial"], ["io", "I/O-bound"], ["phases", "serial then parallel"]];
+const DRV_N = {"threads": 736, "gil": 188, "processes": 186, "serial": 164, "io": 176, "phases": 184};
+const LABEL = {
+  "static": "static request", "vpa": "history max × margin", "code-rule": "code rule (declared pool)",
+  "gbt": "trees (gbt)", "gbt-dist": "trees, distribution", "zeroshot-27b": "zero-shot 27B",
+  "sft-greedy": "SFT 1.7B, greedy", "sft-sampled": "SFT 1.7B, 8 samples",
+  "jev-pointer-argmax": "decision 1.7B, argmax", "jev-pointer": "decision 1.7B, pointer",
+  "jev-pointer-4b-argmax": "decision 4B, argmax", "jev-pointer-4b": "decision 4B, pointer",
+  "stack-sft-greedy": "stacked SFT 1.7B, greedy", "stack-sft-sampled": "stacked SFT 1.7B, 8 samples",
+  "stack-jev-pointer-argmax": "stacked decision 1.7B, argmax", "stack-jev-pointer": "stacked decision 1.7B",
+  "stack-jev-pointer-4b-argmax": "stacked decision 4B, argmax", "stack-jev-pointer-4b": "stacked decision 4B",
+  "pool-sft-sampled-argmax": "pooled SFT 1.7B, argmax", "pool-sft-sampled": "pooled SFT 1.7B",
+  "pool-jev-pointer-argmax": "pooled decision 1.7B, argmax", "pool-jev-pointer": "pooled decision 1.7B",
+  "pool-jev-pointer-4b-argmax": "pooled decision 4B, argmax", "pool-jev-pointer-4b": "pooled decision 4B",
+  "pool-stack-sft-sampled-argmax": "pooled stacked SFT, argmax", "pool-stack-sft-sampled": "pooled stacked SFT",
+  "pool-stack-jev-pointer-argmax": "pooled stacked 1.7B, argmax", "pool-stack-jev-pointer": "pooled stacked 1.7B",
+  "pool-stack-jev-pointer-4b-argmax": "pooled stacked 4B, argmax", "pool-stack-jev-pointer-4b": "pooled stacked 4B"
+};
+const ORDER = Object.keys(LABEL);
+const PICK = ["code-rule", "gbt-dist", "zeroshot-27b", "sft-sampled", "stack-sft-sampled", "pool-sft-sampled",
+  "jev-pointer", "stack-jev-pointer", "pool-jev-pointer", "jev-pointer-4b", "stack-jev-pointer-4b", "pool-jev-pointer-4b"];
+const PAIRS = [["sft-sampled", ["stack-sft-sampled", "pool-sft-sampled", "pool-stack-sft-sampled"]],
+  ["jev-pointer", ["stack-jev-pointer", "pool-jev-pointer", "pool-stack-jev-pointer"]],
+  ["jev-pointer-4b", ["stack-jev-pointer-4b", "pool-jev-pointer-4b", "pool-stack-jev-pointer-4b"]]];
+const KIND = a => (a.startsWith("stack") || a.startsWith("pool")) ? "hyb" : a.startsWith("jev") ? "dec" : a.startsWith("sft") || a.startsWith("zeroshot") ? "llm" : a.startsWith("gbt") ? "tree" : "rule";
+const COLOR = { rule: "var(--rule-c)", tree: "var(--tree)", llm: "var(--warm)", dec: "var(--accent)", hyb: "var(--hyb)" };
+const NS = "http://www.w3.org/2000/svg", MONO = "IBM Plex Mono, monospace";
+const pct = x => (x * 100).toFixed(1) + "%";
+const sw = a => `<span class="kind" style="background:${COLOR[KIND(a)]}"></span>`;
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function table(id, rows, cols) {
+  const best = {};
+  cols.forEach(([k, , dir]) => { if (dir) { const vs = rows.map(a => ARMS[a][k]); best[k] = dir > 0 ? Math.max(...vs) : Math.min(...vs); } });
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  rows.forEach(a => {
+    h += `<tr><td>${sw(a)}${LABEL[a]}</td>`;
+    cols.forEach(([k, , dir, f]) => { h += `<td class="${dir && ARMS[a][k] === best[k] ? "best" : ""}">${f(ARMS[a][k])}</td>`; });
+    h += "</tr>";
+  });
+  document.getElementById(id).innerHTML = h + "</tbody>";
+}
+function heat(id, rows, cols) {
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  rows.forEach(a => {
+    h += `<tr><td>${sw(a)}${LABEL[a]}</td>`;
+    cols.forEach(([get]) => { const v = get(ARMS[a]); h += `<td class="heat" style="background:color-mix(in srgb, var(--accent) ${Math.round(v * 34)}%, transparent)">${pct(v)}</td>`; });
+    h += "</tr>";
+  });
+  document.getElementById(id).innerHTML = h + "</tbody>";
+}
+
+// leaderboard bars (curated rows)
+(function () {
+  const svg = document.getElementById("board"), L = 230, R = 60, T = 10, rowH = 39;
+  const W = 900 - L - R, x = v => L + W * v;
+  svg.setAttribute("viewBox", `0 0 900 ${T + rowH * PICK.length + 30}`);
+  [0, 0.25, 0.5, 0.75, 1].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * PICK.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * PICK.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v * 100) + "%");
+  });
+  PICK.forEach((a, i) => {
+    const d = ARMS[a], y = T + i * rowH, c = COLOR[KIND(a)];
+    if (i > 0 && (a === "sft-sampled" || a === "jev-pointer" || a === "jev-pointer-4b")) el("line", { x1: 0, x2: 900, y1: y + 1, y2: y + 1, stroke: "var(--rule)", "stroke-dasharray": "2 4" }, svg);
+    el("text", { x: L - 10, y: y + 17, "text-anchor": "end", "font-size": 13, fill: "var(--ink)" }, svg, LABEL[a]);
+    el("rect", { x: L, y: y + 5, width: Math.max(1, x(d.tw) - L), height: 13, rx: 2, fill: c }, svg);
+    el("rect", { x: L, y: y + 21, width: Math.max(1, x(d.ow) - L), height: 11, rx: 2, fill: "none", stroke: c, "stroke-width": 1.5 }, svg);
+    el("text", { x: x(d.tw) + 6, y: y + 16, "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, pct(d.tw));
+    el("text", { x: x(d.ow) + 6, y: y + 31, "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, pct(d.ow));
+  });
+})();
+
+// hybrid minus its LLM
+(function () {
+  const svg = document.getElementById("deltachart"), L = 230, R = 30, T = 10, rowH = 36, gap = 30;
+  const lo = -20, hi = 6, W = 900 - L - R, x = v => L + W * (v - lo) / (hi - lo);
+  const rows = []; PAIRS.forEach(([base, hs], g) => hs.forEach(h => rows.push([base, h, g])));
+  const yOf = i => T + i * rowH + rows[i][2] * gap + 18;
+  const Hh = yOf(rows.length - 1) + rowH;
+  svg.setAttribute("viewBox", `0 0 900 ${Hh + 30}`);
+  [-20, -15, -10, -5, 0, 5].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: Hh, stroke: v === 0 ? "var(--muted)" : "var(--rule)", "stroke-width": v === 0 ? 1.4 : 1 }, svg);
+    el("text", { x: x(v), y: Hh + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v > 0 ? "+" : "") + v);
+  });
+  PAIRS.forEach(([base], g) => {
+    const i0 = rows.findIndex(r => r[2] === g);
+    el("text", { x: 8, y: yOf(i0) - 8, "font-size": 12, fill: "var(--muted)", "font-family": MONO }, svg, "vs " + LABEL[base] + `  (alone: ${pct(ARMS[base].tw)} test, ${pct(ARMS[base].ow)} unseen)`);
+  });
+  rows.forEach(([base, h], i) => {
+    const y = yOf(i), dt = (ARMS[h].tw - ARMS[base].tw) * 100, du = (ARMS[h].ow - ARMS[base].ow) * 100;
+    el("text", { x: L - 10, y: y + 15, "text-anchor": "end", "font-size": 13, fill: "var(--ink)" }, svg, LABEL[h]);
+    const bar = (v, yy, hh, solid) => {
+      const a = Math.min(x(0), x(v)), b = Math.max(x(0), x(v));
+      el("rect", Object.assign({ x: a, y: yy, width: Math.max(1, b - a), height: hh, rx: 2 }, solid ? { fill: "var(--hyb)" } : { fill: "none", stroke: "var(--hyb)", "stroke-width": 1.5 }), svg);
+      const lbl = (v >= 0 ? "+" : "") + v.toFixed(1);
+      el("text", { x: v >= 0 ? b + 5 : a - 5, y: yy + hh - 1, "text-anchor": v >= 0 ? "start" : "end", "font-size": 11, fill: solid ? "var(--ink)" : "var(--muted)", "font-family": MONO }, svg, lbl);
+    };
+    bar(dt, y + 3, 12, true);
+    bar(du, y + 18, 11, false);
+  });
+})();
+
+// cost table (curated)
+table("costtable", ["gbt-dist", "sft-sampled", "stack-sft-sampled", "pool-sft-sampled", "jev-pointer", "stack-jev-pointer", "pool-jev-pointer", "jev-pointer-4b", "stack-jev-pointer-4b", "pool-jev-pointer-4b"],
+  [["tu", "test under", -1, pct], ["tm", "test MAE", -1, v => v.toFixed(2)], ["tr", "test CPU regret", -1, pct],
+   ["ou", "unseen under", -1, pct], ["om", "unseen MAE", -1, v => v.toFixed(2)], ["orr", "unseen CPU regret", -1, pct]]);
+
+// unseen families and history
+heat("famtable", ["code-rule", "gbt-dist", "zeroshot-27b", "sft-sampled", "stack-sft-sampled", "pool-sft-sampled", "jev-pointer", "stack-jev-pointer", "pool-jev-pointer", "jev-pointer-4b", "stack-jev-pointer-4b", "pool-jev-pointer-4b"],
+  [[d => d.duck, "duckdb_sql"], [d => d.pya, "pyarrow_csv"], [d => d.oc, "unseen, cold start"], [d => d.ow2, "unseen, warm"]]);
+
+// calibration
+table("caltable", ["gbt-dist", "sft-sampled", "stack-sft-sampled", "pool-sft-sampled", "jev-pointer", "stack-jev-pointer", "pool-jev-pointer", "jev-pointer-4b", "stack-jev-pointer-4b", "pool-jev-pointer-4b"],
+  [["tbrier", "test Brier", -1, v => v.toFixed(3)], ["tnll", "test NLL", -1, v => v.toFixed(2)], ["obrier", "unseen Brier", -1, v => v.toFixed(3)], ["onll", "unseen NLL", -1, v => v.toFixed(2)]]);
+
+// pool weight curves on val
+(function () {
+  const S = [["pool-sft-sampled", "pooled SFT 1.7B", "var(--warm)", ""], ["pool-jev-pointer", "pooled decision 1.7B", "var(--accent)", ""], ["pool-jev-pointer-4b", "pooled decision 4B", "var(--hyb)", "6 4"]];
+  document.getElementById("wlegend").innerHTML = S.map(s => `<span><span class="kind" style="background:${s[2]}"></span>${s[1]} (chose w = ${POOLW[s[0]].w})</span>`).join("");
+  const svg = document.getElementById("wchart"), L = 70, R = 30, T = 14, B = 46, W = 900 - L - R, H = 340 - T - B;
+  const lo = 0.92, hi = 1.0, x = w => L + W * w, y = v => T + H * (1 - (v - lo) / (hi - lo));
+  [0.92, 0.94, 0.96, 0.98, 1.0].forEach(v => {
+    el("line", { x1: L, x2: L + W, y1: y(v), y2: y(v), stroke: "var(--rule)" }, svg);
+    el("text", { x: L - 10, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v * 100).toFixed(0) + "%");
+  });
+  for (let i = 0; i <= 10; i++) el("text", { x: x(i / 10), y: T + H + 18, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (i / 10).toFixed(1));
+  el("text", { x: L + W / 2, y: T + H + 38, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, svg, "trees weight w   (0 = LLM alone, 1 = trees alone)");
+  el("text", { x: 16, y: T + H / 2, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)", transform: `rotate(-90 16 ${T + H / 2})` }, svg, "validation within ±25%");
+  S.forEach(([k, , c, dash]) => {
+    const cv = POOLW[k].curve;
+    el("polyline", { points: cv.map((v, i) => `${x(i / 10)},${y(v)}`).join(" "), fill: "none", stroke: c, "stroke-width": 2.2, "stroke-dasharray": dash }, svg);
+    cv.forEach((v, i) => {
+      const chosen = Math.abs(i / 10 - POOLW[k].w) < 1e-6;
+      el("circle", { cx: x(i / 10), cy: y(v), r: chosen ? 6 : 3, fill: c, stroke: chosen ? "var(--panel)" : "none", "stroke-width": 1.5 }, svg);
+      if (chosen) el("text", { x: x(i / 10), y: k === "pool-sft-sampled" ? y(v) + 20 : y(v) - 11, "text-anchor": "middle", "font-size": 11, fill: c, "font-family": MONO }, svg, pct(v));
+    });
+  });
+  el("text", { x: x(1) - 6, y: y(0.9499) + 18, "text-anchor": "end", "font-size": 11, fill: "var(--tree)", "font-family": MONO }, svg, "trees alone 95.0%");
+})();
+
+// by-driver (curated)
+heat("drivertable", ["gbt-dist", "sft-sampled", "stack-sft-sampled", "pool-sft-sampled", "jev-pointer", "stack-jev-pointer", "pool-jev-pointer", "jev-pointer-4b", "stack-jev-pointer-4b", "pool-jev-pointer-4b"],
+  DRIVERS.map(([k, n]) => [d => d.drv[k], `${k} <span class="muted">(${DRV_N[k]})</span>`]));
+
+// full leaderboard
+table("boardtable", ORDER,
+  [["tw", "test within ±25%", 1, pct], ["tu", "test under", -1, pct], ["tm", "test MAE", -1, v => v.toFixed(2)], ["tr", "test CPU regret", -1, pct], ["tmw", "test mean ±25%", 1, pct],
+   ["ow", "unseen within ±25%", 1, pct], ["om", "unseen MAE", -1, v => v.toFixed(2)], ["orr", "unseen CPU regret", -1, pct]]);
+
+// reproducibility
+(function () {
+  const rows = ORDER.filter(a => R20[a]);
+  const sg = v => (v >= 0 ? "+" : "") + v.toFixed(1);
+  let h = "<thead><tr><th>approach</th><th>test, round 20</th><th>test, round 21</th><th>change</th><th>unseen, round 20</th><th>unseen, round 21</th><th>change</th></tr></thead><tbody>";
+  rows.forEach(a => {
+    const [t0, o0] = R20[a], t1 = ARMS[a].tw, o1 = ARMS[a].ow;
+    h += `<tr><td>${sw(a)}${LABEL[a]}</td><td>${pct(t0)}</td><td>${pct(t1)}</td><td>${sg((t1 - t0) * 100)}</td><td>${pct(o0)}</td><td>${pct(o1)}</td><td>${sg((o1 - o0) * 100)}</td></tr>`;
+  });
+  document.getElementById("reprotable").innerHTML = h + "</tbody>";
+})();
+</script>

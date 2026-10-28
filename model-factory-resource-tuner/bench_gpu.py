@@ -16,6 +16,7 @@ from resource_tuner.bench_gpu.stations import (  # noqa: F401
     gpu_peek,
     gpu_pilot,
     fit_gpu_arm,
+    pool_gpu_arms,
     generate_gpu_runs,
     measure_gpu_bench,
     score_gpu_arm,
