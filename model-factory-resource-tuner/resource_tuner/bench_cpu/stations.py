@@ -20,8 +20,11 @@ import flyte.io
 import pandas as pd
 
 from ..bench import charts
+from ..bench import hybrid
 from ..bench.common import (
     collect,
+    hinted_corpus,
+    pooled_arm,
     hosted_subsample,
     pred_rows,
     preds_by_variant,
@@ -142,8 +145,10 @@ async def measure_cpu_bench(runs: flyte.io.File, shard_size: int = 3, pairing: s
 
 CPU_ARMS = tuple(cpu_arms.ARMS)
 GPU_ARMS = ("sft", "jev", "jev-pointer", "jev-pointer-4b")
+#: The stacked hybrids (``bench.hybrid``): each LLM arm with the trees' prediction in its prompt.
+STACK_ARMS = tuple(f"{hybrid.STACK_PREFIX}{a}" for a in ("sft", "jev-pointer", "jev-pointer-4b"))
 HOSTED_ARMS = {"zeroshot-27b": "qwen38-27b-vllm"}
-ALL_ARMS = CPU_ARMS + tuple(HOSTED_ARMS) + GPU_ARMS
+ALL_ARMS = CPU_ARMS + tuple(HOSTED_ARMS) + GPU_ARMS + STACK_ARMS
 _EVAL_SPLITS = ("val", "test", "ood")
 HOSTED_RUNS_PER_SPLIT = 300
 
@@ -169,6 +174,14 @@ async def fit_cpu_arm(corpus: flyte.io.File, arm: str, llm_model: str = "Qwen/Qw
         meta = {"stats": stats}
     elif arm in GPU_ARMS:
         return await train_llm_arm(corpus, arm, llm_model, llm_epochs, llm_max_train_rows, bench="cpu")
+    elif arm in STACK_ARMS:
+        fit, predict = cpu_arms.ARMS[hybrid.ANCHOR]
+        hinted, hmeta = await hinted_corpus(rows, fit, predict, CPU)
+        rep.kv({k: str(v)[:300] for k, v in hmeta.items()})
+        await rep.flush()
+        # the hint lengthens every prompt; 14 h as the GPU bench's sft needed
+        return await train_llm_arm.override(timeout=flyte.Timeout(max_runtime=14 * 3600))(
+            hinted, arm, llm_model, llm_epochs, llm_max_train_rows, bench="cpu")
     else:
         raise ValueError(f"unknown arm {arm!r}; choose from {ALL_ARMS}")
     meta["arm"] = arm
@@ -198,15 +211,30 @@ async def score_cpu_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str) 
     return await flyte.io.File.from_local(path)
 
 
+@cpubench_env.task(cache=cpu_arms_cache(), report=True)
+async def pool_cpu_arms(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir]) -> flyte.io.Dir:
+    """The pooled hybrids: gbt-dist x every distributional LLM variant (``bench.hybrid``)."""
+    rows = [r for r in await read_rows(corpus) if dataset.usable(r)]
+    out = await pooled_arm(rows, arm_dirs, CPU)
+    rep = Reporter(f"{TITLE}: pooled hybrids", f"{hybrid.ANCHOR} x each LLM variant, weight tuned on val")
+    _preds, meta = await read_arm(out)
+    rep.table(["pool", "w (trees)", "val headline (lower is better)", "secondary from"],
+              [[v, str(k["w_trees"]), f"{k['val_headline']:.3f}", k["secondary_from"]] for v, k in meta["knobs"].items()])
+    await rep.flush()
+    return out
+
+
 HEADLINE = ("static", "vpa", "code-rule", "gbt", "gbt-dist", "zeroshot-27b", "sft-greedy", "sft-sampled",
             "jev-argmax", "jev", "jev-pointer-argmax", "jev-pointer",
-            "jev-pointer-4b-argmax", "jev-pointer-4b")
+            "jev-pointer-4b-argmax", "jev-pointer-4b",
+            "stack-sft-greedy", "stack-sft-sampled", "stack-jev-pointer-argmax", "stack-jev-pointer",
+            "stack-jev-pointer-4b-argmax", "stack-jev-pointer-4b")
 
 
 @cpubench_env.task(cache=cpu_arms_cache(), report=True)
-async def cpu_leaderboard(scorecards: list[flyte.io.File]) -> flyte.io.File:
+async def cpu_leaderboard(scorecards: list[flyte.io.File], pool_scorecard: flyte.io.File | None = None) -> flyte.io.File:
     cards = []
-    for f in scorecards:
+    for f in [*scorecards, *([pool_scorecard] if pool_scorecard is not None else [])]:
         with open(await f.download()) as fh:
             cards.append(json.load(fh))
     board, fronts = {}, {}

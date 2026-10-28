@@ -2,7 +2,9 @@
 
 Conventions are RightSizeMem's. Labels: the GPU memory cell covering the
 run's peak device memory, and its mean-utilization bucket. ``measured_on``
-records the device (pass 1: T4; runs that did not fit: a bigger one).
+records the device (pass 1: T4; runs that did not fit: a bigger machine,
+``stations._climb``). ``sharded`` is a property of the task's code (its
+family spreads the model over every visible GPU), known before it runs.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from random import Random
 from ..bench.dataset import SPLIT_FRACTIONS, SPLITS, usable
 from ..bench.workloads import describe_inputs, render_harness, render_task
 from . import grid
-from .workloads import FAMILIES, HELDOUT_FAMILIES, make_task
+from .workloads import FAMILIES, HELDOUT_FAMILIES, SHARDED_FAMILIES, make_task
 
 __all__ = ["SPLITS", "usable", "generate_runs", "attach_measurement", "attach_history"]
 
@@ -42,6 +44,7 @@ def generate_runs(tasks_per_family: int, seed: int = 0, runs_per_task: int = 2,
                 rows.append({
                     "bench": "gpu", "profile": profile, "run_id": f"{task.task_id}-r{k}", "task_id": task.task_id,
                     "family": family, "driver": task.memory_driver, "run_idx": k,
+                    "sharded": FAMILIES[family].name in SHARDED_FAMILIES,
                     "split": _split_for(task.task_id, family),
                     "knobs_json": json.dumps(task.knobs, sort_keys=True),
                     "inputs_json": json.dumps(task.run_inputs(k)), "size_factor": task.size_factors[k],
@@ -70,6 +73,10 @@ def attach_measurement(row: dict, m: dict) -> dict:
         "wall_s": float(m.get("wall_s") or 0.0),
         "prep_s": float(m.get("prep_s") or 0.0),
         "torch_max_reserved_mib": float(m.get("torch_max_reserved_mib") or 0.0),
+        "gpu_n_used": int(m.get("gpu_n_used") or (1 if m.get("peak_gpu_mib") else 0)),
+        "gpu_max_dev_mib": float(m.get("gpu_max_dev_mib") or m.get("peak_gpu_mib") or 0.0),
+        "gpu_imbalance": float(m.get("gpu_imbalance") or 1.0),
+        "n_gpus_visible": int(m.get("n_gpus_visible") or 1),
         "mean_cpu_cores": float(m.get("mean_cpu_cores") or 0.0),
         "measured_on": str(m.get("device_name") or ""),
         "device_total_mib": float(m.get("device_total_mib") or 0.0),
@@ -82,7 +89,10 @@ def attach_measurement(row: dict, m: dict) -> dict:
     # the device's size, not the task's need: the device label stands, the
     # memory-accuracy columns skip it.
     total = out["device_total_mib"]
-    out["fills_device"] = bool(out["ok"] and total and out["peak_gpu_mib"] >= 0.95 * total)
+    out["fills_device"] = bool(out["ok"] and total and out["gpu_max_dev_mib"] >= 0.95 * total)
+    # measured on one GPU, a sharded run's split across several is not known
+    if out["gpu_n_used"] <= 1:
+        out["gpu_imbalance"] = grid.DEFAULT_IMBALANCE if row.get("sharded") else 1.0
     out["label_gmem_idx"] = grid.label_mem_index(out["peak_gpu_gib"])
     out["label_util_idx"] = grid.util_index(out["mean_util"])
     return out

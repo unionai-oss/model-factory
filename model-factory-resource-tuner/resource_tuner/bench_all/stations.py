@@ -3,6 +3,8 @@
     rt-allbench-corpus      join_corpora        three measured corpora -> one, labelled on every axis
     rt-allbench-arm         fit_all_arm         one arm: the whole request (memory, CPU, GPU)
     rt-allbench-rl          rl_all_policy       the supervised decision model, RL-tuned on the joint cost
+    rt-allbench-rl-stack    rl_all_policy       the same, from the stacked decision model (trees in its prompt)
+    rt-allbench-pool        pool_all_arms       gbt-dist x every decision model, pooled per axis
     rt-allbench-scorecard   score_all_arm       joint regret, first-attempt success, per-axis accuracy
     rt-allbench-leaderboard all_leaderboard     every arm side by side
 """
@@ -21,7 +23,7 @@ import flyte.io
 import numpy as np
 import pandas as pd
 
-from ..bench import charts
+from ..bench import charts, hybrid
 from ..bench.common import hosted_subsample, read_rows, write_parquet
 from ..bench.envs import bench_gpu_env
 from ..bench.llm_arms import TrainConfig, _amp_dtype, _device, config_dict, measure_latency
@@ -41,7 +43,10 @@ _EVAL = ("val", "test", "ood")
 CPU_ARMS = tuple(all_arms.ARMS)
 HOSTED_ARMS = {"zeroshot-27b": "qwen38-27b-vllm"}
 GPU_ARMS = ("jev-pointer",)
-ALL_ARMS = CPU_ARMS + tuple(HOSTED_ARMS) + GPU_ARMS
+#: The stacked hybrid (``bench.hybrid``): the decision model with the trees' estimate in its prompt.
+STACK_ARMS = (f"{hybrid.STACK_PREFIX}jev-pointer",)
+ALL_ARMS = CPU_ARMS + tuple(HOSTED_ARMS) + GPU_ARMS + STACK_ARMS
+HINTS_FILE = "hints.parquet"
 HOSTED_RUNS_PER_SPLIT = 300
 #: The decision model's training budget: rows per source (the three corpora
 #: differ 1.5x in size; balanced, none drowns the others) and epochs.
@@ -184,9 +189,30 @@ async def train_all_policy(corpus: flyte.io.File, arm: str = "jev-pointer", mode
     meta = {"arm": arm, "config": config_dict(cfg), "n_train": len(train), "train_s": time.time() - t0, "loss": hist}
     table = _policy_predictions(tok, model, head, eval_rows, cfg, arm, meta)
     meta["latency"] = measure_latency(lambda rs: policy.logits(tok, model, head, rs, cfg, batch_size=1), eval_rows)
+    meta["stacked"] = hybrid.is_stacked(arm)
     rep.kv({k: json.dumps(v, default=float)[:200] for k, v in meta.items()})
     await rep.flush()
-    return await _write_arm(table, meta, _save(tok, model, head))
+    saved = _save(tok, model, head)
+    if meta["stacked"]:  # the RL phase prompts with the same hints
+        pd.DataFrame([{"run_id": r["run_id"], "hint": r.get("hint") or ""} for r in rows]).to_parquet(
+            os.path.join(saved, HINTS_FILE), index=False)
+    return await _write_arm(table, meta, saved)
+
+
+def all_hints(preds: dict[str, dict]) -> dict[str, str]:
+    return {rid: prompting.hint_text(p["probs"], (p["mem_idx"], p["cpu_idx"], p["gpu_idx"])) for rid, p in preds.items()}
+
+
+async def hinted_all_corpus(splits: dict[str, list[dict]], eval_rows: list[dict]) -> tuple[flyte.io.File, dict]:
+    """Every usable row with gbt-dist's joint estimate in a ``hint`` column,
+    out-of-fold on train (``hybrid.crossfit``)."""
+    t0 = time.perf_counter()
+    fit, predict = all_arms.ARMS[hybrid.ANCHOR]
+    hints = all_hints(hybrid.crossfit(splits["train"], splits["val"], eval_rows, fit, predict))
+    rows = [{**r, "hint": hints.get(r["run_id"], "")} for s in dataset.SPLITS for r in splits[s]]
+    meta = {"hint_anchor": hybrid.ANCHOR, "hinted_rows": len(hints), "crossfit_s": time.perf_counter() - t0,
+            "hint_example": next(iter(hints.values()), "")}
+    return await flyte.io.File.from_local(write_parquet(rows, "hinted.parquet")), meta
 
 
 @allbench_env.task(cache=all_arms_cache(), report=True)
@@ -198,6 +224,11 @@ async def fit_all_arm(corpus: flyte.io.File, arm: str) -> flyte.io.Dir:
     if arm in GPU_ARMS:
         return await train_all_policy(corpus, arm)
     eval_rows = [r for s in _EVAL for r in splits[s]]
+    if arm in STACK_ARMS:
+        hinted, hmeta = await hinted_all_corpus(splits, eval_rows)
+        rep.kv({k: str(v)[:300] for k, v in hmeta.items()})
+        await rep.flush()
+        return await train_all_policy(hinted, arm)
     if arm in CPU_ARMS:
         fit, predict = all_arms.ARMS[arm]
         state = fit(splits["train"], splits["val"])
@@ -240,6 +271,11 @@ async def rl_all_policy(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir], bas
         raise ValueError(f"rl_all_policy: no {base_arm!r} among the arms built for this release")
     cfg = TrainConfig(**{k: v for k, v in base_meta["config"].items() if k in TrainConfig.__dataclass_fields__})
     rows = await read_rows(corpus)
+    name = f"{hybrid.STACK_PREFIX}rl-pointer" if hybrid.is_stacked(base_arm) else "rl-pointer"
+    hints_path = os.path.join(base_dir, "model", HINTS_FILE)
+    if os.path.exists(hints_path):  # a stacked base: its prompts carried the trees' estimate
+        hints = dict(pd.read_parquet(hints_path)[["run_id", "hint"]].itertuples(index=False))
+        rows = [{**r, "hint": hints.get(r["run_id"], "")} for r in rows]
     splits = dataset.by_split(rows)
     # RL prompts: training rows the supervised model did NOT see, then the rest
     seen = {r["run_id"] for r in dataset.balanced(splits["train"], TRAIN_PER_SOURCE)}
@@ -248,7 +284,7 @@ async def rl_all_policy(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir], bas
                                                                      prompts // 3)
     rl_cfg = policy.RLConfig(prompts=prompts, k_samples=k_samples, kl_beta=kl_beta)
     eval_rows = [r for s in _EVAL for r in splits[s]]
-    rep = Reporter(f"{TITLE}: rl-pointer from {base_arm}", f"{min(prompts, len(pool))} RL prompts x {k_samples} samples")
+    rep = Reporter(f"{TITLE}: {name} from {base_arm}", f"{min(prompts, len(pool))} RL prompts x {k_samples} samples")
     await rep.flush()
 
     tok = AutoTokenizer.from_pretrained(cfg.model_name)
@@ -264,15 +300,79 @@ async def rl_all_policy(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir], bas
 
     t0 = time.time()
     curve = policy.train_rl(tok, model, head, pool, cfg, rl_cfg)
-    meta = {"arm": "rl-pointer", "base_arm": base_arm, "config": config_dict(cfg), "rl": rl_cfg.__dict__,
+    meta = {"arm": name, "base_arm": base_arm, "config": config_dict(cfg), "rl": rl_cfg.__dict__,
             "rl_s": time.time() - t0, "curve": curve}
-    table = _policy_predictions(tok, model, head, eval_rows, cfg, "rl-pointer", meta)
+    table = _policy_predictions(tok, model, head, eval_rows, cfg, name, meta)
     rep.kv({k: json.dumps(v, default=float)[:300] for k, v in meta.items()})
     if curve:
         rep.raw(charts.hbars([(f"step {c['step']}", -c["mean_reward"] - 1, "#7aa2f7") for c in curve[:: max(1, len(curve) // 12)]],
                              title="mean sampled regret during RL (lower is better)"))
     await rep.flush()
     return await _write_arm(table, meta, _save(tok, model, head))
+
+
+def _probs_of(preds: pd.DataFrame) -> dict[str, dict[str, list[np.ndarray]]]:
+    """variant -> run_id -> [P(mem), P(cpu), P(gpu)], for the variants that carry distributions."""
+    out: dict[str, dict[str, list[np.ndarray]]] = {}
+    for r in preds.to_dict("records"):
+        if r.get("probs"):
+            out.setdefault(r["variant"], {})[r["run_id"]] = [np.asarray(x, dtype=float) for x in json.loads(r["probs"])]
+    return out
+
+
+def pool_all(rows: list[dict], variants: dict[str, dict[str, list[np.ndarray]]]) -> tuple[list[dict], dict]:
+    """gbt-dist x each decision-model variant: a log pool on every axis with one
+    weight, the weight and the no-GPU threshold tuned on val for regret."""
+    anchor = variants[hybrid.ANCHOR]
+    val = [r for r in rows if r["split"] == "val"]
+    split_of = {r["run_id"]: r["split"] for r in rows}
+    table, knobs = [], {}
+    for v in sorted(variants):
+        if v == hybrid.ANCHOR or v.endswith("-argmax") or v.startswith(hybrid.POOL_PREFIX):
+            continue
+        member = variants[v]
+
+        def pooled(w):
+            return {rid: [hybrid.log_pool(a, b, w) for a, b in zip(anchor[rid], member[rid])]
+                    for rid in anchor if rid in member}
+
+        vrows = [r for r in val if r["run_id"] in anchor and r["run_id"] in member]
+        if not vrows:
+            continue
+        best = None
+        for w in hybrid.POOL_WEIGHTS:
+            pv = pooled(w)
+            vp = {r["run_id"]: pv[r["run_id"]] for r in vrows}
+            for t in all_arms.GPU_THRESHOLDS:
+                reg = scoring.score(vrows, _decode(vp, t))["regret"]
+                if best is None or (reg, -w) < (best[0], -best[1]):
+                    best = (reg, w, t)
+        reg, w, t = best
+        prob = pooled(w)
+        name = f"{hybrid.POOL_PREFIX}{v}"
+        table += _pred_table(name, _decode(prob, t), split_of) + _pred_table(f"{name}-argmax", _argmax(prob), split_of)
+        knobs[name] = {"w_trees": w, "gpu_threshold": t, "val_regret": reg}
+    return table, knobs
+
+
+@allbench_env.task(cache=all_arms_cache(), report=True)
+async def pool_all_arms(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir], rl_dir: flyte.io.Dir | None = None,
+                        rl_stack_dir: flyte.io.Dir | None = None) -> flyte.io.Dir:
+    """The pooled hybrids: the trees' joint distribution x every decision model's
+    (supervised, stacked, RL from each), per axis (``pool_all``)."""
+    rows = [r for r in await read_rows(corpus) if dataset.usable(r)]
+    variants: dict[str, dict[str, list[np.ndarray]]] = {}
+    for d in [*arm_dirs, *[x for x in (rl_dir, rl_stack_dir) if x is not None]]:
+        _local, preds, _meta = await _read_arm(d)
+        variants.update(_probs_of(preds))
+    if hybrid.ANCHOR not in variants:
+        raise ValueError(f"pool_all_arms: no {hybrid.ANCHOR!r} among the arms built for this release")
+    table, knobs = await asyncio.to_thread(pool_all, rows, variants)
+    rep = Reporter(f"{TITLE}: pooled hybrids", f"{hybrid.ANCHOR} x {len(knobs)} decision-model variants")
+    rep.table(["pool", "w (trees)", "no-GPU threshold", "val regret"],
+              [[k, str(x["w_trees"]), str(x["gpu_threshold"]), f"{x['val_regret']:.1%}"] for k, x in knobs.items()])
+    await rep.flush()
+    return await _write_arm(table, {"arm": "pool", "anchor": hybrid.ANCHOR, "knobs": knobs})
 
 
 @allbench_env.task(cache=all_arms_cache(), report=True)
@@ -296,13 +396,17 @@ async def score_all_arm(corpus: flyte.io.File, arm_dir: flyte.io.Dir, arm: str) 
 
 
 HEADLINE = ("static", "rules", "gbt-dist", "zeroshot-27b", "jev-pointer-argmax", "jev-pointer",
-            "rl-pointer-argmax", "rl-pointer")
+            "rl-pointer-argmax", "rl-pointer", "stack-jev-pointer-argmax", "stack-jev-pointer",
+            "stack-rl-pointer-argmax", "stack-rl-pointer", "pool-jev-pointer", "pool-rl-pointer",
+            "pool-stack-jev-pointer", "pool-stack-rl-pointer")
 
 
 @allbench_env.task(cache=all_arms_cache(), report=True)
-async def all_leaderboard(scorecards: list[flyte.io.File], rl_scorecard: flyte.io.File | None = None) -> flyte.io.File:
+async def all_leaderboard(scorecards: list[flyte.io.File], rl_scorecard: flyte.io.File | None = None,
+                          rl_stack_scorecard: flyte.io.File | None = None,
+                          pool_scorecard: flyte.io.File | None = None) -> flyte.io.File:
     cards = []
-    for f in [*scorecards, *([rl_scorecard] if rl_scorecard is not None else [])]:
+    for f in [*scorecards, *[c for c in (rl_scorecard, rl_stack_scorecard, pool_scorecard) if c is not None]]:
         with open(await f.download()) as fh:
             cards.append(json.load(fh))
     board = {}

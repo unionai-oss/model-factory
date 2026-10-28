@@ -1,27 +1,25 @@
-"""Score GPU decisions: the right device, the right memory, the right utilization.
+"""Score GPU decisions: the right machine, the right memory, the right utilization.
 
-**Cost** (``gpu_regret``, the headline). A predicted peak memory is a
-request for the cheapest device that holds it (``grid.device_for``). If the
-run's real peak fits that device it pays one nominal task-hour at the
-device's price; if not, it dies with a CUDA OOM after the part of the run
-before its peak (``t_peak_frac``, measured -- GPU peaks come early: the
-first forward/backward), and is retried on the next device up. Each OOM
+**Cost** (``gpu_regret``). A predicted peak memory is a request for the
+cheapest machine shape whose GPU memory holds it (``grid.device_for``). If
+the run fits that shape (``grid.fits``: one GPU holds the whole peak, or a
+sharded run's share fits each of several) it pays one nominal task-hour at
+the shape's price; if not, it dies with a CUDA OOM after the part of the
+run before its peak (``t_peak_frac``, measured -- GPU peaks come early: the
+first forward/backward), and is retried on the next shape up. Each OOM
 also costs OOM_PENALTY oracle runs of delay. ``gpu_regret`` = dollars /
-the oracle's dollars - 1; the oracle runs on the cheapest device that fits.
+the oracle's dollars - 1; the oracle runs on the cheapest shape it fits.
 
-Headline and decoding target: memory **accuracy**, not cost. On this
-tenant's ladder ~95% of runs fit the cheapest device, so under expected-cost
-decoding "anything up to 15 GiB" is free and every distributional arm
-collapsed to that one cell (rsg-small-1: gbt-dist, sft-sampled and
-jev-pointer scored identically) -- the device choice was trivial and the
-memory prediction was thrown away. Distributions are decoded by
-``decode_index`` (the cell most likely within margin of the peak, ties up);
-the device and its dollars follow from that prediction. ``bayes_index``
-remains for the risk frontier.
+Headline and decoding target: memory **accuracy**, not cost (round 18:
+under expected-cost decoding every distributional arm collapsed onto the
+one cell below the T4's capacity). Distributions are decoded by
+``decode_index`` (the cell most likely within margin of the peak, ties
+up); ``bayes_index`` (expected cost) is the ``-cost`` read-out and the
+risk frontier.
 
 **Accuracy.** Memory: exact cell, within one cell, within 20% of the peak
 (``grid.mem_within_margin``; skipping runs whose peak filled the device), first-attempt OOM rate, and whether the
-device matches the oracle's. Utilization: mean absolute error in points and
+machine matches the oracle's. Utilization: mean absolute error in points and
 the share within 10 points (``grid.UTIL_MARGIN``).
 
 Pure numpy, no flyte.
@@ -43,22 +41,29 @@ OOM_PENALTY = 1.0
 MAX_ATTEMPTS = 4
 
 
-def simulate(cell_idx: int, peak_gib: float, t_peak_frac: float) -> tuple[float, int, bool]:
+def simulate(cell_idx: int, peak_gib: float, t_peak_frac: float, sharded: bool = False,
+             imbalance: float = grid.DEFAULT_IMBALANCE) -> tuple[float, int, bool]:
     """(dollars, attempts, failed) to get a run to SUCCEEDED from this request."""
     dev = grid.device_for(CELLS[cell_idx])
     cost, attempts = 0.0, 0
     while dev is not None and attempts < MAX_ATTEMPTS:
         attempts += 1
-        _name, usable, price, _shape = grid.DEVICES[dev]
-        if peak_gib <= usable:
+        price = grid.DEVICES[dev].price
+        if grid.fits(dev, peak_gib, sharded, imbalance):
             return cost + price * (1 + ATTEMPT_OVERHEAD), attempts, False
         cost += price * (max(t_peak_frac, 0.02) + ATTEMPT_OVERHEAD)
         dev = grid.next_device_up(dev)
     return cost, attempts, True
 
 
-def oracle_cost(peak_gib: float) -> float:
-    return grid.DEVICES[grid.device_for(peak_gib)][2] * (1 + ATTEMPT_OVERHEAD)
+def oracle_cost(peak_gib: float, sharded: bool = False, imbalance: float = grid.DEFAULT_IMBALANCE) -> float:
+    dev = grid.oracle_device(peak_gib, sharded, imbalance)
+    return grid.DEVICES[grid.device_for(peak_gib) if dev is None else dev].price * (1 + ATTEMPT_OVERHEAD)
+
+
+def run_fit(row: dict) -> tuple[bool, float]:
+    """(sharded, imbalance) of a measured run, as `simulate` and `grid.fits` take them."""
+    return bool(row.get("sharded")), float(row.get("gpu_imbalance") or grid.DEFAULT_IMBALANCE)
 
 
 def cost_matrix(penalty: float = OOM_PENALTY, t_peak_frac: float = 0.1) -> np.ndarray:
@@ -119,13 +124,16 @@ def score(rows: list[dict], preds: dict[str, dict]) -> dict:
             missing += 1
             continue
         peak = float(r["peak_gpu_gib"])
+        sharded, imb = run_fit(r)
         oi, i = int(r["label_gmem_idx"]), int(p["gmem_idx"])
-        c, att, failed = simulate(i, peak, float(r["t_peak_frac"]))
-        oc = oracle_cost(peak)
+        c, att, failed = simulate(i, peak, float(r["t_peak_frac"]), sharded, imb)
+        oc = oracle_cost(peak, sharded, imb)
         acc["cost"].append(c + OOM_PENALTY * oc * (att - 1)), acc["ocost"].append(oc)
         acc["oom"].append(att > 1), acc["fail"].append(failed)
-        dev, odev = grid.device_for(CELLS[i]), grid.device_for(peak)
-        acc["dev_exact"].append(dev == odev), acc["dev_over"].append(grid.DEVICES[dev][2] > grid.DEVICES[odev][2])
+        dev = grid.device_for(CELLS[i])
+        odev = grid.oracle_device(peak, sharded, imb)
+        odev = grid.device_for(peak) if odev is None else odev
+        acc["dev_exact"].append(dev == odev), acc["dev_over"].append(grid.DEVICES[dev].price > grid.DEVICES[odev].price)
         acc["exact"].append(i == oi), acc["adj"].append(abs(i - oi) <= 1)
         if not r.get("fills_device"):  # a device-bound peak is not the task's need
             mem_hit.append(grid.mem_within_margin(CELLS[i], peak)), mem_err.append(abs(CELLS[i] - peak))
@@ -141,7 +149,7 @@ def score(rows: list[dict], preds: dict[str, dict]) -> dict:
             onehot[oi] = 1
             briers.append(float(((pr - onehot) ** 2).sum()))
             nlls.append(float(-math.log(max(pr[oi], 1e-9))))
-            usable = grid.DEVICES[dev][1]
+            usable = grid.DEVICES[dev].capacity_gib
             p_ooms.append(float(pr[CELLS > usable + 1e-9].sum()))
             real_ooms.append(att > 1)
     n = len(acc["cost"])

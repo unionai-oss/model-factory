@@ -11,8 +11,8 @@ block size of a chunked computation. Utilization is set by whether the GPU
 is fed: tiny models, small batches, and per-sample Python augmentation on
 a CPU dataloader leave it idle.
 
-Every workload runs until ``TIME_BUDGET_S`` (120-180 s; 60-120 s in the
-``big`` profile): 2-6 samples of
+Every workload runs until ``TIME_BUDGET_S`` (120-180 s; 45-90 s in the
+``big`` profile): 1.5-6 samples of
 Union's 30 s DCGM interval. ``driver`` names what an arm had to read:
 
 - ``params``       weights + grads + optimizer state dominate
@@ -20,6 +20,14 @@ Union's 30 s DCGM interval. ``driver`` names what an arm had to read:
 - ``data``         where the dataset lives (whole on GPU vs streamed) dominates
 - ``blocks``       a chunked computation: the block size sets the peak
 - ``input_bound``  the GPU waits on a CPU dataloader: low utilization
+- ``kv_cache``     a generation loop's preallocated keys and values dominate
+
+Since big-2 (round 21) the families reach past a T4: the single-GPU ones
+are scaled so a share of runs need an L4 or an L40S, and three families
+are **sharded** -- their code places layers (or embedding-table rows) on
+every GPU ``torch.cuda.device_count()`` reports, the way ``device_map=
+"auto"`` and row-wise embedding sharding do -- so a multi-GPU machine
+(4xL4, 8xT4, 4xL40S) can hold what no single GPU can.
 
 Code runs on CPU when no GPU is present, so the tests can execute it.
 """
@@ -36,9 +44,9 @@ _BUDGETS = (120, 150, 180)
 _SIZES = (0.5, 2.0)
 
 #: Workload profiles, chosen per release. ``big`` (RightSizeMem's scale, ~10^4
-#: runs) halves the time budget: a training loop reaches its peak memory in
-#: its first steps, and 60 s is still two DCGM samples.
-PROFILES: dict[str, tuple] = {"default": _BUDGETS, "big": (60, 90, 120)}
+#: runs) cuts the time budget: a training loop reaches its peak memory in
+#: its first steps (big-1 used 60-120 s; big-2, with multi-GPU passes, 45-90).
+PROFILES: dict[str, tuple] = {"default": _BUDGETS, "big": (45, 60, 90)}
 
 
 @contextmanager
@@ -55,6 +63,9 @@ _HEAD = [
     'device = "cuda" if torch.cuda.is_available() else "cpu"',
 ]
 
+#: Sharded families: every visible GPU, in order (CPU when there is none).
+_GPUS = ['GPUS = [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())] or [torch.device("cpu")]']
+
 
 def _budget(rng: Random) -> str:
     return f'TIME_BUDGET_S = float(os.environ.get("TIME_BUDGET_S", "{rng.choice(_BUDGETS)}"))'
@@ -69,11 +80,11 @@ def _amp_lines(amp: bool) -> list[str]:
 
 
 def _mlp_tabular(rng: Random) -> dict:
-    rows = int(_log_uniform(rng, 2e5, 2e6))
+    rows = int(_log_uniform(rng, 2e5, 3e6))
     n_feat = rng.choice([32, 64, 128, 256])
-    width = rng.choice([512, 2048, 4096, 8192])
-    depth = rng.choice([2, 4, 6])
-    batch = rng.choice([512, 4096, 32768])
+    width = rng.choice([1024, 4096, 8192, 12288, 16384])
+    depth = rng.choice([2, 4, 6, 8])
+    batch = rng.choice([512, 4096, 16384])
     amp = rng.random() < 0.5
     on_gpu = rng.random() < 0.5
     opt = rng.choice(["adam", "sgd"])
@@ -106,11 +117,11 @@ def _mlp_tabular(rng: Random) -> dict:
 
 
 def _cnn_train(rng: Random) -> dict:
-    side = rng.choice([64, 96, 128, 224])
+    side = rng.choice([96, 128, 224, 288, 384])
     n = int(_log_uniform(rng, 2e3, 1.5e4) * (64 / side) ** 2 * 4)
     base = rng.choice([32, 64, 128])
     blocks = rng.choice([3, 4, 5])
-    batch = rng.choice([32, 64, 128, 256])
+    batch = rng.choice([64, 128, 256, 512])
     amp = rng.random() < 0.5
     channels_last = rng.random() < 0.4
     preload = rng.random() < 0.4
@@ -149,12 +160,14 @@ def _cnn_train(rng: Random) -> dict:
 
 
 def _gpt_train(rng: Random) -> dict:
-    seq = rng.choice([256, 512, 1024])
+    seq = rng.choice([256, 512, 1024, 2048])
     n = int(_log_uniform(rng, 4e3, 4e4) * 512 / seq)
-    d = rng.choice([256, 512, 768, 1024])
-    layers = rng.choice([4, 6, 8, 12])
+    d = rng.choice([256, 512, 768, 1024, 1536, 2048])
+    layers = rng.choice([4, 6, 8, 12, 16, 24])
     vocab = rng.choice([8192, 32000, 50257])
-    batch = rng.choice([4, 8, 16, 32])
+    # tokens per step capped at 32k: past it every attention map, saved for
+    # the backward, is many times any GPU
+    batch = rng.choice([b for b in (4, 8, 16, 32) if b * seq <= 32768])
     amp = rng.random() < 0.6
     ckpt = rng.random() < 0.3
     opt = rng.choice(["adamw", "adamw", "sgd"])
@@ -205,11 +218,12 @@ def _gpt_train(rng: Random) -> dict:
 
 
 def _encoder_infer(rng: Random) -> dict:
-    seq = rng.choice([128, 256, 512])
+    seq = rng.choice([128, 256, 512, 1024])
     n = int(_log_uniform(rng, 2e4, 2e5) * 128 / seq)
-    d = rng.choice([384, 768, 1024])
+    d = rng.choice([768, 1024, 1536, 2048])
     layers = rng.choice([6, 12, 24])
-    batch = rng.choice([32, 128, 512])
+    # at most 512k tokens a batch: past it one batch's activations outgrow any GPU
+    batch = rng.choice([b for b in (128, 512, 1024, 2048) if b * seq <= 2**19])
     half = rng.random() < 0.5
     no_grad = rng.random() < 0.7
     keep_on_gpu = rng.random() < 0.4
@@ -245,31 +259,49 @@ def _encoder_infer(rng: Random) -> dict:
                       "keep_on_gpu": keep_on_gpu, "flush": flush if keep_on_gpu else 0}}
 
 
-# ── 5. recommender embeddings (held out) ────────────────────────────────
+# ── 5. recommender embeddings, row-sharded over every GPU (held out) ──
 
 
 def _recsys_train(rng: Random) -> dict:
     rows = int(_log_uniform(rng, 1e6, 6e6))
-    users = rng.choice([100_000, 1_000_000, 4_000_000])
-    items = rng.choice([50_000, 500_000, 2_000_000])
+    users = rng.choice([1_000_000, 4_000_000, 10_000_000, 20_000_000])
+    items = rng.choice([500_000, 2_000_000, 5_000_000])
     dim = rng.choice([32, 64, 128, 256])
     sparse = rng.random() < 0.4
     batch = rng.choice([4096, 65536])
     cols = [col("user", "i64", distinct=users), col("item", "i64", distinct=items), col("clicked", "f32")]
-    opt = ("opt = torch.optim.SparseAdam([*U.parameters(), *V.parameters()], lr=1e-2)" if sparse
-           else "opt = torch.optim.Adam([*U.parameters(), *V.parameters()], lr=1e-2)")
-    body = [_budget(rng), *_HEAD,
+    opt = ("opt = torch.optim.SparseAdam(params, lr=1e-2)" if sparse else "opt = torch.optim.Adam(params, lr=1e-2)")
+    sharding = [
+        "class RowSharded(torch.nn.Module):",
+        '    """An embedding table split by row over every GPU: row r lives on GPUS[r % n]."""',
+        "    def __init__(self, rows, dim, sparse):",
+        "        super().__init__()",
+        "        n = len(GPUS)",
+        "        self.parts = torch.nn.ModuleList(",
+        "            [torch.nn.Embedding(-(-rows // n), dim, sparse=sparse, device=g) for g in GPUS])",
+        "    def forward(self, idx):",
+        "        n, out = len(GPUS), None",
+        "        for j, (g, part) in enumerate(zip(GPUS, self.parts)):",
+        "            mask = idx % n == j",
+        "            rows = part((idx[mask] // n).to(g)).to(GPUS[0])",
+        "            if out is None:",
+        "                out = torch.empty(len(idx), rows.shape[1], device=GPUS[0], dtype=rows.dtype)",
+        "            out[mask] = rows",
+        "        return out",
+    ]
+    body = [_budget(rng), *_HEAD, *_GPUS, *sharding,
             "df = pd.read_parquet(clicks_path)",
             'u = torch.from_numpy(df["user"].to_numpy())',
             'v = torch.from_numpy(df["item"].to_numpy())',
             'y = torch.from_numpy((df["clicked"].to_numpy() > 0).astype("float32"))',
             f"NUM_USERS, NUM_ITEMS, DIM = {users}, {items}, {dim}",
-            f"U = torch.nn.Embedding(NUM_USERS, DIM, sparse={sparse}).to(device)",
-            f"V = torch.nn.Embedding(NUM_ITEMS, DIM, sparse={sparse}).to(device)",
+            f"U = RowSharded(NUM_USERS, DIM, {sparse})",
+            f"V = RowSharded(NUM_ITEMS, DIM, {sparse})",
+            "params = [*U.parameters(), *V.parameters()]",
             opt, "t0 = time.monotonic()", "steps = 0",
             "while time.monotonic() - t0 < TIME_BUDGET_S:",
             f"    i = (steps * {batch}) % max(1, len(y) - {batch})",
-            f"    ub, vb, yb = (t[i : i + {batch}].to(device) for t in (u, v, y))",
+            f"    ub, vb, yb = (t[i : i + {batch}].to(GPUS[0]) for t in (u, v, y))",
             "    logit = (U(ub) * V(vb)).sum(-1)",
             "    loss = torch.nn.functional.binary_cross_entropy_with_logits(logit, yb)",
             "    opt.zero_grad()", "    loss.backward()", "    opt.step()", "    steps += 1",
@@ -327,9 +359,9 @@ def _loader_bound(rng: Random) -> dict:
 
 
 def _blocked_gemm(rng: Random) -> dict:
-    n = int(_log_uniform(rng, 2e4, 1.5e5))
+    n = int(_log_uniform(rng, 2e4, 3e5))
     d = rng.choice([128, 256, 512, 1024])
-    block = rng.choice([1024, 4096, 8192, 16384])
+    block = rng.choice([1024, 4096, 8192, 16384, 32768])
     half = rng.random() < 0.5
     body = [_budget(rng), *_HEAD,
             "X = torch.from_numpy(np.load(vectors_path)).to(device)",
@@ -352,8 +384,8 @@ def _blocked_gemm(rng: Random) -> dict:
 
 
 def _knn_search(rng: Random) -> dict:
-    n = int(_log_uniform(rng, 1e5, 5e5))
-    d = rng.choice([64, 128, 256, 384])
+    n = int(_log_uniform(rng, 1e5, 1.5e6))
+    d = rng.choice([64, 128, 256, 384, 768])
     q_chunk = rng.choice([256, 1024, 4096])
     k = rng.choice([10, 100])
     cols_dtype = rng.choice(["float32", "float16"])
@@ -373,6 +405,132 @@ def _knn_search(rng: Random) -> dict:
             "knobs": {"d": d, "q_chunk": q_chunk, "k": k, "dtype": cols_dtype}}
 
 
+# ── 9. LM fine-tuning, layers spread over every GPU ─────────────────────
+
+_SDPA_BLOCK = [
+    "class Block(torch.nn.Module):",
+    "    def __init__(self, d, **kw):",
+    "        super().__init__()",
+    "        self.ln1, self.ln2 = torch.nn.LayerNorm(d, **kw), torch.nn.LayerNorm(d, **kw)",
+    "        self.qkv, self.proj = torch.nn.Linear(d, 3 * d, **kw), torch.nn.Linear(d, d, **kw)",
+    "        self.mlp = torch.nn.Sequential(torch.nn.Linear(d, 4 * d, **kw), torch.nn.GELU(), torch.nn.Linear(4 * d, d, **kw))",
+    "        self.h = d // 128",
+]
+
+
+def _lm_finetune(rng: Random) -> dict:
+    # params 0.6-7B: full AdamW reaches 8xT4; past ~90 GiB only a 4xL40S holds
+    # it, a pool that did not admit a pod in an hour (rt-gpuprobe-1)
+    d = rng.choice([2048, 2560, 3072, 4096, 5120])
+    layers = rng.choice({2048: [12, 16, 24, 32], 2560: [12, 16, 24, 32], 3072: [12, 16, 24],
+                         4096: [8, 12, 16], 5120: [8, 12]}[d])
+    vocab = rng.choice([32000, 50257, 128256])
+    seq = rng.choice([256, 512, 1024])
+    batch = rng.choice([1, 2, 4, 8])
+    n = int(_log_uniform(rng, 2e3, 2e4) * 512 / seq)
+    opt = rng.choice(["adamw", "adamw", "sgd", "adafactor"])
+    trainable = rng.choice(["all", "all", "last4", "head"])
+    amp = rng.random() < 0.7
+    ckpt = rng.random() < 0.4
+    block = [*_SDPA_BLOCK,
+             "    def forward(self, x):",
+             "        b, s, d = x.shape",
+             "        q, k, v = self.qkv(self.ln1(x)).view(b, s, 3, self.h, d // self.h).permute(2, 0, 3, 1, 4)",
+             "        a = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True)",
+             "        x = x + self.proj(a.transpose(1, 2).reshape(b, s, d))",
+             "        return x + self.mlp(self.ln2(x))"]
+    freeze = {"all": [],
+              "last4": ["emb.requires_grad_(False)", "for blk in blocks[:-4]:", "    blk.requires_grad_(False)"],
+              "head": ["emb.requires_grad_(False)", "blocks.requires_grad_(False)"]}[trainable]
+    make_opt = {"adamw": "opt = torch.optim.AdamW(params, lr=1e-4)",
+                "sgd": "opt = torch.optim.SGD(params, lr=1e-3, momentum=0.9)",
+                "adafactor": "opt = torch.optim.Adafactor(params, lr=1e-3)"}[opt]
+    fwd = ("x = torch.utils.checkpoint.checkpoint(blk, x, use_reentrant=False)" if ckpt else "x = blk(x)")
+    body = [_budget(rng), *_HEAD, *_GPUS, *_amp_lines(amp), *block,
+            f"VOCAB, D, LAYERS = {vocab}, {d}, {layers}",
+            "tokens = torch.from_numpy(np.load(tokens_path).astype(np.int64))  # (N, seq + 1)",
+            "# layers in contiguous runs, one run per GPU (embeddings on the first, the LM head on the last)",
+            "per_gpu = -(-LAYERS // len(GPUS))",
+            "place = [GPUS[min(i // per_gpu, len(GPUS) - 1)] for i in range(LAYERS)]",
+            "emb = torch.nn.Embedding(VOCAB, D, device=GPUS[0])",
+            "blocks = torch.nn.ModuleList([Block(D, device=place[i]) for i in range(LAYERS)])",
+            "head = torch.nn.Linear(D, VOCAB, bias=False, device=GPUS[-1])",
+            *freeze,
+            "params = [p for m in (emb, blocks, head) for p in m.parameters() if p.requires_grad]",
+            make_opt,
+            "t0 = time.monotonic()", "steps = 0",
+            "while time.monotonic() - t0 < TIME_BUDGET_S:",
+            f"    i = (steps * {batch}) % max(1, len(tokens) - {batch})",
+            f"    xb = tokens[i : i + {batch}]",
+            "    with torch.autocast(device_type=device, dtype=torch.float16, enabled=AMP):",
+            "        x = emb(xb[:, :-1].to(GPUS[0]))",
+            "        for blk, g in zip(blocks, place):",
+            "            x = x.to(g)",
+            f"            {fwd}",
+            "        logits = head(x.to(GPUS[-1]))",
+            "        loss = torch.nn.functional.cross_entropy(logits.float().reshape(-1, VOCAB), xb[:, 1:].to(GPUS[-1]).reshape(-1))",
+            "    opt.zero_grad(set_to_none=True)",
+            "    scaler.scale(loss).backward()", "    scaler.step(opt)", "    scaler.update()", "    steps += 1",
+            'return {"steps": steps}']
+    return {"func_name": "finetune_lm", "imports": "import os\nimport time\nimport numpy as np\nimport torch\nimport torch.utils.checkpoint",
+            "body": "\n".join(body), "inputs": [{**array("tokens", [n, seq + 1], "int32"), "high": vocab}],
+            "knobs": {"d": d, "layers": layers, "vocab": vocab, "seq": seq, "batch": batch, "opt": opt,
+                      "trainable": trainable, "amp": amp, "ckpt": ckpt}}
+
+
+# ── 10. LLM generation with a KV cache, layers over every GPU (held out) ──
+
+
+def _llm_generate(rng: Random) -> dict:
+    d = rng.choice([2048, 3072, 4096, 5120, 6144])
+    layers = rng.choice([16, 24, 32, 40, 48])
+    vocab = rng.choice([32000, 128256])
+    prompt = rng.choice([256, 1024, 2048])
+    new = rng.choice([128, 512])
+    batch = rng.choice([1, 4, 8, 16, 32])
+    n = int(_log_uniform(rng, 500, 5000))
+    block = [*_SDPA_BLOCK,
+             "    def forward(self, x, cache, t):",
+             "        b, s, d = x.shape",
+             "        q, k, v = self.qkv(self.ln1(x)).view(b, s, 3, self.h, d // self.h).permute(2, 0, 3, 1, 4)",
+             "        cache[0][:, :, t : t + s], cache[1][:, :, t : t + s] = k, v",
+             "        a = torch.nn.functional.scaled_dot_product_attention(",
+             "            q, cache[0][:, :, : t + s], cache[1][:, :, : t + s], is_causal=s > 1)",
+             "        x = x + self.proj(a.transpose(1, 2).reshape(b, s, d))",
+             "        return x + self.mlp(self.ln2(x))"]
+    body = [_budget(rng), *_HEAD, *_GPUS, *block,
+            'DTYPE = torch.float16 if device == "cuda" else torch.float32',
+            f"VOCAB, D, LAYERS, NEW = {vocab}, {d}, {layers}, {new}",
+            "prompts = torch.from_numpy(np.load(prompts_path).astype(np.int64))  # (N, prompt_len)",
+            "per_gpu = -(-LAYERS // len(GPUS))",
+            "place = [GPUS[min(i // per_gpu, len(GPUS) - 1)] for i in range(LAYERS)]",
+            "emb = torch.nn.Embedding(VOCAB, D, device=GPUS[0], dtype=DTYPE)",
+            "blocks = [Block(D, device=place[i], dtype=DTYPE).eval() for i in range(LAYERS)]",
+            "head = torch.nn.Linear(D, VOCAB, bias=False, device=GPUS[-1], dtype=DTYPE)",
+            "H, P = D // 128, prompts.shape[1]",
+            "t0 = time.monotonic()", "generated = 0",
+            "with torch.inference_mode():",
+            "    while time.monotonic() - t0 < TIME_BUDGET_S:",
+            f"        i = generated % max(1, len(prompts) - {batch})",
+            f"        xb = prompts[i : i + {batch}].to(GPUS[0])",
+            "        # keys and values for prompt + every new token, allocated up front per layer",
+            "        caches = [(torch.empty(len(xb), H, P + NEW, D // H, device=g, dtype=DTYPE),",
+            "                   torch.empty(len(xb), H, P + NEW, D // H, device=g, dtype=DTYPE)) for g in place]",
+            "        x, t = emb(xb), 0",
+            "        for step in range(NEW):",
+            "            for blk, cache, g in zip(blocks, caches, place):",
+            "                x = blk(x.to(g), cache, t)",
+            "            t += x.shape[1]",
+            "            x = emb(head(x[:, -1:].to(GPUS[-1])).argmax(-1).to(GPUS[0]))",
+            "            if time.monotonic() - t0 > TIME_BUDGET_S:",
+            "                break",
+            "        generated += len(xb)",
+            'return {"generated": generated}']
+    return {"func_name": "generate", "imports": "import os\nimport time\nimport numpy as np\nimport torch",
+            "body": "\n".join(body), "inputs": [{**array("prompts", [n, prompt], "int32"), "high": vocab}],
+            "knobs": {"d": d, "layers": layers, "vocab": vocab, "prompt": prompt, "new": new, "batch": batch}}
+
+
 FAMILIES: dict[str, Family] = {
     f.name: f
     for f in (
@@ -384,13 +542,20 @@ FAMILIES: dict[str, Family] = {
         Family("loader_bound", "input_bound", _loader_bound, ("torch", "numpy"), _SIZES),
         Family("blocked_gemm", "blocks", _blocked_gemm, ("torch", "numpy"), _SIZES),
         Family("knn_search", "blocks", _knn_search, ("torch", "numpy"), _SIZES),
+        Family("lm_finetune", "params", _lm_finetune, ("torch", "numpy"), _SIZES),
+        Family("llm_generate", "kv_cache", _llm_generate, ("torch", "numpy"), _SIZES),
     )
 }
 
-#: Never trained on: embedding tables + sparse optimizers, and a chunked
-#: distance computation -- each a skill the training families teach in
-#: another form (optimizer state in mlp/gpt, block sizes in blocked_gemm).
-HELDOUT_FAMILIES: tuple[str, ...] = ("recsys_train", "knn_search")
+#: Never trained on: embedding tables + sparse optimizers, a chunked distance
+#: computation, and generation with a KV cache -- each a skill the training
+#: families teach in another form (optimizer state in mlp/gpt, block sizes in
+#: blocked_gemm, layers spread over GPUs in lm_finetune, inference in
+#: encoder_infer).
+HELDOUT_FAMILIES: tuple[str, ...] = ("recsys_train", "knn_search", "llm_generate")
+
+#: Families whose code spreads its model over every visible GPU.
+SHARDED_FAMILIES: tuple[str, ...] = ("lm_finetune", "llm_generate", "recsys_train")
 
 
 def make_task(family: str, seed: int, n_runs: int = 2, profile: str = "default") -> Task:

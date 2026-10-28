@@ -9,16 +9,18 @@ from ..bench.prompting import MAX_DESC_CHARS, _clip, _short_inputs
 from ..bench.spec import BenchSpec, Decision, answer_instruction, options_block, snap_up
 from . import features, grid, scoring
 
-_DEVICES = ", ".join(f"{n} ({g:g} GiB usable, ${p:.2f}/h)" for n, g, p, _s in grid.DEVICES)
+_DEVICES = ", ".join(f"{d.name} ({d.capacity_gib:g} GiB{'' if d.n_gpus == 1 else f' as {d.n_gpus} x {d.per_gpu_gib:g}'}, "
+                     f"${d.price:.2f}/h)" for d in grid.DEVICES)
 
 SYSTEM = (
     "You size GPU tasks before they run. Given a PyTorch task's source code, the metadata of this "
     "run's inputs, and what earlier runs of the same task used, predict two things the platform's "
-    "GPU monitoring will measure. gpu_memory is the peak device memory the task holds (CUDA context "
-    "and PyTorch's caching allocator included); the task runs on the cheapest GPU whose memory covers "
-    f"your answer -- {_DEVICES} -- and if it needs more it dies with a CUDA out-of-memory error and is "
-    "retried on the next GPU up. gpu_util is the share of time a GPU kernel is running, averaged over "
-    "the run; it is measured on a T4."
+    "GPU monitoring will measure. gpu_memory is the peak GPU memory the task holds, summed over the "
+    "GPUs it uses (CUDA context and PyTorch's caching allocator included); the task runs on the "
+    f"cheapest machine whose GPU memory covers your answer -- {_DEVICES} -- and if it needs more it "
+    "dies with a CUDA out-of-memory error and is retried on the next machine up. A multi-GPU machine "
+    "only helps code that spreads its model over every visible GPU; other code uses one of its GPUs. "
+    "gpu_util is the share of time a GPU kernel is running, averaged over the run and the GPUs it uses."
 )
 
 _MEM_OPTIONS = tuple(grid.format_gib(g) for g in grid.GPU_MEM_GRID_GIB)

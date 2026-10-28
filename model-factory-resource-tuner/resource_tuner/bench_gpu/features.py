@@ -21,10 +21,14 @@ CODE_TOKENS = (
     "TransformerEncoder", "Conv2d(", "BatchNorm2d", "cdist", "topk", "@ X.T", "DataLoader", "num_workers=0",
     "num_workers=1", "num_workers=2", "pin_memory", "mmap_mode", "per-row", "for p in img", "np.random.normal",
     "cross_entropy", "VOCAB", "logits",
+    # big-2: code that spreads over every GPU, frozen layers, factored optimizers, KV caches
+    "device_count()", "RowSharded", "place[i]", "requires_grad_(False)", "blocks[:-4]", "Adafactor",
+    "scaled_dot_product_attention", "caches", "DTYPE", "momentum=0.9",
 )
 _LINEAR = re.compile(r"Linear\((\d+), (\d+)")
 _SLICE = re.compile(r"\[i : i \+ (\d+)\]")
 _ASSIGN3 = re.compile(r"= (\d+), (\d+), (\d+)\n")
+_ASSIGN4 = re.compile(r"= (\d+), (\d+), (\d+), (\d+)\n")
 _NUM = re.compile(r"(?<![\w.])(\d[\d_]*)(?![\w.])")
 
 
@@ -39,6 +43,14 @@ def code_features(code: str) -> dict[str, float]:
     f["log_assign_a"] = math.log2(int(trip[0][0])) if trip else 0.0
     f["log_assign_b"] = math.log2(int(trip[0][1])) if trip else 0.0
     f["assign_c"] = float(trip[0][2]) if trip else 0.0
+    quad = _ASSIGN4.findall(code)
+    if quad:  # VOCAB, D, LAYERS, NEW
+        f["log_assign_a"], f["log_assign_b"] = math.log2(int(quad[0][0])), math.log2(int(quad[0][1]))
+        f["assign_c"] = float(quad[0][2])
+    f["log_assign_d"] = math.log2(int(quad[0][3])) if quad else 0.0
+    # params a reader would count: d^2 x layers for a transformer of width d
+    f["log_d2_layers"] = (math.log2(int(trip[0][1]) ** 2 * int(trip[0][2])) if trip else
+                          math.log2(int(quad[0][1]) ** 2 * int(quad[0][2])) if quad else 0.0)
     nums = [int(n.replace("_", "")) for n in _NUM.findall(code)]
     nums = [n for n in nums if n > 1]
     f["log_max_literal"] = math.log2(max(nums)) if nums else 0.0

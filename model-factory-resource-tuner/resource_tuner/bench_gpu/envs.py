@@ -1,9 +1,16 @@
 """Task environments for RightSizeGPU.
 
 Measurement pass 1 runs on a T4 (g4dn.xlarge: the pool that admits work
-here, and the cheapest device on the ladder). A run that dies with a CUDA
-OOM needs a bigger device by definition, so pass 2 re-measures it on an
-L40S (48 GB). One workload per GPU at a time.
+here, and the cheapest machine on the ladder). A run that dies with a CUDA
+OOM needs a bigger machine by definition, and climbs (round 21, big-2):
+
+    single-GPU code   T4 -> 4xL4 node, one run per L4 -> L40S, one run per GPU
+    sharded code      T4 -> one 8xT4 node, the run across all 8 -> one 4xL40S node
+
+The L40S pools admit work slowly (round 20: 42 of 184 L40S shards timed
+out queued, and the round-21 probe waited on them), so the L4 and 8xT4
+pools, which admit in minutes, take every run they can hold. One workload
+per GPU at a time; several per pod on the multi-GPU nodes.
 """
 
 from __future__ import annotations
@@ -41,11 +48,34 @@ gpu_measure_big_env = flyte.TaskEnvironment(
     env_vars=_ENV,
 )
 
+# Multi-GPU nodes, sized under each node's allocatable (cluster node pools,
+# 2026-10-26): g6.12xlarge 47.5 CPU / 174 GiB, g4dn.metal 95 CPU / 346 GiB,
+# g6e.12xlarge 47.5 CPU / 351 GiB.
+gpu_measure_l4x4_env = flyte.TaskEnvironment(
+    name="rt-gpubench-measure-l4x4",
+    image=gpu_workload_image,
+    resources=flyte.Resources(cpu=44, memory="160Gi", gpu="L4:4", disk="300Gi", shm="auto"),
+    env_vars=_ENV,
+)
+gpu_measure_t4x8_env = flyte.TaskEnvironment(
+    name="rt-gpubench-measure-t4x8",
+    image=gpu_workload_image,
+    resources=flyte.Resources(cpu=88, memory="320Gi", gpu="T4:8", disk="300Gi", shm="auto"),
+    env_vars=_ENV,
+)
+gpu_measure_l40sx4_env = flyte.TaskEnvironment(
+    name="rt-gpubench-measure-l40sx4",
+    image=gpu_workload_image,
+    resources=flyte.Resources(cpu=44, memory="320Gi", gpu="L40s:4", disk="300Gi", shm="auto"),
+    env_vars=_ENV,
+)
+
 gpubench_env = flyte.TaskEnvironment(
     name="rt-gpubench",
     image=bench_image,
     resources=flyte.Resources(cpu=2, memory="8Gi"),
     secrets=[flyte.Secret(key=LLM_SERVICE_SECRET, as_env_var="LLM_SERVICE_API_KEY")],
     env_vars=cluster_env_vars(),
-    depends_on=[gpu_measure_env, gpu_measure_big_env, bench_gpu_env],
+    depends_on=[gpu_measure_env, gpu_measure_big_env, gpu_measure_l4x4_env, gpu_measure_t4x8_env,
+                gpu_measure_l40sx4_env, bench_gpu_env],
 )

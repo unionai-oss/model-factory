@@ -1,0 +1,679 @@
+<title>RightSize Bench Big-2</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column, same tokens as the single-axis RightSize reports. Definitions and methodology come first; each result is a claim, a chart drawn from the bench's own numbers, and a "how to read this" note. */
+:root {
+  --bg: #f5f6f9;
+  --panel: #ffffff;
+  --ink: #161823;
+  --muted: #5d6273;
+  --rule: #dcdfe8;
+  --tint: #eef0fb;
+  --accent: #4d65ff;     /* decision model */
+  --warm: #c9760a;       /* autoregressive LLM */
+  --tree: #1f9b6a;       /* classical ML */
+  --rule-c: #8a8fa0;     /* rules */
+  --bad: #d4383b;
+  --rl: #9a4fd0;        /* RL-tuned decision model */
+  --stack: #0b87a3;     /* stacked hybrid: trees' estimate in the prompt */
+  --pool: #c2417f;      /* pooled hybrid: trees x LLM opinion pool */
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+    --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --bad: #ff6b6b;
+    --rl: #c48bf2; --stack: #45c4e0; --pool: #ee82b5;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+  --accent: #7d8fff; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --bad: #ff6b6b;
+  --rl: #c48bf2; --stack: #45c4e0; --pool: #ee82b5;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 980px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 72px; }
+header { display: grid; gap: 14px; padding-bottom: 28px; border-bottom: 1px solid var(--rule); }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(40px, 7vw, 64px); line-height: 1; margin: 0; letter-spacing: -.01em; }
+.lede { font-size: 19px; max-width: 64ch; margin: 0; text-wrap: pretty; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 22px; font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; }
+.status { justify-self: start; font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; color: var(--warm); border: 1px solid color-mix(in srgb, var(--warm) 45%, transparent); border-radius: 999px; padding: 3px 12px; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; }
+nav.toc a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--rule); }
+nav.toc a:hover { color: var(--accent); border-color: var(--accent); }
+section { padding-block: 36px 8px; display: grid; gap: 14px; min-width: 0; }
+.part { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-top: 28px; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.15; margin: 0; text-wrap: balance; }
+h3 { font-family: var(--font-display); font-weight: 600; font-size: 20px; line-height: 1.2; margin: 10px 0 0; }
+p { margin: 0; max-width: 70ch; }
+.muted { color: var(--muted); }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 18px 12px; min-width: 0; }
+.figure svg { display: block; width: 100%; height: auto; }
+.caption { font-size: 13px; color: var(--muted); margin-top: 8px; max-width: none; }
+.howto { background: var(--tint); border-radius: 6px; padding: 14px 16px; display: grid; gap: 6px; font-size: 14.5px; }
+.howto .t { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.howto ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; max-width: none; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+table.num td { white-space: nowrap; }
+table.text td, table.text th { text-align: left; white-space: normal; }
+table.text td:first-child { white-space: nowrap; font-family: var(--font-mono); font-size: 13px; }
+td.best { font-weight: 600; }
+td.heat { color: var(--ink); }
+.kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.stat { display: grid; gap: 4px; align-content: start; }
+.stat .n { font-family: var(--font-display); font-size: 34px; font-weight: 600; line-height: 1.05; }
+.stat .l { font-size: 14px; color: var(--muted); }
+code, .mono { font-family: var(--font-mono); font-size: .9em; }
+ul, ol { margin: 0; padding-left: 22px; display: grid; gap: 6px; max-width: 70ch; }
+dl.defs { display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 10px 22px; margin: 0; }
+dl.defs dt { font-weight: 600; }
+dl.defs dd { margin: 0; color: var(--ink); min-width: 0; }
+@media (max-width: 620px) { dl.defs { grid-template-columns: 1fr; gap: 2px 0; } dl.defs dd { margin-bottom: 10px; } }
+pre.block { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; color: var(--ink); white-space: pre; overflow-x: auto; margin: 0; }
+.steps { counter-reset: s; display: grid; gap: 10px; padding: 0; list-style: none; max-width: 72ch; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 30px 1fr; gap: 10px; }
+.steps li::before { content: counter(s); font-family: var(--font-mono); font-size: 13px; color: var(--accent); border: 1px solid var(--rule); border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; }
+.tldr { display: grid; gap: 8px; padding: 0; list-style: none; }
+.tldr li { padding-left: 16px; border-left: 3px solid var(--accent); }
+footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); display: grid; gap: 6px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 520px) { .lede { font-size: 17px; } h2 { font-size: 24px; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Union model factory · resource right-sizing · round 21 · October 2026</div>
+    <h1>RightSize Bench</h1>
+    <p class="lede">A task's resource request is three guesses made before it runs: how much memory, how many CPU cores, and whether it needs a GPU and which machine. This benchmark scores approaches on the whole request at once, in dollars, against the cheapest request that would have worked. Release big-2 swaps in a new GPU corpus that spans the cluster's whole GPU machine ladder, and adds two ways of combining the gradient-boosted trees with the language models.</p>
+    <span class="status">big-2 · 32,082 measured runs · 20 decision rules</span>
+    <div class="facts">
+      <span><b>32,082</b> usable runs from <b>3</b> benches</span>
+      <span><b>5,095</b> test and <b>6,416</b> unseen-family runs scored</span>
+      <span><b>17 × 16 × 18</b> possible requests</span>
+      <span><b>7</b> GPU machine shapes, T4 to 4×L40S</span>
+    </div>
+    <nav class="toc" aria-label="Sections">
+      <a href="#summary">Summary</a><a href="#terms">Terms</a><a href="#new">What is new</a><a href="#dataset">Dataset</a><a href="#request">The request</a><a href="#cost">Cost model</a><a href="#boundary">What approaches see</a><a href="#arms">Approaches</a><a href="#rl">RL training</a><a href="#stack">Stacking</a><a href="#pool">Pooling</a><a href="#runs">How it ran</a><a href="#results">Results</a><a href="#hybrids">Hybrids vs members</a><a href="#sources">By source</a><a href="#gpuaxis">The GPU axis</a><a href="#curve">RL curves</a><a href="#rounds">Against round 20</a><a href="#limits">Assumptions and limits</a>
+    </nav>
+  </header>
+
+  <section id="summary">
+    <h2>Summary</h2>
+    <ul class="tldr">
+      <li><b>Stacking the trees into the decision model, then tuning it with RL, gives the lowest test regret of any release so far.</b> Read by argmax, it costs 3.2% more than the oracle on test runs. The best arm without the trees costs 9.8% (RL 1.7B, argmax), and round 20's best was 8.0%. It also has the lowest dollar regret (13.0%) and the highest first-attempt success (97.8%), and 92.2% of its runs have all three axes right.</li>
+      <li><b>The same arm is one of the worst on unseen task families: 102.0% regret.</b> The GPU axis causes it. On unseen GPU tasks it picks the oracle's machine 35.2% of the time, against 77.1% for RL without the trees. RL from a stacked start learns to follow the trees' estimate, and the trees fail on new GPU code (167.1% GPU regret).</li>
+      <li><b>On unseen families, RL without the trees is best</b>: 35.5% decoded cost-aware, against 48.0% for the hand-written rules and 90.8% for the trees.</li>
+      <li><b>Only one hybrid beats its language model on both splits</b>: the trees pooled with the supervised decision model (6.9% test and 52.2% unseen, against 14.0% and 58.8%). Every other hybrid is better on test and worse on unseen families.</li>
+      <li><b>Unseen regret cannot be compared with round 20.</b> The GPU bench's unseen families changed, and now include two multi-GPU families. Memory and CPU rows are the same runs as in round 20 and can be compared.</li>
+      <li><b>The GPU corpus is thinner at the top than planned.</b> Multi-GPU nodes mostly did not schedule, and 1,569 GPU runs were censored, most of them large sharded runs.</li>
+    </ul>
+  </section>
+
+  <div class="part">Part 1 · Definitions</div>
+  <section id="terms">
+    <h2>Terms used on this page</h2>
+    <dl class="defs">
+      <dt>request</dt><dd>One choice on each of three axes: a memory cell, a CPU cell, and a GPU cell or "none". Each axis uses its own bench's grid.</dd>
+      <dt>machine shape</dt><dd>A GPU instance type the cluster can provision, such as one T4 or four L40S. A GPU cell lands on the cheapest shape that holds it.</dd>
+      <dt>oracle</dt><dd>The request each run's measurements say is right: the smallest memory cell that holds the measured peak, the CPU cell that covers the busiest 15 seconds, and the GPU cell that lands on the cheapest shape the run fits (or no GPU for a CPU task).</dd>
+      <dt>regret</dt><dd>A run's cost under the approach's request, divided by its cost under the oracle's, minus 1, averaged over runs. 0% is the oracle; 100% is twice its cost. Each run counts once, however much it costs. Lower is better.</dd>
+      <dt>first attempt ok</dt><dd>Share of runs whose first attempt succeeds: no host OOM, no CUDA OOM, and a GPU when the task needs one. Throttling does not count as a failure.</dd>
+      <dt>all axes right</dt><dd>Memory fits and is at most one cell above the oracle, CPU is within ±25% of the busiest 15 seconds, and the GPU choice lands on the oracle's machine. A GPU task is scored on the GPU choice only.</dd>
+      <dt>source</dt><dd>Which bench a run came from: <span class="mono">mem</span> (RightSizeMem), <span class="mono">cpu</span> (RightSizeCPU) or <span class="mono">gpu</span> (RightSizeGPU). No approach is told the source.</dd>
+      <dt>test / unseen</dt><dd>Test runs are new tasks from task families the approaches trained on. Unseen runs (OOD) come from families held out of training on each bench.</dd>
+      <dt>argmax / decoded</dt><dd>Two ways to turn a model's probabilities into one request. Argmax takes the most likely cell on each axis. Decoded uses each bench's cost-aware decoder (see <a href="#decoding">Decoding</a>).</dd>
+      <dt>hybrid</dt><dd>An approach that combines the trees (gbt-dist) with a language model. There are two kinds on this page, stacked and pooled.</dd>
+      <dt>stacked</dt><dd>The trees' prediction is written into the decision model's prompt, and the model is trained with it there (see <a href="#stack">Stacking</a>).</dd>
+      <dt>out-of-fold</dt><dd>A prediction for a training run made by trees that were fit without that run's task. It is as wrong as the trees would be on a new task from a familiar family.</dd>
+      <dt>pooled</dt><dd>The trees' probabilities and a decision model's probabilities are multiplied together, with a weight, and renormalized (see <a href="#pool">Pooling</a>). Nothing is retrained.</dd>
+    </dl>
+  </section>
+
+  <section id="new">
+    <h2>What is new in big-2</h2>
+    <ol class="steps">
+      <li><span><b>A new GPU corpus, GPU big-2.</b> In big-1, 94.8% of usable GPU runs fit a T4, so the device choice was nearly trivial. GPU big-2 has larger workloads and new families, measured over every GPU shape the cluster provisions, including multi-GPU machines. Three families shard their model over every visible GPU. In GPU big-2, 74.7% of usable runs fit a T4.</span></li>
+      <li><span><b>The GPU label is the oracle's cell.</b> It is the cell that lands on the cheapest shape the run fits, not the cell that holds the raw peak. For sharded code the two can differ: a run whose share does not fit four L4s has to ask past 88 GiB to land on eight T4s.</span></li>
+      <li><span><b>The CPU corpus is pinned to big-1</b> and memory stays at v2. The memory and CPU rows are the same runs as in round 20.</span></li>
+      <li><span><b>Two hybrids of trees and language models</b>: a stacked decision model, RL from that stacked model, and a per-axis opinion pool of the trees with each decision model. That adds 12 rows to the leaderboard.</span></li>
+    </ol>
+  </section>
+
+  <section id="dataset">
+    <h2>The dataset: three measured corpora, one schema</h2>
+    <p>Every run is real task code executed in a pod and measured, collected by the three single-axis benches. The combined bench reads their published corpora as factory sources and rewrites them to one schema. A run keeps the labels its bench measured, and the axes its bench did not measure are left unscored.</p>
+    <div class="figure table-wrap"><table class="num">
+      <thead><tr><th>source</th><th>bench release</th><th>train</th><th>val</th><th>test</th><th>unseen</th><th>labels</th></tr></thead>
+      <tbody>
+        <tr><td>mem</td><td>RightSizeMem v2</td><td>8,457</td><td>1,138</td><td>2,316</td><td>2,323</td><td style="text-align:left">peak RSS → memory; mean cores → CPU</td></tr>
+        <tr><td>cpu</td><td>RightSizeCPU big-1</td><td>5,628</td><td>838</td><td>1,634</td><td>1,800</td><td style="text-align:left">peak RSS → memory; busiest 15 s → CPU</td></tr>
+        <tr><td>gpu</td><td>RightSizeGPU big-2</td><td>3,968</td><td>542</td><td>1,145</td><td>2,293</td><td style="text-align:left">peak device memory, sharding, imbalance → GPU</td></tr>
+        <tr><td><b>all</b></td><td></td><td><b>18,053</b></td><td><b>2,518</b></td><td><b>5,095</b></td><td><b>6,416</b></td><td></td></tr>
+      </tbody>
+    </table>
+    <p class="caption">Usable runs only. GPU big-2 (rsg-big2-1) measured 10,000 runs: 8,380 usable, 1,569 censored (out of memory on the largest shape they reached) and 51 failed. The combined bench also drops 432 usable runs whose peak filled the device, which leaves 7,948. A GPU task's host memory and cores come with its GPU instance, so those two axes are not scored on GPU runs.</p></div>
+    <p>The decision models train on a balanced sample of 3,500 runs per source (10,500 in all), so that the memory corpus, the largest of the three, does not dominate. The trees and rules use all 18,053 training runs.</p>
+    <p>The GPU unseen families are <span class="mono">recsys_train</span>, <span class="mono">knn_search</span> and <span class="mono">llm_generate</span>. Two of them shard over every GPU, and <span class="mono">llm_generate</span> is new in big-2. The sharded family in training is the new <span class="mono">lm_finetune</span>.</p>
+  </section>
+
+  <section id="request">
+    <h2>The request: three grids and a machine ladder</h2>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>axis</th><th>cells</th><th>values</th><th>how it is priced</th></tr></thead>
+      <tbody>
+        <tr><td>memory</td><td>17</td><td>256Mi to 64Gi, in half powers of two (RightSizeMem's ladder)</td><td>Dominant share of an m6i.xlarge (4 vCPU, 16 GiB, $0.192/h): price × max(cores ÷ 4, GiB ÷ 16)</td></tr>
+        <tr><td>cpu</td><td>16</td><td>0.25 to 8 cores (RightSizeCPU's steps)</td><td>Same dominant-share price as memory</td></tr>
+        <tr><td>gpu</td><td>18</td><td>none, or 17 GPU memory cells from 1 to 176 GiB (RightSizeGPU big-2's)</td><td>The cheapest machine shape that holds the cell (below). The GPU instance's price covers its host memory and cores.</td></tr>
+      </tbody>
+    </table></div>
+    <div class="figure table-wrap"><table class="num">
+      <thead><tr><th>shape</th><th>instance</th><th>GPUs</th><th>usable GiB</th><th>$ / h</th><th style="text-align:left">cheapest shape for (usable runs)</th></tr></thead>
+      <tbody>
+        <tr><td>T4</td><td>g4dn.xlarge</td><td>1 × T4</td><td>15</td><td>0.526</td><td style="text-align:left">6,256 (74.7%)</td></tr>
+        <tr><td>L4</td><td>g6.2xlarge</td><td>1 × L4</td><td>22</td><td>0.978</td><td style="text-align:left">548 (6.5%)</td></tr>
+        <tr><td>A10G</td><td>g5.2xlarge</td><td>1 × A10G</td><td>22</td><td>1.212</td><td style="text-align:left">never cheapest</td></tr>
+        <tr><td>L40S</td><td>g6e.2xlarge</td><td>1 × L40S</td><td>44</td><td>2.242</td><td style="text-align:left">1,245 (14.9%)</td></tr>
+        <tr><td>4×L4</td><td>g6.12xlarge</td><td>4 × L4</td><td>88</td><td>4.602</td><td style="text-align:left">214 (2.6%)</td></tr>
+        <tr><td>8×T4</td><td>g4dn.metal</td><td>8 × T4</td><td>120</td><td>7.824</td><td style="text-align:left">74 (0.9%)</td></tr>
+        <tr><td>4×L40S</td><td>g6e.12xlarge</td><td>4 × L40S</td><td>176</td><td>10.493</td><td style="text-align:left">3</td></tr>
+      </tbody>
+    </table>
+    <p class="caption">From the cluster's GPU node pools, on-demand prices. The last column counts GPU big-2's 8,380 usable runs by the cheapest shape each fits; 40 more fit no shape. Only the three sharded families reach the multi-GPU shapes (<span class="mono">llm_generate</span> up to 127.5 GiB, <span class="mono">recsys_train</span> 122.5, <span class="mono">lm_finetune</span> 83.6).</p></div>
+    <p>A multi-GPU machine only holds more for code that spreads its model over every visible GPU. Other code uses one of its GPUs and pays for all of them. On a shape a run was not measured on, fit is modelled: a single-GPU run fits if its whole peak fits one GPU; a sharded run fits if its share, (peak − 0.5 GiB) × imbalance ÷ n + 0.5 GiB, fits each GPU. The imbalance is measured where the run was measured on several GPUs, and 1.25 otherwise.</p>
+  </section>
+
+  <section id="cost">
+    <h2>One cost model for all three axes</h2>
+    <p>Each axis fails the way it fails on its own bench, all in one simulation. The cost is the dollars it takes to get the run to SUCCEEDED, including retries and lateness.</p>
+    <ol class="steps">
+      <li><span><b>Memory below the peak:</b> the pod is OOM-killed when the run reaches its peak, then retried with double the memory.</span></li>
+      <li><span><b>CPU below the busiest window:</b> the run is throttled. Its measured per-second CPU series is replayed under the limit, and each second at u cores takes max(1, u ÷ limit) seconds. Memory-bench runs have no series, so their mean cores are used instead.</span></li>
+      <li><span><b>GPU too small:</b> a CUDA OOM at the peak, then a retry on the next shape up that the run fits under the fit model above. <b>No GPU for a GPU task:</b> it fails at start (no CUDA device), and the platform retries it on a T4. <b>A GPU for a CPU task:</b> it runs, at the GPU instance's price for the whole run.</span></li>
+      <li><span><b>Delay costs something:</b> each retry adds one oracle cost, and each hour late adds one oracle hourly price. Every attempt also pays 0.02 h of start-up.</span></li>
+    </ol>
+    <div class="howto"><span class="t">Worked example</span>
+      <p>A one-hour CPU task needs 4Gi of memory and a steady 2 cores. The oracle asks for 4Gi and 2 cores: a dominant share of 0.5, so $0.096/h, or about $0.098 with start-up.</p>
+      <ul>
+        <li>Asking for 8Gi and 2 cores costs the same. Memory is still not the dominant share, so the extra memory is free here (0% regret).</li>
+        <li>Asking for 4 cores doubles the share: about 100% regret.</li>
+        <li>Asking for 1 core halves the price, but the run takes 2 hours, and the hour late costs one oracle hour: about 99% regret.</li>
+        <li>Asking for 2Gi kills the run at its peak (here half-way through), and the retry runs at 4Gi. Together with the retry penalty that is about 151% regret.</li>
+        <li>Asking for a T4 runs it on a $0.526/h GPU instance: about 450% regret. This is the most expensive mistake a request for a CPU task can make on a T4, and a larger GPU cell costs more.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="boundary">
+    <h2>What every approach is allowed to see</h2>
+    <p>The same information as each single-axis bench: the task's source code, the metadata of this run's inputs (file sizes, formats, row counts, shapes, dtypes), and what earlier runs of the same task measured. That last part is peak memory, peak and mean cores, peak GPU memory and GPU utilization, whichever that task's bench recorded. Nothing tells an approach which bench a run came from, or its task family. Whether a task needs a GPU, and whether its code shards, has to be read from the code. A test pins this boundary: none of the features or prompt fields can see the run's own measurements.</p>
+    <p>The hybrids see nothing more. The trees' prediction they use is computed from the same inputs, so it carries no information the boundary does not already allow.</p>
+  </section>
+
+  <div class="part">Part 2 · Approaches</div>
+  <section id="arms">
+    <h2>The approaches compared</h2>
+    <p>Nine approaches in seven kinds. Every one makes the whole request for every run, and every tunable setting is chosen on validation by mean regret. The decision models and the pools are each read out two ways, which gives the 20 rows on the leaderboard.</p>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>approach</th><th>kind</th><th>what is learned</th><th>trained</th><th>one decision takes</th></tr></thead>
+      <tbody>
+        <tr><td><span class="kind" style="background:var(--rule-c)"></span>static</td><td>rule</td><td>two quantiles</td><td>—</td><td>&lt; 0.01 ms</td></tr>
+        <tr><td><span class="kind" style="background:var(--rule-c)"></span>rules</td><td>rule</td><td>three margins and a GPU quantile</td><td>—</td><td>0.02 ms</td></tr>
+        <tr><td><span class="kind" style="background:var(--tree)"></span>gbt-dist</td><td>classical ML</td><td>3 × 19 quantile models + a GPU classifier, 300 trees each</td><td>CPU pod</td><td>117 ms</td></tr>
+        <tr><td><span class="kind" style="background:var(--warm)"></span>zero-shot 27B</td><td>LLM, generates text</td><td>nothing</td><td>—</td><td>4.2 s, ~27 tokens</td></tr>
+        <tr><td><span class="kind" style="background:var(--accent)"></span>decision 1.7B</td><td>decision model, supervised</td><td>≈17M LoRA + three-head pointer</td><td>5.6 h, one T4</td><td>216 ms, 0 tokens</td></tr>
+        <tr><td><span class="kind" style="background:var(--rl)"></span>RL 1.7B</td><td>decision model, RL-tuned</td><td>the same weights, tuned further</td><td>+2.0 h, one T4</td><td>as decision 1.7B</td></tr>
+        <tr><td><span class="kind" style="background:var(--stack)"></span>stacked 1.7B</td><td>hybrid, stacked</td><td>as decision 1.7B, with the trees' estimate in the prompt</td><td>trees ×6 + 6.1 h, one T4</td><td>228 ms + the trees</td></tr>
+        <tr><td><span class="kind" style="background:var(--stack)"></span>stacked RL 1.7B</td><td>hybrid, stacked, RL-tuned</td><td>the stacked weights, tuned further</td><td>+2.2 h, one T4</td><td>as stacked 1.7B</td></tr>
+        <tr><td><span class="kind" style="background:var(--pool)"></span>pool</td><td>hybrid, pooled</td><td>one weight and a no-GPU threshold per member</td><td>a grid search on val</td><td>both members</td></tr>
+      </tbody>
+    </table>
+    <p class="caption">Times are from rsa-big-2. The rules and trees were timed in a batch on the CPU pod (per decision). The decision models were timed one decision at a time on a T4 (median of 32). The 27B time is the median round trip to the shared hosted model. "Trees ×6" means the stacked arm fits the trees six times first: once per fold and once on all of train. The pool is applied to four members: decision 1.7B, RL 1.7B, stacked 1.7B and stacked RL 1.7B.</p></div>
+
+    <h3>Rules</h3>
+    <dl class="defs">
+      <dt>static</dt><dd>One request for every run: a training quantile of memory need and of CPU need (each 0.5, 0.75, 0.9 or 0.95, tuned on validation), and no GPU. big-2 chose the 0.9 quantile for memory and the median for CPU, as big-1 did. It never asks for a GPU, so every GPU task fails at start and is retried on a T4.</dd>
+      <dt>rules</dt><dd>What a platform team would write. <b>GPU:</b> if the code mentions CUDA (<span class="mono">"cuda"</span>, <span class="mono">torch.cuda</span>, <span class="mono">.to(device)</span>, <span class="mono">device =</span>), ask for a GPU sized from the task's largest past GPU peak × a margin, or a training quantile of GPU peaks on a first run. <b>Memory:</b> the largest past peak × a margin, or the static cell. <b>CPU:</b> the largest past peak × a margin; with no history, the largest pool size the code declares (RightSizeCPU's code rule), else 1 core. big-2 chose margins of 1.5× for memory and 1.0× for CPU and GPU, and the median GPU peak for first runs.</dd>
+    </dl>
+
+    <h3>Gradient-boosted trees (gbt-dist)</h3>
+    <dl class="defs">
+      <dt>Features</dt><dd>The union of the three benches' features: input metadata, each bench's code tokens and code numbers (declared pool sizes, work items, model sizes, batch sizes), four CUDA flags, and history over the unified schema.</dd>
+      <dt>Model</dt><dd>For each axis, 19 <span class="mono">HistGradientBoostingRegressor</span> quantile models (q = 0.05 to 0.95, pinball loss, 300 rounds, learning rate 0.06, 31 leaves) on log₂ of the need. The memory and CPU models train on the CPU-task rows and the GPU models on the GPU-task rows. A <span class="mono">HistGradientBoostingClassifier</span> predicts whether the task needs a GPU.</dd>
+      <dt>Inference</dt><dd>Each axis's 19 quantiles become a piecewise-linear CDF and then a probability for each cell. The GPU distribution is P(no GPU) = 1 − P(needs GPU), with the rest spread over the GPU cells. The request is then decoded per axis (see <a href="#decoding">Decoding</a>). The trees are also the "trees" half of every hybrid.</dd>
+    </dl>
+
+    <h3>zero-shot 27B</h3>
+    <dl class="defs">
+      <dt>Prompt</dt><dd>One system message for all three decisions: memory is a hard limit, CPU below the busiest 15 seconds throttles, unsized pools get one thread, GPU memory lands on the cheapest machine that holds it (with every shape's size and price), a multi-GPU machine only helps code that spreads its model over every GPU, a GPU task with no GPU fails at start, and a GPU on a CPU task is paid for the whole run. Then the code, the inputs, the history, the three option lists, and <span class="mono">{"memory": …, "cpu": …, "gpu": …}</span> as the answer format.</dd>
+      <dt>Inference</dt><dd><span class="mono">qwen38-27b</span> on the cluster's shared vLLM, at temperature 0 with up to 1,024 tokens. The last JSON object with a usable memory answer is parsed, and each value is rounded up onto its grid. Unparseable answers fall back to 4Gi, 1 core and no GPU, and are counted: 82 of 586 on big-2. It is scored on a family-stratified sample: 286 test runs and 300 unseen runs.</dd>
+    </dl>
+
+    <h3>Decision 1.7B: one forward pass, three pointer heads</h3>
+    <p>The same pointer decision model as the single-axis benches, with a third decision. It reads the same prompt as the 27B and generates nothing. It scores every option of every axis in one forward pass.</p>
+    <div class="figure"><pre class="block">… ### Options
+memory: 256Mi, 384Mi, 512Mi, … , 64Gi           each option's last token → hidden states  k₁ … k₁₇
+cpu:    0.25, 0.5, 0.75, 1, … , 8                                          →               k′₁ … k′₁₆
+gpu:    none, 1GiB, 1.5GiB, … , 176GiB                                     →               k″₁ … k″₁₈
+Answer with JSON only: … &lt;assistant turn&gt;       the prompt's last token  → hidden state   a
+                     │
+       Qwen3-1.7B + LoRA (rank 16, 28 layers), language-model head removed
+                     │
+score_axis(j) = ⟨ W_q,axis · LN(a) , W_k,axis · LN(k_j) ⟩ / √256     one W_q, W_k pair (2,048 → 256) per axis
+P(axis = j)   = softmax( score_axis / T_axis )                       T_axis fitted on validation</pre></div>
+    <dl class="defs">
+      <dt>Architecture</dt><dd>Qwen3-1.7B with LoRA adapters (rank 16, α 32, dropout 0.05) on all seven projections of every layer, loaded without its language-model head. Each option's token sits at a fixed distance from the end of the prompt, because prompts are cut from the left to 2,048 tokens and the options come last. The head is a shared LayerNorm plus one query projection and one key projection per axis. An option's score is the scaled dot product of the answer slot's projected state with that option token's.</dd>
+      <dt>Training</dt><dd>The sum of three cross-entropies against the oracle's cells, with an axis left out where it was not measured (memory and CPU on GPU runs). 2 epochs over the 10,500 balanced training runs: micro-batches of 8 with 2 accumulation steps, AdamW at 2×10⁻⁴ for the adapters and 10⁻³ for the head, 5% warm-up then cosine decay, fp16 with a loss scaler and gradient checkpointing on one T4. It took 5.6 h, with the loss going from 2.66 in epoch 1 to 1.36 in epoch 2.</dd>
+      <dt>Calibration</dt><dd>One temperature per axis, fitted on validation by the negative log-likelihood of the oracle's cell: 1.14 for memory, 1.09 for CPU and 0.94 for GPU.</dd>
+    </dl>
+
+    <h3 id="decoding">Decoding: from probabilities to one request</h3>
+    <p>gbt-dist, every decision model and every pool end with a probability for every cell of every axis. The <b>decoded</b> rows turn those into a request with each bench's own decoder:</p>
+    <ul>
+      <li><b>GPU first:</b> no GPU when P(none) is at least a threshold tuned on validation (0.3 for every arm on big-2). Otherwise, the GPU cell is chosen from the remaining probability by RightSizeGPU's decoder.</li>
+      <li><b>Memory:</b> RightSizeMem's Bayes decoder, the cell with the lowest expected cost once an OOM's retry is priced in. It leans toward over-asking.</li>
+      <li><b>CPU:</b> RightSizeCPU's decoder, the cell most likely to land within ±25% of the busiest window.</li>
+    </ul>
+    <p>The <b>argmax</b> rows take the most likely cell on each axis. For a supervised model, that is the cell most likely to be the label. It ignores that asking one cell too low can cost far more than asking one cell too high.</p>
+  </section>
+
+  <section id="rl">
+    <h2>RL 1.7B: training on the cost itself</h2>
+    <p>The supervised model learns to imitate the oracle's cells. Imitation cannot see two things the cost model cares about. First, the axes interact: on a GPU node, memory and CPU are free, while on a CPU node a GPU is the most expensive mistake there is. Second, asking low costs more than asking high, by an amount the label does not carry. The RL arm starts from the supervised model and maximizes the bench's own reward directly: minus the run's cost ratio under the same simulator that scores the leaderboard, capped at 20.</p>
+    <div class="figure"><pre class="block">for each batch of 8 prompts:                                   (6,000 training prompts, 1 epoch, 375 steps)
+    one forward pass  →  P(memory), P(cpu), P(gpu)  per prompt
+    sample K = 16 joint requests per prompt from the three heads     (no text is generated)
+    reward_k  = − min(cost(request_k) ÷ oracle cost, 20)          the leaderboard's simulator
+    advantage = (reward_k − mean over the 16) ÷ std over the 16      group-normalized, as in GRPO
+    loss      = − mean( advantage × Σ_axis log P(chosen cell) )
+                + 0.05 × KL( current policy ‖ supervised policy )
+    a GPU task's memory and CPU terms are left out (they do not change its reward)</pre></div>
+    <dl class="defs">
+      <dt>Method</dt><dd>GRPO (group-relative policy optimization) without generation. Each prompt's 16 sampled requests are a group, and each request's advantage is its reward relative to the rest of its group, so no value network is needed. Sampling 16 requests costs nothing beyond the one forward pass, because the policy is three categorical distributions, not a sequence of tokens.</dd>
+      <dt>Prompts</dt><dd>6,000 training runs, balanced across the three sources: half of them runs the supervised model did not train on, and half that it did.</dd>
+      <dt>Settings</dt><dd>AdamW at 3×10⁻⁵ for the adapters and 10⁻⁴ for the head, micro-batches of 8 with 2 accumulation steps, 5% warm-up then cosine decay, KL coefficient 0.05 against the supervised policy's distributions (computed once, before any update). 2.0 h of RL on one T4.</dd>
+      <dt>Read-out</dt><dd>The same calibration and decoding as the supervised model. The calibrated temperatures hit the calibrator's cap of 5.0 for memory and CPU (4.5 for GPU). The RL heads are sharp, and they are no longer trying to predict the label.</dd>
+    </dl>
+  </section>
+
+  <section id="stack">
+    <h2>Stacked 1.7B: the trees' estimate in the prompt</h2>
+    <p>The trees and the language models fail differently. The trees read numbers exactly but cannot read code they have no feature for. The language models read the code but read numbers as tokens. Stacking gives the decision model the trees' answer as one more piece of its prompt, and lets training decide how far to trust it.</p>
+    <div class="figure"><pre class="block">… ### Inputs, ### History  (as before)
+### A tree model's estimate
+Gradient-boosted trees fit on other tasks' measured runs (they read the input sizes, the API names and
+numbers in the code, and this task's earlier runs) estimate memory &lt;cell&gt; &lt;p&gt;, &lt;cell&gt; &lt;p&gt;; cpu &lt;cell&gt; &lt;p&gt;,
+&lt;cell&gt; &lt;p&gt;; gpu P(no GPU) &lt;p&gt;, else &lt;cell&gt; &lt;p&gt;, &lt;cell&gt; &lt;p&gt;. Their pick: memory &lt;cell&gt;, cpu &lt;cell&gt;, gpu &lt;cell&gt;.
+
+### Options                    unchanged from here on, so the pointer heads' offsets still hold
+memory: …   cpu: …   gpu: …</pre></div>
+    <dl class="defs">
+      <dt>The hint</dt><dd>For each axis, the trees' two most likely cells with their probabilities, and the trees' decoded pick for all three axes. The GPU part gives P(no GPU) first, and the two most likely GPU cells only when P(no GPU) is below 99%. Code: <span class="mono">bench_all/prompting.py</span> <span class="mono">hint_text</span>.</dd>
+      <dt>Out-of-fold hints</dt><dd>A training run's hint comes from trees fit without its task: the training runs are split into 5 folds by task (a hash of the task id, so both runs of a task share a fold), and each fold's hints come from trees fit on the other four. Validation, test and unseen runs get hints from trees fit on all of train. Without this, the model would learn to trust trees that had already seen the answer. Code: <span class="mono">bench/hybrid.py</span> <span class="mono">crossfit</span>; <span class="mono">bench_all/stations.py</span> <span class="mono">all_hints</span>, <span class="mono">hinted_all_corpus</span>.</dd>
+      <dt>Training</dt><dd>The same model, settings and 10,500 balanced runs as decision 1.7B. It took 6.1 h. The loss went from 1.46 in epoch 1 to 1.00 in epoch 2, lower than the plain model's 2.66 and 1.36: the hint makes the label easier to predict.</dd>
+      <dt>Calibration</dt><dd>1.14 for memory, 1.14 for CPU and 0.99 for GPU.</dd>
+    </dl>
+    <h3>Stacked RL 1.7B</h3>
+    <p>The same RL phase as RL 1.7B, started from the stacked model instead of the plain one. The stacked arm saves its hints with the model, so every RL prompt carries the same trees' estimate as in supervised training. Same 6,000 prompts, settings and 375 steps; 2.2 h on one T4. The calibrated temperatures are 5.0 (the cap) for memory and CPU and 2.4 for GPU. Code: <span class="mono">bench_all/stations.py</span> <span class="mono">rl_all_policy</span> with <span class="mono">base_arm="stack-jev-pointer"</span>.</p>
+  </section>
+
+  <section id="pool">
+    <h2>Pool: a weighted product of two distributions</h2>
+    <p>The pool needs no new training. It takes the trees' calibrated probabilities and a decision model's calibrated probabilities over the same cells, and combines them on each axis:</p>
+    <div class="figure"><pre class="block">for each axis (memory, cpu, gpu):
+    p_pool(cell) ∝ p_trees(cell)^w · p_llm(cell)^(1 − w)          a logarithmic opinion pool, renormalized
+w ∈ {0, 0.1, …, 1}, one w shared by the three axes
+no-GPU threshold ∈ {0.3, 0.5, 0.7, 0.8, 0.9, 0.95, 0.98}
+pick (w, threshold) with the lowest mean regret on val, then decode (and read by argmax)</pre></div>
+    <p>w = 0 is the decision model alone and w = 1 is the trees alone. Where both put weight on a cell, the pool does too. Where one gives a cell almost no probability, the pool does not pick it. Code: <span class="mono">bench/hybrid.py</span> <span class="mono">log_pool</span>; <span class="mono">bench_all/stations.py</span> <span class="mono">pool_all</span>.</p>
+    <div class="figure table-wrap"><table class="num">
+      <thead><tr><th>pool</th><th>member</th><th>w (trees)</th><th>no-GPU threshold</th><th>val regret</th></tr></thead>
+      <tbody>
+        <tr><td>pool-jev-pointer</td><td style="text-align:left">decision 1.7B</td><td>0.4</td><td>0.3</td><td>6.6%</td></tr>
+        <tr><td>pool-rl-pointer</td><td style="text-align:left">RL 1.7B</td><td>0.6</td><td>0.3</td><td>12.2%</td></tr>
+        <tr><td>pool-stack-jev-pointer</td><td style="text-align:left">stacked 1.7B</td><td>0.0</td><td>0.3</td><td>8.7%</td></tr>
+        <tr><td>pool-stack-rl-pointer</td><td style="text-align:left">stacked RL 1.7B</td><td>0.5</td><td>0.3</td><td>13.1%</td></tr>
+      </tbody>
+    </table>
+    <p class="caption">Tuned on the 2,518 validation runs, decoded read-out. A weight of 0.0 means the pool kept the member unchanged: pool-stack-jev-pointer is stacked 1.7B, which already carries the trees in its prompt.</p></div>
+  </section>
+
+  <section id="runs">
+    <h2>How the experiment ran</h2>
+    <p>The benchmark is one <b>Union factory</b>, <span class="mono">rightsize-all-bench</span>. Its three corpora are <b>sources</b>, published by the single-axis benches' own factories. Each approach is a value of the <span class="mono">arm</span> partition. The two RL stations read their starting model from an arm's artifact, and the pool station reads every arm's probabilities.</p>
+    <div class="figure"><pre class="block">rt-bench-corpus[v2]   rt-cpubench-corpus[big-1]   rt-gpubench-corpus[big-2]      sources
+          └─────────────────────┼────────────────────────────┘
+rt-allbench-corpus [release]                join_corpora        one schema, labels per axis
+          ├───────────┬── … ──┐   one per arm
+rt-allbench-arm [release, arm]              fit_all_arm         CPU pod · hosted 27B · T4 (train_all_policy)
+          │                                     │               stack-jev-pointer: crossfit trees → hints → T4
+          │                    rt-allbench-rl         rl_all_policy   T4: jev-pointer → GRPO
+          │                    rt-allbench-rl-stack   rl_all_policy   T4: stack-jev-pointer → GRPO
+          │                    rt-allbench-pool       pool_all_arms   gbt-dist × every decision model
+rt-allbench-scorecard [release, arm]        score_all_arm       every split, source and cold/warm slice
+          └───────────┴── .all("arm") ──┘   + rl, rl-stack and pool scorecards
+rt-allbench-leaderboard [release]           all_leaderboard</pre></div>
+    <div class="figure table-wrap"><table class="text">
+      <thead><tr><th>run</th><th>what</th><th>outcome</th></tr></thead>
+      <tbody>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-gpuprobe-1">rt-gpuprobe-1</a></td><td>One pod per GPU shape</td><td>T4, 8×T4, L4 and 4×L4 scheduled within 2 min, A10G in 19 min; both L40S shapes were still waiting at 25 min.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big2pilot-1">rsg-big2pilot-1</a></td><td>GPU big-2 pilot, 80 runs</td><td>Aborted in its L40S pass: the 4×L40S shard would have queued for hours. Fix: queue 1 h, then fall back to single-L40S shards.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big2pilot-2">rsg-big2pilot-2</a></td><td>The pilot, with the fallback</td><td>Succeeded, but 70% of runs fit a T4 and <span class="mono">lm_finetune</span> never left it. Fix: larger <span class="mono">lm_finetune</span>, <span class="mono">cnn_train</span> and <span class="mono">encoder_infer</span>.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big2-1">rsg-big2-1</a></td><td>RightSizeGPU big-2: 10,000 runs, its own arms and hybrids</td><td>Succeeded. Multi-GPU capacity mostly did not come: all 118 4×L4 shards and 229 of 459 8×T4 shards timed out in the queue, and 4×L40S scheduled 6 of 497 shards. 8 T4 shards (48 runs) were lost when a run's host memory outgrew the pod. Corpus: 8,380 usable, 1,569 censored, 51 failed.</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-big-2">rsc-big-2</a></td><td>RightSizeCPU big-1, round 21: its own arms and hybrids</td><td>Succeeded. The corpus is reused unchanged (a cache hit).</td></tr>
+        <tr><td><a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-big-2">rsa-big-2</a></td><td>big-2: v2 + CPU big-1 + GPU big-2</td><td>Succeeded. The results on this page.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <div class="part">Part 3 · Results</div>
+  <section id="results">
+    <h2>The leaderboard</h2>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--rule-c)"></span>rule</span>
+      <span><span class="kind" style="background:var(--tree)"></span>classical ML</span>
+      <span><span class="kind" style="background:var(--warm)"></span>autoregressive LLM</span>
+      <span><span class="kind" style="background:var(--accent)"></span>decision model, supervised</span>
+      <span><span class="kind" style="background:var(--rl)"></span>decision model, RL-tuned</span>
+      <span><span class="kind" style="background:var(--stack)"></span>hybrid, stacked</span>
+      <span><span class="kind" style="background:var(--pool)"></span>hybrid, pooled</span>
+    </div>
+    <div class="figure"><svg id="board" viewBox="0 0 900 820" role="img" aria-label="Mean regret against the oracle for each decision rule, test and unseen families"></svg>
+      <p class="caption">Solid bar: test split (5,095 runs). Outline: unseen families (6,416 runs). The zero-shot 27B row is a 286-run test sample and a 300-run unseen sample. Bars stop at 150%. Shorter is better; the oracle scores 0%.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>Each row is one decision rule. The bar is its mean regret: how much more than the oracle a run costs, on average.</li>
+        <li>On test runs, stacked RL read by argmax leads at 3.2%, then the pools of the trees with stacked RL (5.0%), with the plain decision model (6.9%) and with RL (7.1%, argmax). The best arm without the trees is RL argmax at 9.8%.</li>
+        <li>On unseen families the order flips. RL decoded is best (35.5%), then RL argmax (47.8%) and the rules (48.0%). Every stacked row is between 76.9% and 125.8%.</li>
+        <li>After RL, argmax beats decoding again, as in round 20: 9.8% against 20.3% for RL, and 3.2% against 16.1% for stacked RL, on test.</li>
+      </ul>
+    </div>
+    <div class="figure table-wrap"><table id="boardtable" class="num"></table></div>
+    <div class="howto"><span class="t">Columns</span>
+      <ul>
+        <li><b>regret</b>: mean per-run regret against the oracle (lower is better). <b>geo</b>: the geometric mean, which damps the few very expensive mistakes.</li>
+        <li><b>$ regret</b>: total dollars ÷ the oracle's total − 1. Expensive runs (GPU runs) weigh more here.</li>
+        <li><b>first ok</b>, <b>all right</b>, <b>mem</b>, <b>cpu</b>, <b>gpu</b>: shares of runs, as defined in <a href="#terms">Terms</a> (higher is better).</li>
+        <li><b>$ / 1k</b>: dollars per 1,000 runs. The oracle pays $278 per 1,000 test runs and $513 per 1,000 unseen runs.</li>
+        <li>Bold marks the best value in each column.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="hybrids">
+    <h2>Each hybrid against its language model</h2>
+    <p>A hybrid is worth having if it beats both of its members. The trees are the same member for all of them: 15.4% on test and 90.8% on unseen families. Each row below compares a hybrid with the language model it was built from, read out the same way.</p>
+    <div class="figure table-wrap"><table id="hybtable" class="num"></table>
+      <p class="caption">Mean regret. Δ is the hybrid minus its language model, in points; negative is better. Stacked RL is compared with RL from the plain model. pool-stack-jev-pointer-argmax is identical to stacked 1.7B argmax (w = 0) and is left out.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li><b>On test, nine of the eleven hybrids beat their language model</b>, by up to 17.5 points. The pool of stacked 1.7B is unchanged (w = 0), and the pool of stacked RL read by argmax is worse (5.0% against 3.2%).</li>
+        <li><b>On unseen families, only one hybrid is better than its language model</b>: the pool of the trees with the plain decision model (52.2% against 58.8%), which is also 7.1 points better on test. Its argmax read-out misses by 0.3 points on unseen. The others are worse by up to 54 points.</li>
+        <li><b>Some hybrids are worse on unseen families than both of their members</b>: stacked 1.7B (94.6% decoded, 125.8% argmax), stacked RL argmax (102.0%) and its pool (106.2%), against 90.8% for the trees.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="sources">
+    <h2>Where the regret comes from</h2>
+    <p>Splitting each split by the bench a run came from shows which axis each approach gets wrong.</p>
+    <div class="figure table-wrap"><table id="srctable" class="num"></table>
+      <p class="caption">Mean regret by source. Test: 2,316 mem, 1,634 cpu, 1,145 gpu runs. Unseen: 2,323 mem, 1,800 cpu, 2,293 gpu runs. First run: 2,182 test runs with no history; has history: 2,913. Shading grows with regret, capped at 100%.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li><b>Stacked RL argmax is the best or near-best on every test slice</b>: 5.9% on memory rows, −5.1% on CPU rows, 9.3% on GPU rows. On runs with history it scores −0.1%, i.e. the oracle's cost.</li>
+        <li><b>Negative regret is possible on CPU rows.</b> The oracle asks for the cell that covers the busiest 15 seconds. Asking one cell lower throttles that window briefly, and that can cost less than the core-hours it saves.</li>
+        <li><b>Unseen GPU rows separate the approaches.</b> The stacked rows score 157–208% there and the trees 167.1%. RL argmax scores 41.9% and RL decoded 45.2%; the rules score 48.4%.</li>
+        <li><b>Unseen CPU rows still favour reading the declared pool size.</b> The rules score 16.7% and RL decoded 24.9%; every other learned approach scores 31–118%. The zero-shot 27B scores 1.0% on its sample of these runs.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="gpuaxis">
+    <h2>The GPU axis: picking the machine</h2>
+    <p>No approach puts a CPU task on a GPU, on either split. Every approach except the static request and the zero-shot 27B gives every GPU task a GPU. What remains is whether the GPU cell lands on the right machine.</p>
+    <div class="figure table-wrap"><table id="gputable" class="num"></table>
+      <p class="caption">GPU rows only (1,145 test, 2,293 unseen). "Machine right" is the share of GPU runs whose request lands on the oracle's shape. Regret is the mean over GPU runs, as in the table above.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>On test GPU runs, the hybrids pick the right machine most often (86–94%), against 77–86% for the decision models alone.</li>
+        <li>On unseen GPU runs it reverses. The trees get the machine right 40.6% of the time, and the stacked models 35–48%. RL argmax gets it right 77.1% of the time, and the rules 77.3%.</li>
+        <li>So the stacked models follow the trees' GPU estimate on new code. RL from the stacked start did not undo this. Read by argmax it went further (39.2% → 35.2% machine right); decoded, it stayed at 48%. The RL prompts are training runs, where the trees are usually right, so following the hint is rewarded.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="curve">
+    <h2>The RL curves</h2>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--rl)"></span>RL 1.7B (from decision 1.7B)</span>
+      <span><span class="kind" style="background:var(--stack)"></span>stacked RL 1.7B (from stacked 1.7B)</span>
+    </div>
+    <div class="figure"><svg id="curvesvg" viewBox="0 0 900 400" role="img" aria-label="Mean sampled regret and KL to the supervised policy over 370 RL steps, for both RL runs"></svg>
+      <p class="caption">Logged every 10th optimizer step. Top: the mean regret of the sampled requests, which is minus the reward minus 1. Bottom: KL divergence from the supervised policy each run started from, in nats, summed over the axes.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>The stacked run starts lower and ends lower. Over the first five logged points the sampled regret averages about 18% (RL) and 12% (stacked RL); over the last five, about 7% and 3%.</li>
+        <li>Both curves are noisy, because each point covers few prompts.</li>
+        <li>KL rises to about 2 nats in both runs and then holds. With a KL coefficient of 0.05, both policies move a long way from their starting models, as in round 20.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="rounds">
+    <h2>Against round 20</h2>
+    <p>The memory and CPU rows are the same runs in both rounds, so those columns compare directly. The GPU rows are a different corpus (big-1 in round 20, big-2 here), and so are the unseen GPU families. Compare arms within a round on GPU and unseen columns, not across rounds.</p>
+    <div class="figure table-wrap"><table id="roundtable" class="num"></table>
+      <p class="caption">Mean regret, round 20 (rsa-big-1) → round 21 (rsa-big-2). The rules, static request and trees are deterministic given their training data, and their memory and CPU rows did not change. The zero-shot 27B is a different sample in each round.</p></div>
+    <div class="howto"><span class="t">How to read this</span>
+      <ul>
+        <li>On the shared memory and CPU rows, the retrained decision models moved by up to 5.6 points, mostly down (RL decoded on memory rows: 36.3% → 30.7%; RL argmax: 17.1% → 14.6%).</li>
+        <li>The GPU rows got harder for every approach: the trees went from 10.4% to 15.4%, and the rules from 8.2% to 26.1%.</li>
+        <li>Unseen regret rose for every arm (the trees from 33.2% to 90.8%), because the GPU unseen families now include multi-GPU <span class="mono">llm_generate</span> and <span class="mono">recsys_train</span>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>What this release supports</h2>
+    <ul>
+      <li><b>On code like the training set, the trees and the RL policy compound.</b> Stacking the trees' estimate into the decision model and then tuning with RL reaches 3.2% regret, a third of the best single arm.</li>
+      <li><b>On new code, both hybrids learn to trust the trees too much.</b> Stacking learns its trust from out-of-fold hints that are usually right, and the pool weight is tuned on validation runs from familiar families. Neither tells the model when the trees are out of their depth.</li>
+      <li><b>The pool of the plain decision model with the trees is the safe hybrid.</b> It halves the decision model's test regret (14.0% to 6.9%) and also cuts its unseen regret (58.8% to 52.2%). Its validation split includes memory and CPU rows, where the trees hold up better.</li>
+      <li><b>The next step is to tune that trust on held-out families</b>: cross-fit the hints by family rather than by task, so a hint is as wrong in training as on new families, and tune the pool weight on a family-held-out validation split. That was not run.</li>
+    </ul>
+  </section>
+
+  <section id="limits">
+    <h2>Assumptions and limits</h2>
+    <ul>
+      <li><b>The GPU corpus under-samples its top end.</b> 1,569 GPU runs were censored, concentrated where multi-GPU shards never got a node (<span class="mono">lm_finetune</span> 433, <span class="mono">llm_generate</span> 358, <span class="mono">encoder_infer</span> 211, <span class="mono">recsys_train</span> 210). These are the large, sharded runs this release was built to add. The capacity, not the workloads, was the limit.</li>
+      <li><b>Fit on unmeasured shapes is modelled.</b> Single-GPU runs that outgrew a T4 were measured on an L40S rather than an L4, and multi-GPU fit uses the share formula above with a default imbalance of 1.25 where none was measured.</li>
+      <li><b>48 GPU runs were lost</b> when a large run's host memory outgrew the T4 pod and took its shard-mates with it. This slightly thins the host-memory-heavy end.</li>
+      <li><b>The oracle is the label, not the cost minimum.</b> It asks for the cell that covers the busiest 15 seconds, and a slightly smaller CPU request can cost less, which is how CPU-row regret goes negative.</li>
+      <li><b>Prices are list prices</b>: an m6i.xlarge dominant share for CPU pods and on-demand GPU instance prices. Spot discounts and bin-packing are not modelled.</li>
+      <li><b>A GPU task's host memory and cores are not scored.</b> They come with the instance, so the request for them costs nothing either way.</li>
+      <li><b>Memory-bench runs have no per-second CPU series.</b> Their throttling is modelled from mean cores, which understates bursts.</li>
+      <li><b>The zero-shot 27B is scored on about 300 runs per split</b> (about ±5 points), and 82 of its 586 answers were unparseable.</li>
+      <li><b>One training seed per arm.</b> The gaps between the top test rows (3.2%, 5.0%, 6.9%, 7.1%) have not been checked against seed-to-seed variation.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <div>Short version: <a href="rightsize-bench-combined-big-2-abstract.html">RightSize Bench Abstract (big-2)</a>. Round 20: <a href="https://claude.ai/artifact/AGe3ANw4KKjGfVfFDcFeqM">RightSize Bench (big-1)</a>. Single-axis benches this round: <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-big-2">RightSizeCPU (rsc-big-2)</a>, <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big2-1">RightSizeGPU big-2 (rsg-big2-1)</a>.</div>
+    <div>Source: <span class="mono">model-factory-resource-tuner/resource_tuner/bench_all/</span>, <span class="mono">resource_tuner/bench/hybrid.py</span> · research log <span class="mono">research_log/2026-10-26-round-21-gpu-big-2-hybrids.md</span> · run <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-big-2">rsa-big-2</a> in cluster project <span class="mono">resource-tuner-model-factory</span> on demo.hosted.unionai.cloud.</div>
+    <div>Reproduce: <span class="mono">flyte factory materialize rightsize-all-bench rt-allbench-leaderboard --name rsa-big-2 --partition release=big-2 --partition arm=static,rules,gbt-dist,zeroshot-27b,jev-pointer,stack-jev-pointer</span></div>
+  </footer>
+</div>
+
+<script>
+const ARMS = {"static":{"test_regret":0.9184,"test_geo_regret":0.6899,"test_dollar_regret":1.8518,"test_first_attempt_ok":0.7172,"test_all_right":0.02,"test_mem_right":0.0618,"test_cpu_right":0.2651,"test_gpu_right":0.7753,"test_cost_per_1k_runs":791.8835,"test_n":5095,"test_src_mem":0.5153,"test_src_cpu":1.131,"test_src_gpu":1.4306,"test_gpu_device_right":0.0,"ood_regret":1.1336,"ood_geo_regret":0.8834,"ood_dollar_regret":2.5909,"ood_first_attempt_ok":0.5676,"ood_all_right":0.0067,"ood_mem_right":0.0888,"ood_cpu_right":0.2729,"ood_gpu_right":0.6426,"ood_cost_per_1k_runs":1840.2728,"ood_n":6416,"ood_src_mem":0.5848,"ood_src_cpu":1.2162,"ood_src_gpu":1.6248,"ood_gpu_device_right":0.0,"val_regret":0.8833,"cold":1.0048,"warm":0.8537},"rules":{"test_regret":0.3938,"test_geo_regret":0.1821,"test_dollar_regret":0.5563,"test_first_attempt_ok":0.9246,"test_all_right":0.3199,"test_mem_right":0.1787,"test_cpu_right":0.8408,"test_gpu_right":0.9666,"test_cost_per_1k_runs":432.1547,"test_n":5095,"test_src_mem":0.3606,"test_src_cpu":0.5339,"test_src_gpu":0.2612,"test_gpu_device_right":0.8515,"ood_regret":0.4801,"ood_geo_regret":0.2961,"ood_dollar_regret":1.2006,"ood_first_attempt_ok":0.8725,"ood_all_right":0.3748,"ood_mem_right":0.1841,"ood_cpu_right":0.7473,"ood_gpu_right":0.9188,"ood_cost_per_1k_runs":1127.7506,"ood_n":6416,"ood_src_mem":0.7186,"ood_src_cpu":0.1672,"ood_src_gpu":0.4841,"ood_gpu_device_right":0.7728,"val_regret":0.4263,"cold":0.6771,"warm":0.1816},"gbt-dist":{"test_regret":0.1537,"test_geo_regret":0.1102,"test_dollar_regret":0.3168,"test_first_attempt_ok":0.9578,"test_all_right":0.9042,"test_mem_right":0.9466,"test_cpu_right":0.9656,"test_gpu_right":0.9706,"test_cost_per_1k_runs":365.6526,"test_n":5095,"test_src_mem":0.2523,"test_src_cpu":0.0139,"test_src_gpu":0.1539,"test_gpu_device_right":0.869,"ood_regret":0.9085,"ood_geo_regret":0.5414,"ood_dollar_regret":1.0785,"ood_first_attempt_ok":0.8516,"ood_all_right":0.2737,"ood_mem_right":0.4087,"ood_cpu_right":0.5559,"ood_gpu_right":0.7877,"ood_cost_per_1k_runs":1065.2065,"ood_n":6416,"ood_src_mem":0.3236,"ood_src_cpu":0.6912,"ood_src_gpu":1.6715,"ood_gpu_device_right":0.406,"val_regret":0.1464,"cold":0.1818,"warm":0.1328},"zeroshot-27b":{"test_regret":0.3606,"test_geo_regret":0.2182,"test_dollar_regret":0.8271,"test_first_attempt_ok":0.8986,"test_all_right":0.3287,"test_mem_right":0.2679,"test_cpu_right":0.7416,"test_gpu_right":0.8951,"test_cost_per_1k_runs":592.3686,"test_n":286,"test_src_mem":0.3087,"test_src_cpu":0.2747,"test_src_gpu":0.5454,"test_gpu_device_right":0.6104,"ood_regret":0.7782,"ood_geo_regret":0.4722,"ood_dollar_regret":1.5908,"ood_first_attempt_ok":0.76,"ood_all_right":0.3233,"ood_mem_right":0.2467,"ood_cpu_right":0.74,"ood_gpu_right":0.73,"ood_cost_per_1k_runs":1962.7659,"ood_n":300,"ood_src_mem":0.7127,"ood_src_cpu":0.0104,"ood_src_gpu":1.1714,"ood_gpu_device_right":0.46,"val_regret":null,"cold":0.5837,"warm":0.1247},"jev-pointer-argmax":{"test_regret":0.3432,"test_geo_regret":0.2035,"test_dollar_regret":0.4343,"test_first_attempt_ok":0.8824,"test_all_right":0.7914,"test_mem_right":0.8448,"test_cpu_right":0.9349,"test_gpu_right":0.9564,"test_cost_per_1k_runs":398.2795,"test_n":5095,"test_src_mem":0.4149,"test_src_cpu":0.139,"test_src_gpu":0.4897,"test_gpu_device_right":0.8061,"ood_regret":0.8737,"ood_geo_regret":0.5891,"ood_dollar_regret":1.0283,"ood_first_attempt_ok":0.7251,"ood_all_right":0.4118,"ood_mem_right":0.4252,"ood_cpu_right":0.7589,"ood_gpu_right":0.8557,"ood_cost_per_1k_runs":1039.4494,"ood_n":6416,"ood_src_mem":0.6267,"ood_src_cpu":0.992,"ood_src_gpu":1.0312,"ood_gpu_device_right":0.5962,"val_regret":0.3205,"cold":0.5237,"warm":0.208},"jev-pointer":{"test_regret":0.1402,"test_geo_regret":0.0784,"test_dollar_regret":0.433,"test_first_attempt_ok":0.9407,"test_all_right":0.8432,"test_mem_right":0.8891,"test_cpu_right":0.9732,"test_gpu_right":0.9478,"test_cost_per_1k_runs":397.9194,"test_n":5095,"test_src_mem":0.1537,"test_src_cpu":0.0083,"test_src_gpu":0.301,"test_gpu_device_right":0.7677,"ood_regret":0.5883,"ood_geo_regret":0.395,"ood_dollar_regret":1.12,"ood_first_attempt_ok":0.7763,"ood_all_right":0.4621,"ood_mem_right":0.4485,"ood_cpu_right":0.8732,"ood_gpu_right":0.8485,"ood_cost_per_1k_runs":1086.4589,"ood_n":6416,"ood_src_mem":0.2937,"ood_src_cpu":0.7628,"ood_src_gpu":0.7499,"ood_gpu_device_right":0.5761,"val_regret":0.1343,"cold":0.2282,"warm":0.0742},"rl-pointer-argmax":{"test_regret":0.0977,"test_geo_regret":0.0389,"test_dollar_regret":0.3949,"test_first_attempt_ok":0.9386,"test_all_right":0.8204,"test_mem_right":0.842,"test_cpu_right":0.9608,"test_gpu_right":0.9692,"test_cost_per_1k_runs":387.3424,"test_n":5095,"test_src_mem":0.146,"test_src_cpu":-0.0495,"test_src_gpu":0.2098,"test_gpu_device_right":0.8629,"ood_regret":0.4784,"ood_geo_regret":0.3128,"ood_dollar_regret":0.9727,"ood_first_attempt_ok":0.7717,"ood_all_right":0.5114,"ood_mem_right":0.4133,"ood_cpu_right":0.8491,"ood_gpu_right":0.918,"ood_cost_per_1k_runs":1010.9486,"ood_n":6416,"ood_src_mem":0.3416,"ood_src_cpu":0.7308,"ood_src_gpu":0.4188,"ood_gpu_device_right":0.7706,"val_regret":0.082,"cold":0.1713,"warm":0.0425},"rl-pointer":{"test_regret":0.2033,"test_geo_regret":0.1446,"test_dollar_regret":0.5542,"test_first_attempt_ok":0.9507,"test_all_right":0.6752,"test_mem_right":0.7233,"test_cpu_right":0.8952,"test_gpu_right":0.9594,"test_cost_per_1k_runs":431.5611,"test_n":5095,"test_src_mem":0.3071,"test_src_cpu":0.0087,"test_src_gpu":0.271,"test_gpu_device_right":0.8192,"ood_regret":0.355,"ood_geo_regret":0.2467,"ood_dollar_regret":1.1385,"ood_first_attempt_ok":0.8767,"ood_all_right":0.4983,"ood_mem_right":0.4601,"ood_cpu_right":0.8348,"ood_gpu_right":0.9074,"ood_cost_per_1k_runs":1095.9313,"ood_n":6416,"ood_src_mem":0.3417,"ood_src_cpu":0.249,"ood_src_gpu":0.4518,"ood_gpu_device_right":0.741,"val_regret":0.2013,"cold":0.2233,"warm":0.1883},"stack-jev-pointer-argmax":{"test_regret":0.1808,"test_geo_regret":0.111,"test_dollar_regret":0.1859,"test_first_attempt_ok":0.9162,"test_all_right":0.8638,"test_mem_right":0.8942,"test_cpu_right":0.9448,"test_gpu_right":0.9851,"test_cost_per_1k_runs":329.2903,"test_n":5095,"test_src_mem":0.2789,"test_src_cpu":0.1047,"test_src_gpu":0.0913,"test_gpu_device_right":0.9336,"ood_regret":1.2584,"ood_geo_regret":0.7624,"ood_dollar_regret":1.1936,"ood_first_attempt_ok":0.7969,"ood_all_right":0.2319,"ood_mem_right":0.3471,"ood_cpu_right":0.4523,"ood_gpu_right":0.7827,"ood_cost_per_1k_runs":1124.1738,"ood_n":6416,"ood_src_mem":0.5688,"ood_src_cpu":1.1758,"ood_src_gpu":2.0219,"ood_gpu_device_right":0.3921,"val_regret":0.157,"cold":0.2373,"warm":0.1385},"stack-jev-pointer":{"test_regret":0.101,"test_geo_regret":0.0585,"test_dollar_regret":0.2895,"test_first_attempt_ok":0.9486,"test_all_right":0.9095,"test_mem_right":0.9466,"test_cpu_right":0.9749,"test_gpu_right":0.9686,"test_cost_per_1k_runs":358.076,"test_n":5095,"test_src_mem":0.1504,"test_src_cpu":-0.012,"test_src_gpu":0.1621,"test_gpu_device_right":0.8603,"ood_regret":0.9462,"ood_geo_regret":0.5416,"ood_dollar_regret":1.0692,"ood_first_attempt_ok":0.8226,"ood_all_right":0.3661,"ood_mem_right":0.3733,"ood_cpu_right":0.7395,"ood_gpu_right":0.8134,"ood_cost_per_1k_runs":1060.4282,"ood_n":6416,"ood_src_mem":0.299,"ood_src_cpu":0.9845,"ood_src_gpu":1.5717,"ood_gpu_device_right":0.478,"val_regret":0.0867,"cold":0.1244,"warm":0.0834},"stack-rl-pointer-argmax":{"test_regret":0.0315,"test_geo_regret":0.0015,"test_dollar_regret":0.1302,"test_first_attempt_ok":0.9784,"test_all_right":0.9219,"test_mem_right":0.9468,"test_cpu_right":0.9684,"test_gpu_right":0.9851,"test_cost_per_1k_runs":313.8231,"test_n":5095,"test_src_mem":0.0595,"test_src_cpu":-0.0514,"test_src_gpu":0.0932,"test_gpu_device_right":0.9336,"ood_regret":1.0203,"ood_geo_regret":0.5707,"ood_dollar_regret":1.2355,"ood_first_attempt_ok":0.8608,"ood_all_right":0.3295,"ood_mem_right":0.4082,"ood_cpu_right":0.7381,"ood_gpu_right":0.7684,"ood_cost_per_1k_runs":1145.6681,"ood_n":6416,"ood_src_mem":0.2641,"ood_src_cpu":0.6428,"ood_src_gpu":2.0826,"ood_gpu_device_right":0.3519,"val_regret":0.0196,"cold":0.075,"warm":-0.0011},"stack-rl-pointer":{"test_regret":0.1612,"test_geo_regret":0.1212,"test_dollar_regret":0.256,"test_first_attempt_ok":0.9715,"test_all_right":0.7847,"test_mem_right":0.8559,"test_cpu_right":0.8856,"test_gpu_right":0.9745,"test_cost_per_1k_runs":348.7626,"test_n":5095,"test_src_mem":0.2821,"test_src_cpu":0.0073,"test_src_gpu":0.1365,"test_gpu_device_right":0.8865,"ood_regret":0.7688,"ood_geo_regret":0.4204,"ood_dollar_regret":0.9972,"ood_first_attempt_ok":0.9353,"ood_all_right":0.407,"ood_mem_right":0.4584,"ood_cpu_right":0.8385,"ood_gpu_right":0.8139,"ood_cost_per_1k_runs":1023.5104,"ood_n":6416,"ood_src_mem":0.267,"ood_src_cpu":0.3109,"ood_src_gpu":1.6367,"ood_gpu_device_right":0.4793,"val_regret":0.1579,"cold":0.1655,"warm":0.158},"pool-jev-pointer":{"test_regret":0.0688,"test_geo_regret":0.0342,"test_dollar_regret":0.287,"test_first_attempt_ok":0.9582,"test_all_right":0.9111,"test_mem_right":0.9392,"test_cpu_right":0.9792,"test_gpu_right":0.9729,"test_cost_per_1k_runs":357.3877,"test_n":5095,"test_src_mem":0.0921,"test_src_cpu":-0.0135,"test_src_gpu":0.1393,"test_gpu_device_right":0.8795,"ood_regret":0.5224,"ood_geo_regret":0.3565,"ood_dollar_regret":0.9477,"ood_first_attempt_ok":0.8111,"ood_all_right":0.4517,"ood_mem_right":0.4451,"ood_cpu_right":0.852,"ood_gpu_right":0.8406,"ood_cost_per_1k_runs":998.1504,"ood_n":6416,"ood_src_mem":0.2166,"ood_src_cpu":0.7159,"ood_src_gpu":0.6802,"ood_gpu_device_right":0.5539,"val_regret":0.0656,"cold":0.1141,"warm":0.035},"pool-rl-pointer":{"test_regret":0.133,"test_geo_regret":0.0936,"test_dollar_regret":0.3259,"test_first_attempt_ok":0.9621,"test_all_right":0.8689,"test_mem_right":0.8987,"test_cpu_right":0.9696,"test_gpu_right":0.9696,"test_cost_per_1k_runs":368.1665,"test_n":5095,"test_src_mem":0.232,"test_src_cpu":-0.0267,"test_src_gpu":0.1609,"test_gpu_device_right":0.8646,"ood_regret":0.5309,"ood_geo_regret":0.3412,"ood_dollar_regret":0.8774,"ood_first_attempt_ok":0.8516,"ood_all_right":0.4359,"ood_mem_right":0.4118,"ood_cpu_right":0.8499,"ood_gpu_right":0.8522,"ood_cost_per_1k_runs":962.1123,"ood_n":6416,"ood_src_mem":0.2072,"ood_src_cpu":0.6005,"ood_src_gpu":0.8042,"ood_gpu_device_right":0.5866,"val_regret":0.1223,"cold":0.1476,"warm":0.1222},"pool-stack-jev-pointer":{"test_regret":0.1005,"test_geo_regret":0.0582,"test_dollar_regret":0.2895,"test_first_attempt_ok":0.9486,"test_all_right":0.9095,"test_mem_right":0.9466,"test_cpu_right":0.9749,"test_gpu_right":0.9686,"test_cost_per_1k_runs":358.0543,"test_n":5095,"test_src_mem":0.1492,"test_src_cpu":-0.0118,"test_src_gpu":0.1621,"test_gpu_device_right":0.8603,"ood_regret":0.9462,"ood_geo_regret":0.5416,"ood_dollar_regret":1.0692,"ood_first_attempt_ok":0.8226,"ood_all_right":0.3661,"ood_mem_right":0.3733,"ood_cpu_right":0.7395,"ood_gpu_right":0.8134,"ood_cost_per_1k_runs":1060.4282,"ood_n":6416,"ood_src_mem":0.299,"ood_src_cpu":0.9845,"ood_src_gpu":1.5717,"ood_gpu_device_right":0.478,"val_regret":0.0865,"cold":0.1246,"warm":0.0825},"pool-stack-rl-pointer":{"test_regret":0.1387,"test_geo_regret":0.0962,"test_dollar_regret":0.2987,"test_first_attempt_ok":0.9625,"test_all_right":0.9062,"test_mem_right":0.94,"test_cpu_right":0.9754,"test_gpu_right":0.9704,"test_cost_per_1k_runs":360.6263,"test_n":5095,"test_src_mem":0.2415,"test_src_cpu":-0.0172,"test_src_gpu":0.1534,"test_gpu_device_right":0.8681,"ood_regret":0.8935,"ood_geo_regret":0.4913,"ood_dollar_regret":1.1066,"ood_first_attempt_ok":0.8621,"ood_all_right":0.3636,"ood_mem_right":0.4138,"ood_cpu_right":0.7718,"ood_gpu_right":0.7968,"ood_cost_per_1k_runs":1079.5747,"ood_n":6416,"ood_src_mem":0.2084,"ood_src_cpu":0.6678,"ood_src_gpu":1.7647,"ood_gpu_device_right":0.4313,"val_regret":0.1306,"cold":0.1621,"warm":0.1212},"pool-jev-pointer-argmax":{"test_regret":0.1682,"test_geo_regret":0.1013,"test_dollar_regret":0.1595,"test_first_attempt_ok":0.9276,"test_all_right":0.8756,"test_mem_right":0.9053,"test_cpu_right":0.9463,"test_gpu_right":0.9872,"test_cost_per_1k_runs":321.9561,"test_n":5095,"test_src_mem":0.2646,"test_src_cpu":0.0977,"test_src_gpu":0.074,"test_gpu_device_right":0.9432,"ood_regret":0.8767,"ood_geo_regret":0.5848,"ood_dollar_regret":1.1045,"ood_first_attempt_ok":0.7567,"ood_all_right":0.3697,"ood_mem_right":0.4356,"ood_cpu_right":0.6791,"ood_gpu_right":0.8265,"ood_cost_per_1k_runs":1078.4988,"ood_n":6416,"ood_src_mem":0.5147,"ood_src_cpu":0.9362,"ood_src_gpu":1.1969,"ood_gpu_device_right":0.5146,"val_regret":0.1707,"cold":0.2392,"warm":0.115},"pool-rl-pointer-argmax":{"test_regret":0.0714,"test_geo_regret":0.0324,"test_dollar_regret":0.1409,"test_first_attempt_ok":0.959,"test_all_right":0.9121,"test_mem_right":0.9405,"test_cpu_right":0.9613,"test_gpu_right":0.9867,"test_cost_per_1k_runs":316.8161,"test_n":5095,"test_src_mem":0.1259,"test_src_cpu":-0.0088,"test_src_gpu":0.0755,"test_gpu_device_right":0.9406,"ood_regret":0.9215,"ood_geo_regret":0.5427,"ood_dollar_regret":1.0156,"ood_first_attempt_ok":0.8251,"ood_all_right":0.3611,"ood_mem_right":0.3878,"ood_cpu_right":0.7616,"ood_gpu_right":0.8013,"ood_cost_per_1k_runs":1032.9761,"ood_n":6416,"ood_src_mem":0.321,"ood_src_cpu":0.7806,"ood_src_gpu":1.6406,"ood_gpu_device_right":0.444,"val_regret":0.0675,"cold":0.1233,"warm":0.0326},"pool-stack-jev-pointer-argmax":{"test_regret":0.1808,"test_geo_regret":0.111,"test_dollar_regret":0.1859,"test_first_attempt_ok":0.9162,"test_all_right":0.8638,"test_mem_right":0.8942,"test_cpu_right":0.9448,"test_gpu_right":0.9851,"test_cost_per_1k_runs":329.2903,"test_n":5095,"test_src_mem":0.2789,"test_src_cpu":0.1047,"test_src_gpu":0.0913,"test_gpu_device_right":0.9336,"ood_regret":1.2584,"ood_geo_regret":0.7624,"ood_dollar_regret":1.1936,"ood_first_attempt_ok":0.7969,"ood_all_right":0.2319,"ood_mem_right":0.3471,"ood_cpu_right":0.4523,"ood_gpu_right":0.7827,"ood_cost_per_1k_runs":1124.1738,"ood_n":6416,"ood_src_mem":0.5688,"ood_src_cpu":1.1758,"ood_src_gpu":2.0219,"ood_gpu_device_right":0.3921,"val_regret":0.157,"cold":0.2373,"warm":0.1385},"pool-stack-rl-pointer-argmax":{"test_regret":0.05,"test_geo_regret":0.0161,"test_dollar_regret":0.1327,"test_first_attempt_ok":0.9725,"test_all_right":0.9258,"test_mem_right":0.9499,"test_cpu_right":0.9686,"test_gpu_right":0.9865,"test_cost_per_1k_runs":314.5371,"test_n":5095,"test_src_mem":0.0827,"test_src_cpu":-0.0212,"test_src_gpu":0.0854,"test_gpu_device_right":0.9397,"ood_regret":1.0619,"ood_geo_regret":0.6266,"ood_dollar_regret":1.1409,"ood_first_attempt_ok":0.8488,"ood_all_right":0.2957,"ood_mem_right":0.3973,"ood_cpu_right":0.6262,"ood_gpu_right":0.7617,"ood_cost_per_1k_runs":1097.1431,"ood_n":6416,"ood_src_mem":0.3443,"ood_src_cpu":0.7455,"ood_src_gpu":2.0374,"ood_gpu_device_right":0.3332,"val_regret":0.0359,"cold":0.0953,"warm":0.0161}} ;
+const CURVE = {"rl-pointer":[[10,0.2774,0.018],[20,0.2823,0.337],[30,0.1658,1.062],[40,0.0829,1.483],[50,0.1135,2.161],[60,0.1543,1.953],[70,0.0208,3.231],[80,0.2072,2.247],[90,0.1876,1.84],[100,0.0334,2.673],[110,0.0476,2.377],[120,0.1474,1.379],[130,0.2087,2.675],[140,0.0825,2.567],[150,0.1823,2.0],[160,0.075,2.702],[170,0.0465,2.127],[180,0.1676,2.055],[190,0.1395,2.051],[200,0.0966,2.24],[210,0.1288,2.589],[220,0.0285,3.039],[230,0.3179,1.67],[240,0.2413,2.015],[250,0.134,2.276],[260,0.1649,1.533],[270,0.0723,1.722],[280,0.0936,2.455],[290,0.0799,1.995],[300,0.1112,2.46],[310,0.0647,1.971],[320,0.1042,2.326],[330,0.0618,2.93],[340,0.1215,3.09],[350,0.0602,1.739],[360,0.0194,4.017],[370,0.0893,2.153]],"stack-rl-pointer":[[10,0.1337,0.001],[20,0.1514,0.022],[30,0.0835,0.182],[40,0.0952,0.425],[50,0.1279,0.524],[60,0.0698,1.451],[70,0.0619,1.771],[80,0.113,1.764],[90,0.0713,1.255],[100,0.0774,1.041],[110,0.0509,1.586],[120,0.0476,1.214],[130,0.0993,1.334],[140,0.1077,1.355],[150,0.0599,1.376],[160,0.1031,1.855],[170,0.0219,1.968],[180,0.1208,1.962],[190,0.068,2.245],[200,0.0183,2.078],[210,0.0615,1.827],[220,-0.0331,2.321],[230,0.1298,1.644],[240,0.1061,1.844],[250,0.0028,1.755],[260,0.076,1.216],[270,0.0231,1.596],[280,0.0089,2.305],[290,0.0442,1.668],[300,-0.0176,2.914],[310,0.0334,1.53],[320,0.0476,1.767],[330,0.05,2.067],[340,0.0349,2.511],[350,0.0156,1.855],[360,0.0113,2.526],[370,0.0165,1.886]]} ;
+const R20 = {"static":{"test":0.8593,"ood":0.9405,"mem":0.5153,"cpu":1.131,"gpu":1.109},"rules":{"test":0.3399,"ood":0.3247,"mem":0.3606,"cpu":0.5339,"gpu":0.0818},"gbt-dist":{"test":0.1406,"ood":0.3321,"mem":0.2523,"cpu":0.0139,"gpu":0.1038},"zeroshot-27b":{"test":0.4913,"ood":0.4947,"mem":0.347,"cpu":0.6448,"gpu":0.5016},"jev-pointer":{"test":0.0967,"ood":0.3412,"mem":0.1627,"cpu":-0.003,"gpu":0.1038},"jev-pointer-argmax":{"test":0.2428,"ood":0.4972,"mem":0.4211,"cpu":0.108,"gpu":0.1064},"rl-pointer":{"test":0.1918,"ood":0.34,"mem":0.3626,"cpu":0.0258,"gpu":0.1038},"rl-pointer-argmax":{"test":0.0798,"ood":0.3725,"mem":0.1708,"cpu":-0.0461,"gpu":0.0763}} ;
+const LABEL = {
+  "static": "static request", "rules": "rules (CUDA, history, pools)", "gbt-dist": "trees, distribution",
+  "zeroshot-27b": "zero-shot 27B", "jev-pointer-argmax": "decision 1.7B, argmax", "jev-pointer": "decision 1.7B, decoded",
+  "rl-pointer-argmax": "RL 1.7B, argmax", "rl-pointer": "RL 1.7B, decoded",
+  "stack-jev-pointer-argmax": "stacked 1.7B, argmax", "stack-jev-pointer": "stacked 1.7B, decoded",
+  "stack-rl-pointer-argmax": "stacked RL 1.7B, argmax", "stack-rl-pointer": "stacked RL 1.7B, decoded",
+  "pool-jev-pointer-argmax": "pool × decision, argmax", "pool-jev-pointer": "pool × decision, decoded",
+  "pool-rl-pointer-argmax": "pool × RL, argmax", "pool-rl-pointer": "pool × RL, decoded",
+  "pool-stack-jev-pointer-argmax": "pool × stacked, argmax", "pool-stack-jev-pointer": "pool × stacked, decoded",
+  "pool-stack-rl-pointer-argmax": "pool × stacked RL, argmax", "pool-stack-rl-pointer": "pool × stacked RL, decoded"
+};
+const ORDER = Object.keys(LABEL);
+const KIND = a => a.startsWith("pool") ? "pool" : a.startsWith("stack") ? "stack" : a.startsWith("rl") ? "rl" : a.startsWith("jev") ? "dec" : a.startsWith("zeroshot") ? "llm" : a.startsWith("gbt") ? "tree" : "rule";
+const COLOR = { rule: "var(--rule-c)", tree: "var(--tree)", llm: "var(--warm)", dec: "var(--accent)", rl: "var(--rl)", stack: "var(--stack)", pool: "var(--pool)" };
+const NS = "http://www.w3.org/2000/svg", MONO = "IBM Plex Mono, monospace";
+const pct = x => (x * 100).toFixed(1) + "%";
+const pts = x => { const r = Math.round(x * 1000) / 10; return (r > 0 ? "+" : r < 0 ? "−" : "") + Math.abs(r).toFixed(1); };
+const sw = a => `<span class="kind" style="background:${COLOR[KIND(a)]}"></span>${LABEL[a]}`;
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+// leaderboard bars: regret, lower is better
+(function () {
+  const svg = document.getElementById("board"), L = 230, R = 70, T = 10, rowH = 39, MAX = 1.5;
+  const W = 900 - L - R, x = v => L + W * Math.max(0, Math.min(v, MAX)) / MAX;
+  svg.setAttribute("viewBox", `0 0 900 ${T + rowH * ORDER.length + 30}`);
+  [0, 0.25, 0.5, 0.75, 1, 1.25, 1.5].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * ORDER.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * ORDER.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v * 100) + "%");
+  });
+  ORDER.forEach((a, i) => {
+    const d = ARMS[a], y = T + i * rowH, c = COLOR[KIND(a)];
+    el("text", { x: L - 10, y: y + 17, "text-anchor": "end", "font-size": 13, fill: "var(--ink)" }, svg, LABEL[a]);
+    el("rect", { x: L, y: y + 5, width: Math.max(1, x(d.test_regret) - L), height: 13, rx: 2, fill: c }, svg);
+    el("rect", { x: L, y: y + 21, width: Math.max(1, x(d.ood_regret) - L), height: 11, rx: 2, fill: "none", stroke: c, "stroke-width": 1.5 }, svg);
+    el("text", { x: x(d.test_regret) + 6, y: y + 16, "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, pct(d.test_regret));
+    el("text", { x: x(d.ood_regret) + 6, y: y + 31, "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, pct(d.ood_regret));
+  });
+})();
+
+// leaderboard table
+(function () {
+  const money = v => "$" + Math.round(v);
+  const cols = [["test_regret", "test regret", -1, pct], ["test_geo_regret", "test geo", -1, pct], ["test_dollar_regret", "test $ regret", -1, pct],
+    ["test_first_attempt_ok", "test first ok", 1, pct], ["test_all_right", "test all right", 1, pct], ["test_mem_right", "mem", 1, pct],
+    ["test_cpu_right", "cpu", 1, pct], ["test_gpu_right", "gpu", 1, pct], ["test_cost_per_1k_runs", "test $ / 1k", -1, money],
+    ["ood_regret", "unseen regret", -1, pct], ["ood_dollar_regret", "unseen $ regret", -1, pct], ["ood_first_attempt_ok", "unseen first ok", 1, pct], ["ood_all_right", "unseen all right", 1, pct]];
+  const best = {};
+  cols.forEach(([k, , dir]) => { const vs = ORDER.map(a => ARMS[a][k]); best[k] = dir > 0 ? Math.max(...vs) : Math.min(...vs); });
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td>${sw(a)}</td>`;
+    cols.forEach(([k, , , f]) => { h += `<td class="${ARMS[a][k] === best[k] ? "best" : ""}">${f(ARMS[a][k])}</td>`; });
+    h += "</tr>";
+  });
+  document.getElementById("boardtable").innerHTML = h + "</tbody>";
+})();
+
+// each hybrid against its language-model member
+(function () {
+  const PAIRS = [["stack-jev-pointer", "jev-pointer"], ["stack-jev-pointer-argmax", "jev-pointer-argmax"],
+    ["stack-rl-pointer", "rl-pointer"], ["stack-rl-pointer-argmax", "rl-pointer-argmax"],
+    ["pool-jev-pointer", "jev-pointer"], ["pool-jev-pointer-argmax", "jev-pointer-argmax"],
+    ["pool-rl-pointer", "rl-pointer"], ["pool-rl-pointer-argmax", "rl-pointer-argmax"],
+    ["pool-stack-jev-pointer", "stack-jev-pointer"],
+    ["pool-stack-rl-pointer", "stack-rl-pointer"], ["pool-stack-rl-pointer-argmax", "stack-rl-pointer-argmax"]];
+  const shade = v => Math.abs(v) < 0.0005 ? "transparent" : v < 0 ? "color-mix(in srgb, var(--tree) 22%, transparent)" : "color-mix(in srgb, var(--bad) 22%, transparent)";
+  let h = "<thead><tr><th>hybrid</th><th>its language model</th><th>LLM test</th><th>hybrid test</th><th>Δ test</th><th>LLM unseen</th><th>hybrid unseen</th><th>Δ unseen</th></tr></thead><tbody>";
+  PAIRS.forEach(([hy, m]) => {
+    const dt = ARMS[hy].test_regret - ARMS[m].test_regret, du = ARMS[hy].ood_regret - ARMS[m].ood_regret;
+    h += `<tr><td>${sw(hy)}</td><td style="text-align:left">${sw(m)}</td><td>${pct(ARMS[m].test_regret)}</td><td>${pct(ARMS[hy].test_regret)}</td>` +
+      `<td class="heat" style="background:${shade(dt)}">${pts(dt)}</td><td>${pct(ARMS[m].ood_regret)}</td><td>${pct(ARMS[hy].ood_regret)}</td>` +
+      `<td class="heat" style="background:${shade(du)}">${pts(du)}</td></tr>`;
+  });
+  document.getElementById("hybtable").innerHTML = h + "</tbody>";
+})();
+
+// regret by source, shaded
+(function () {
+  const cols = [["test_src_mem", "test · mem"], ["test_src_cpu", "test · cpu"], ["test_src_gpu", "test · gpu"],
+    ["ood_src_mem", "unseen · mem"], ["ood_src_cpu", "unseen · cpu"], ["ood_src_gpu", "unseen · gpu"], ["cold", "test · first run"], ["warm", "test · has history"]];
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td>${sw(a)}</td>`;
+    cols.forEach(([k]) => {
+      const v = ARMS[a][k], s = Math.round(Math.max(0, Math.min(v, 1)) * 40);
+      h += `<td class="heat" style="background:color-mix(in srgb, var(--bad) ${s}%, transparent)">${pct(v)}</td>`;
+    });
+    h += "</tr>";
+  });
+  document.getElementById("srctable").innerHTML = h + "</tbody>";
+})();
+
+// GPU rows: regret and machine right
+(function () {
+  const cols = [["test_src_gpu", "test · gpu regret", -1], ["test_gpu_device_right", "test · machine right", 1],
+    ["ood_src_gpu", "unseen · gpu regret", -1], ["ood_gpu_device_right", "unseen · machine right", 1]];
+  const best = {};
+  cols.forEach(([k, , dir]) => { const vs = ORDER.map(a => ARMS[a][k]); best[k] = dir > 0 ? Math.max(...vs) : Math.min(...vs); });
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td>${sw(a)}</td>`;
+    cols.forEach(([k]) => { h += `<td class="${ARMS[a][k] === best[k] ? "best" : ""}">${pct(ARMS[a][k])}</td>`; });
+    h += "</tr>";
+  });
+  document.getElementById("gputable").innerHTML = h + "</tbody>";
+})();
+
+// RL curves: sampled regret (top), KL (bottom), both runs
+(function () {
+  const svg = document.getElementById("curvesvg"), L = 70, R = 30, W = 900 - L - R;
+  const runs = [["rl-pointer", "var(--rl)"], ["stack-rl-pointer", "var(--stack)"]];
+  const maxStep = 370, x = s => L + W * s / maxStep;
+  const panels = [{ T: 14, H: 200, k: 1, min: -0.05, max: 0.35, ticks: [0, 0.1, 0.2, 0.3], f: v => Math.round(v * 100) + "%", t: "sampled regret" },
+                  { T: 260, H: 100, k: 2, min: 0, max: 4.5, ticks: [0, 1, 2, 3, 4], f: v => v, t: "KL (nats)" }];
+  panels.forEach(p => {
+    const y = v => p.T + p.H * (1 - (v - p.min) / (p.max - p.min));
+    p.ticks.forEach(v => {
+      el("line", { x1: L, x2: L + W, y1: y(v), y2: y(v), stroke: "var(--rule)" }, svg);
+      el("text", { x: L - 10, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, p.f(v));
+    });
+    el("text", { x: 16, y: p.T + p.H / 2, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)", transform: `rotate(-90 16 ${p.T + p.H / 2})` }, svg, p.t);
+    runs.forEach(([name, c]) => {
+      const cv = CURVE[name];
+      el("polyline", { points: cv.map(r => `${x(r[0])},${y(r[p.k])}`).join(" "), fill: "none", stroke: c, "stroke-width": 2 }, svg);
+      cv.forEach(r => el("circle", { cx: x(r[0]), cy: y(r[p.k]), r: 2.4, fill: c }, svg));
+    });
+  });
+  [0, 100, 200, 300, 370].forEach(s => el("text", { x: x(s), y: 382, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, s));
+  el("text", { x: L + W / 2, y: 398, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, svg, "optimizer step");
+})();
+
+// round 20 (rsa-big-1) vs round 21 (rsa-big-2)
+(function () {
+  const both = ORDER.filter(a => R20[a]);
+  const cols = [["mem", "test_src_mem", "test · mem"], ["cpu", "test_src_cpu", "test · cpu"], ["gpu", "test_src_gpu", "test · gpu"],
+    ["test", "test_regret", "test"], ["ood", "ood_regret", "unseen"]];
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[2]}</th>`).join("") + "</tr></thead><tbody>";
+  h += `<tr><td class="muted">runs, round 20 → 21</td><td>2,316 → 2,316</td><td>1,634 → 1,634</td><td>1,413 → 1,145</td><td>5,363 → 5,095</td><td>6,534 → 6,416</td></tr>`;
+  both.forEach(a => {
+    h += `<tr><td>${sw(a)}</td>` + cols.map(([r, k]) => `<td>${pct(R20[a][r])} → ${pct(ARMS[a][k])}</td>`).join("") + "</tr>";
+  });
+  document.getElementById("roundtable").innerHTML = h + "</tbody>";
+})();
+</script>

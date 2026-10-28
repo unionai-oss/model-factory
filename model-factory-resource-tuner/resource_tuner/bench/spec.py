@@ -63,7 +63,8 @@ class BenchSpec:
     notes: dict = field(default_factory=dict)
 
     def messages(self, row: dict) -> list[dict]:
-        return [{"role": "system", "content": self.system}, {"role": "user", "content": self.user_prompt(row)}]
+        user = with_hint(self.user_prompt(row), row.get("hint") or "")
+        return [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
 
     def target(self, a_idx: int, b_idx: int) -> str:
         if self.target_text is not None:
@@ -88,6 +89,19 @@ class BenchSpec:
 
 
 # ── shared helpers ──────────────────────────────────────────────────────
+
+HINT_HEADER = "### A tree model's estimate"
+
+
+def with_hint(prompt: str, hint: str) -> str:
+    """A stacked arm's prompt: the trees' estimate (``bench.hybrid``) just
+    before the options. The suffix from "### Options" on is untouched, so the
+    pointer head's option offsets (counted from the end) still hold."""
+    if not hint:
+        return prompt
+    i = prompt.rindex("### Options")
+    return f"{prompt[:i]}{HINT_HEADER}\n{hint}\n\n{prompt[i:]}"
+
 
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 _JSON = re.compile(r"\{[^{}]*\}")

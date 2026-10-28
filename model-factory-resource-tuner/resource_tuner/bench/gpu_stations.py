@@ -10,6 +10,9 @@ same predictions table every arm of that bench writes, with one row per
   samples -> empirical distribution -> expected-cost decode)
 - jev / jev-pointer: ``<arm>`` (temperature-scaled -> expected-cost decode)
   and ``<arm>-argmax``; the two arms differ only in the head shape
+- ``stack-<arm>`` (round 21, ``bench.hybrid``): the same arm on a corpus
+  whose rows carry the trees' prediction in a ``hint`` column (the prompt
+  shows it); its variants are prefixed ``stack-``
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ import pandas as pd
 from ..shared.reporting import Reporter
 from . import dataset
 from .envs import bench_gpu_env
+from .hybrid import STACK_PREFIX, base_arm, is_stacked
 from .registry import get_spec
 from .spec import BenchSpec
 from .versioning import arms_cache
@@ -76,9 +80,11 @@ def _pred_table(variant: str, preds: dict, split_of: dict, spec: BenchSpec) -> l
 async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen/Qwen3-1.7B", epochs: int = 3,
                         max_train_rows: int = 0, bench: str = "mem") -> flyte.io.Dir:
     spec = get_spec(bench)
+    base = base_arm(arm)
+    prefix = STACK_PREFIX if is_stacked(arm) else ""
     cfg = TrainConfig(model_name=model_name, epochs=epochs, max_train_rows=max_train_rows,
-                      head=_HEADS.get(arm, "classify"), bench=bench)
-    for k, v in ARM_CONFIGS.get(arm, {}).items():
+                      head=_HEADS.get(base, "classify"), bench=bench)
+    for k, v in ARM_CONFIGS.get(base, {}).items():
         setattr(cfg, k, v)
     df = pd.read_parquet(await corpus.download())
     splits = _rows_by_split(df)
@@ -98,8 +104,9 @@ async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen
     await rep.flush()
     t0 = time.time()
     table: list[dict] = []
-    meta: dict = {"arm": arm, "bench": bench, "config": config_dict(cfg), "n_train": len(train)}
-    if arm.startswith("jev"):
+    meta: dict = {"arm": arm, "bench": bench, "config": config_dict(cfg), "n_train": len(train),
+                  "stacked": bool(prefix), "hinted_train_rows": sum(bool(r.get("hint")) for r in train)}
+    if base.startswith("jev"):
         tok, model, head, hist = train_jev(train, splits["val"], cfg, log=log)
         meta["train_s"], meta["loss"] = time.time() - t0, hist
         mem_l, cpu_l = jev_logits(tok, model, head, eval_rows, cfg)
@@ -121,7 +128,7 @@ async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen
         import torch
 
         torch.save(head.state_dict(), os.path.join(adapter_dir, "decision_head.pt"))
-    elif arm == "sft":
+    elif base == "sft":
         tok, model, hist = train_sft(train, cfg, log=log)
         meta["train_s"], meta["loss"] = time.time() - t0, hist
         greedy_txt = sft_generate(tok, model, eval_rows, cfg, n=1)
@@ -139,14 +146,14 @@ async def train_llm_arm(corpus: flyte.io.File, arm: str, model_name: str = "Qwen
         best_k = min(range(0, 4), key=lambda k: spec.headline(
             val_rows, {rid: p for rid, p in shift(greedy, k, spec).items() if rid in val_ids}))
         meta["greedy_margin_cells"] = best_k
-        table += _pred_table("sft-greedy", shift(greedy, best_k, spec), split_of, spec)
+        table += _pred_table(f"{prefix}sft-greedy", shift(greedy, best_k, spec), split_of, spec)
         # batch 2 x 8 samples: 64 KV caches of 1.5k tokens do not fit a T4
         sampled_txt = sft_generate(tok, model, eval_rows, cfg, n=cfg.n_samples, batch_size=2)
         sampled = {}
         for r, txts in zip(eval_rows, sampled_txt):
             p, c = samples_to_probs(txts, spec=spec)
             sampled[r["run_id"]] = spec.pred(spec.decode(p), c, p)
-        table += _pred_table("sft-sampled", sampled, split_of, spec)
+        table += _pred_table(f"{prefix}sft-sampled", sampled, split_of, spec)
         meta["latency_greedy"] = measure_latency(lambda rs: sft_generate(tok, model, rs, cfg, n=1, batch_size=1), eval_rows)
         meta["latency_sampled"] = measure_latency(
             lambda rs: sft_generate(tok, model, rs, cfg, n=cfg.n_samples, batch_size=1), eval_rows, n=16)

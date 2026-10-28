@@ -29,6 +29,8 @@ ARTIFACT_CORPUS = "rt-cpubench-corpus"
 ARTIFACT_ARM = "rt-cpubench-arm"
 ARTIFACT_SCORECARD = "rt-cpubench-scorecard"
 ARTIFACT_LEADERBOARD = "rt-cpubench-leaderboard"
+ARTIFACT_POOL = "rt-cpubench-pool"
+ARTIFACT_POOL_SCORECARD = "rt-cpubench-pool-scorecard"
 
 PARTITION_RELEASE = "release"
 PARTITION_ARM = "arm"
@@ -52,8 +54,16 @@ def build_graph() -> factory.Factory:
                               description="Peak within margin, under-prediction, throttling cost -- per split and slice",
                               ).using(_task("rt-cpubench.score_cpu_arm"), corpus=corpus, arm_dir=arm,
                                       arm=factory.partition(PARTITION_ARM))
+    # The pooled hybrids, built from every arm of the release: lineage records
+    # which tree and LLM arm versions each pool combined.
+    pool = factory.build(ARTIFACT_POOL, kind="model",
+                         description="gbt-dist x every distributional LLM variant, log pool, weight tuned on val",
+                         ).using(_task("rt-cpubench.pool_cpu_arms"), corpus=corpus, arm_dirs=arm.all(PARTITION_ARM))
+    pool_card = factory.build(ARTIFACT_POOL_SCORECARD, kind="data", description="The pooled hybrids' scorecard",
+                              ).using(_task("rt-cpubench.score_cpu_arm"), corpus=corpus, arm_dir=pool, arm="pool")
     board = factory.build(ARTIFACT_LEADERBOARD, kind="data", description="All arms side by side for one release",
-                          ).using(_task("rt-cpubench.cpu_leaderboard"), scorecards=scorecard.all(PARTITION_ARM))
+                          ).using(_task("rt-cpubench.cpu_leaderboard"), scorecards=scorecard.all(PARTITION_ARM),
+                                  pool_scorecard=pool_card)
     return factory.Factory(FACTORY_NAME, board,
                            description="RightSizeCPU Bench: predict peak CPU from code and input metadata")
 

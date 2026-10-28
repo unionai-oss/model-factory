@@ -1,0 +1,198 @@
+<title>RightSize Bench Big-2 Abstract</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a paper-style abstract. One paragraph, then the results (chart, table, findings), then the setup and definitions in compact form. Same tokens as the full RightSizeCPU and RightSizeMem reports. */
+:root {
+  --bg: #f5f6f9;
+  --panel: #ffffff;
+  --ink: #161823;
+  --muted: #5d6273;
+  --rule: #dcdfe8;
+  --tint: #eef0fb;
+  --accent: #4d65ff;     /* decision model */
+  --rl: #9a4fd0;         /* RL-tuned decision model */
+  --warm: #c9760a;       /* autoregressive LLM */
+  --tree: #1f9b6a;       /* classical ML */
+  --rule-c: #8a8fa0;     /* rules */
+  --stack: #0b87a3;      /* stacked hybrid */
+  --pool: #c2417f;       /* pooled hybrid */
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+    --accent: #7d8fff; --rl: #c48bf2; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --stack: #45c4e0; --pool: #ee82b5;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+  --accent: #7d8fff; --rl: #c48bf2; --warm: #f0a23a; --tree: #43c693; --rule-c: #7d8296; --stack: #45c4e0; --pool: #ee82b5;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 860px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; display: grid; gap: 30px; }
+header { display: grid; gap: 10px; }
+.eyebrow, .label { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.label { color: var(--accent); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(36px, 6vw, 52px); line-height: 1.02; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 24px; line-height: 1.15; margin: 0; text-wrap: balance; }
+p { margin: 0; max-width: 68ch; }
+section { display: grid; gap: 14px; min-width: 0; }
+.status { justify-self: start; font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; color: var(--warm); border: 1px solid color-mix(in srgb, var(--warm) 45%, transparent); border-radius: 999px; padding: 3px 12px; }
+.abstract { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 20px 22px; display: grid; gap: 10px; }
+.abstract p { font-size: 16.5px; max-width: none; text-wrap: pretty; }
+.figure { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 16px 10px; min-width: 0; }
+.figure svg { display: block; width: 100%; height: auto; }
+.caption { font-size: 13px; color: var(--muted); margin-top: 6px; max-width: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+td.best { font-weight: 600; }
+ol.findings { margin: 0; padding: 0; list-style: none; display: grid; gap: 14px; }
+ol.findings li { display: grid; grid-template-columns: 112px 1fr; gap: 16px; align-items: baseline; }
+ol.findings .n { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.05; font-variant-numeric: tabular-nums; }
+ol.findings b { font-weight: 600; }
+@media (max-width: 560px) { ol.findings li { grid-template-columns: 1fr; gap: 2px; } }
+dl.defs { display: grid; grid-template-columns: minmax(140px, 190px) 1fr; gap: 9px 20px; margin: 0; }
+dl.defs dt { font-weight: 600; }
+dl.defs dd { margin: 0; min-width: 0; }
+@media (max-width: 560px) { dl.defs { grid-template-columns: 1fr; gap: 2px 0; } dl.defs dd { margin-bottom: 8px; } }
+.mono { font-family: var(--font-mono); font-size: .9em; }
+.muted { color: var(--muted); }
+footer { padding-top: 16px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); display: grid; gap: 4px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Union model factory · round 21 · October 2026</div>
+    <h1>RightSize Bench: trees and language models, combined, on the whole request</h1>
+    <span class="status">big-2 · 32,082 measured runs from three benches</span>
+  </header>
+
+  <div class="abstract">
+    <div class="label">Abstract</div>
+    <p>A Flyte task's resource request is three guesses made before it runs: memory, CPU cores, and a GPU or none. RightSize Bench joins three single-axis benches (RightSizeMem v2, RightSizeCPU big-1 and the new RightSizeGPU big-2) into one corpus of 32,082 measured runs of real task code, and scores every approach on the <b>whole request</b>, in dollars. GPU big-2 spans the cluster's full GPU machine ladder, from one T4 to four L40S, and includes code that shards its model over several GPUs. The headline is mean <b>regret</b>: how much more than the oracle's request a run costs. Approaches see only the code, the input metadata and the task's earlier runs.</p>
+    <p>This release combines gradient-boosted trees with a Qwen3-1.7B decision model in two ways. <b>Stacking</b> writes the trees' prediction into the model's prompt; <b>pooling</b> multiplies the two models' probabilities with a tuned weight. Stacking and then RL against the bench's cost model reaches <b>3.2%</b> regret on 5,095 test runs, against 9.8% for the best arm without the trees and 8.0% for round 20's best. On 6,416 runs from task families held out of training, the same arm scores 102.0%, because it follows the trees' GPU estimate on new code. There, RL without the trees is best (35.5%). Only the pool of the trees with the supervised decision model beats that model on both splits (6.9% and 52.2%, against 14.0% and 58.8%). Unseen regret is not comparable with round 20, because the GPU bench's unseen families changed. Multi-GPU nodes mostly did not schedule, and 1,569 GPU runs were censored.</p>
+  </div>
+
+  <section>
+    <div class="label">Results</div>
+    <h2>Mean regret against the oracle, by approach</h2>
+    <div class="legend">
+      <span><span class="kind" style="background:var(--rule-c)"></span>rule</span>
+      <span><span class="kind" style="background:var(--tree)"></span>classical ML</span>
+      <span><span class="kind" style="background:var(--warm)"></span>autoregressive LLM</span>
+      <span><span class="kind" style="background:var(--accent)"></span>decision model</span>
+      <span><span class="kind" style="background:var(--rl)"></span>decision model, RL-tuned</span>
+      <span><span class="kind" style="background:var(--stack)"></span>hybrid, stacked</span>
+      <span><span class="kind" style="background:var(--pool)"></span>hybrid, pooled</span>
+    </div>
+    <div class="figure"><svg id="board" viewBox="0 0 860 500" role="img" aria-label="Mean regret against the oracle, test split and unseen families"></svg>
+      <p class="caption">Bar length is the mean per-run regret: a run's cost under the approach's request divided by its cost under the oracle's, minus 1. Shorter is better; the oracle scores 0%. Solid bars are the test split (5,095 runs); outlined bars are unseen families (6,416 runs). The zero-shot 27B was scored on a sample of about 300 runs per split. Bars stop at 125%. 12 of the 20 rows; the full report has all of them.</p></div>
+    <div class="figure table-wrap"><table id="boardtable"></table>
+      <p class="caption">First ok is the share of runs whose first attempt succeeds. All right means memory fits and is at most one cell over, CPU is within ±25% of the busiest 15 seconds, and the GPU choice lands on the right machine. Bold marks the best value in each column among these rows.</p></div>
+  </section>
+
+  <section>
+    <h2>Four findings</h2>
+    <ol class="findings">
+      <li><span class="n">3.2%</span><span><b>On familiar code, the trees and RL compound.</b> The stacked decision model, RL-tuned and read by argmax, costs 3.2% over the oracle, a third of the best arm without the trees (RL 1.7B argmax, 9.8%). It also has 13.0% dollar regret and 92.2% of runs with all three axes right.</span></li>
+      <li><span class="n">102%</span><span><b>On new code, the same arm is one of the worst.</b> On unseen GPU tasks it picks the oracle's machine 35.2% of the time, against 77.1% for RL without the trees, and its GPU-row regret is 208%. The trees fail there too (167%), and the stacked model has learned to follow them.</span></li>
+      <li><span class="n">35.5%</span><span><b>On unseen families, RL without the trees is best.</b> The RL-tuned decision model, decoded cost-aware, scores 35.5%, against 48.0% for the hand-written rules and 90.8% for the trees. Every stacked arm scores between 76.9% and 125.8%.</span></li>
+      <li><span class="n">6.9 / 52.2</span><span><b>One hybrid is better than its language model on both splits.</b> Pooling the trees with the supervised decision model (weight 0.4 on the trees) cuts its test regret from 14.0% to 6.9% and its unseen regret from 58.8% to 52.2%. No other hybrid improves on its language model on unseen families.</span></li>
+    </ol>
+  </section>
+
+  <section>
+    <div class="label">Setup</div>
+    <h2>How the benchmark works</h2>
+    <dl class="defs">
+      <dt>Corpus</dt><dd>RightSizeMem v2 (14,234 runs, peak memory and mean cores), RightSizeCPU big-1 (9,900 runs, peak memory and the busiest 15 seconds of CPU) and RightSizeGPU big-2 (7,948 usable runs, peak GPU memory, sharding and imbalance), each split by task on its own bench: 18,053 train, 2,518 validation, 5,095 test and 6,416 unseen-family runs.</dd>
+      <dt>Request</dt><dd>Memory from 17 cells (256Mi to 64Gi), CPU from 16 (0.25 to 8 cores), and GPU from 18 (none, or 1 to 176 GiB). A GPU cell lands on the cheapest of seven shapes that holds it: T4, L4, A10G, L40S, 4×L4, 8×T4 or 4×L40S. A multi-GPU shape only holds more for code that shards. CPU pods are priced by their dominant share of an m6i.xlarge, and GPU pods at the instance's on-demand price.</dd>
+      <dt>Approaches</dt><dd><b>Rules:</b> a static request; a GPU if the code mentions CUDA, history × margin, else the declared pool size. <b>Trees:</b> 19-quantile gradient-boosted trees per axis plus a needs-a-GPU classifier. <b>Zero-shot:</b> a 27B model asked for JSON. <b>Decision model:</b> Qwen3-1.7B with LoRA and three pointer heads, trained by cross-entropy on 10,500 balanced runs (5.6 h on a T4). <b>RL:</b> that model, tuned by GRPO: 16 requests sampled per prompt from the three heads, rewarded by the simulator, with group-normalized advantages and a KL penalty to the supervised policy (6,000 prompts, 2.0 h on a T4).</dd>
+      <dt>Hybrids</dt><dd><b>Stacked:</b> the decision model trained with the trees' estimate for all three axes in its prompt; training runs get out-of-fold estimates (5 folds by task). <b>Stacked RL:</b> the same RL phase started from the stacked model, with the same estimates in its prompts. <b>Pool:</b> on each axis, p ∝ p_trees<sup>w</sup> · p_llm<sup>1−w</sup>, with one w for all three axes and a no-GPU threshold tuned on validation, for the decision model, RL and both stacked models.</dd>
+    </dl>
+    <h2>Key terms</h2>
+    <dl class="defs">
+      <dt>Oracle</dt><dd>The request the measurements say is right on each axis: the smallest memory cell that holds the peak, the CPU cell that covers the busiest 15 seconds, and the GPU cell that lands on the cheapest shape the run fits, or no GPU for a CPU task.</dd>
+      <dt>Regret</dt><dd>A run's cost to SUCCEEDED, including retries and lateness, divided by the oracle's cost, minus 1, averaged over runs. It can go slightly negative on CPU tasks, where a brief throttle can cost less than the oracle's extra cores.</dd>
+      <dt>Decision model</dt><dd>An LLM whose language-model head is replaced by a head that scores each option written in the prompt. One forward pass gives a probability for every option; no text is generated (216 ms per request on a T4).</dd>
+      <dt>Out-of-fold</dt><dd>A prediction for a training run made by trees fit without that run's task, so the model learns how far to trust the trees on tasks they did not see.</dd>
+      <dt>GRPO</dt><dd>Group-relative policy optimization. Each sampled request's reward is compared with the others sampled for the same prompt, so no value network is needed.</dd>
+      <dt>Unseen families</dt><dd>Task families each bench held out of training, which test whether an approach generalizes to new code. For GPU big-2 they are <span class="mono">recsys_train</span>, <span class="mono">knn_search</span> and <span class="mono">llm_generate</span>.</dd>
+    </dl>
+  </section>
+
+  <footer>
+    <div>Full report with the machine ladder, cost model, architectures, hybrids, RL curves and limits: <a href="rightsize-bench-combined-big-2.html">RightSize Bench (big-2)</a>. Round 20: <a href="https://claude.ai/artifact/LJceQj2Na4jwmmdPhyYx1u">RightSize Bench Abstract (big-1)</a>.</div>
+    <div>Source: <span class="mono">model-factory-resource-tuner/resource_tuner/bench_all/</span>, <span class="mono">resource_tuner/bench/hybrid.py</span> · research log <span class="mono">research_log/2026-10-26-round-21-gpu-big-2-hybrids.md</span> · run <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-big-2">rsa-big-2</a> on demo.hosted.unionai.cloud. Per-axis benches this round: <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsc-big-2">rsc-big-2</a> (CPU), <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big2-1">rsg-big2-1</a> (GPU).</div>
+  </footer>
+</div>
+
+<script>
+const ARMS = {"static":{"test_regret":0.9184,"test_geo_regret":0.6899,"test_dollar_regret":1.8518,"test_first_attempt_ok":0.7172,"test_all_right":0.02,"test_mem_right":0.0618,"test_cpu_right":0.2651,"test_gpu_right":0.7753,"test_cost_per_1k_runs":791.8835,"test_n":5095,"test_src_mem":0.5153,"test_src_cpu":1.131,"test_src_gpu":1.4306,"test_gpu_device_right":0.0,"ood_regret":1.1336,"ood_geo_regret":0.8834,"ood_dollar_regret":2.5909,"ood_first_attempt_ok":0.5676,"ood_all_right":0.0067,"ood_mem_right":0.0888,"ood_cpu_right":0.2729,"ood_gpu_right":0.6426,"ood_cost_per_1k_runs":1840.2728,"ood_n":6416,"ood_src_mem":0.5848,"ood_src_cpu":1.2162,"ood_src_gpu":1.6248,"ood_gpu_device_right":0.0,"val_regret":0.8833,"cold":1.0048,"warm":0.8537},"rules":{"test_regret":0.3938,"test_geo_regret":0.1821,"test_dollar_regret":0.5563,"test_first_attempt_ok":0.9246,"test_all_right":0.3199,"test_mem_right":0.1787,"test_cpu_right":0.8408,"test_gpu_right":0.9666,"test_cost_per_1k_runs":432.1547,"test_n":5095,"test_src_mem":0.3606,"test_src_cpu":0.5339,"test_src_gpu":0.2612,"test_gpu_device_right":0.8515,"ood_regret":0.4801,"ood_geo_regret":0.2961,"ood_dollar_regret":1.2006,"ood_first_attempt_ok":0.8725,"ood_all_right":0.3748,"ood_mem_right":0.1841,"ood_cpu_right":0.7473,"ood_gpu_right":0.9188,"ood_cost_per_1k_runs":1127.7506,"ood_n":6416,"ood_src_mem":0.7186,"ood_src_cpu":0.1672,"ood_src_gpu":0.4841,"ood_gpu_device_right":0.7728,"val_regret":0.4263,"cold":0.6771,"warm":0.1816},"gbt-dist":{"test_regret":0.1537,"test_geo_regret":0.1102,"test_dollar_regret":0.3168,"test_first_attempt_ok":0.9578,"test_all_right":0.9042,"test_mem_right":0.9466,"test_cpu_right":0.9656,"test_gpu_right":0.9706,"test_cost_per_1k_runs":365.6526,"test_n":5095,"test_src_mem":0.2523,"test_src_cpu":0.0139,"test_src_gpu":0.1539,"test_gpu_device_right":0.869,"ood_regret":0.9085,"ood_geo_regret":0.5414,"ood_dollar_regret":1.0785,"ood_first_attempt_ok":0.8516,"ood_all_right":0.2737,"ood_mem_right":0.4087,"ood_cpu_right":0.5559,"ood_gpu_right":0.7877,"ood_cost_per_1k_runs":1065.2065,"ood_n":6416,"ood_src_mem":0.3236,"ood_src_cpu":0.6912,"ood_src_gpu":1.6715,"ood_gpu_device_right":0.406,"val_regret":0.1464,"cold":0.1818,"warm":0.1328},"zeroshot-27b":{"test_regret":0.3606,"test_geo_regret":0.2182,"test_dollar_regret":0.8271,"test_first_attempt_ok":0.8986,"test_all_right":0.3287,"test_mem_right":0.2679,"test_cpu_right":0.7416,"test_gpu_right":0.8951,"test_cost_per_1k_runs":592.3686,"test_n":286,"test_src_mem":0.3087,"test_src_cpu":0.2747,"test_src_gpu":0.5454,"test_gpu_device_right":0.6104,"ood_regret":0.7782,"ood_geo_regret":0.4722,"ood_dollar_regret":1.5908,"ood_first_attempt_ok":0.76,"ood_all_right":0.3233,"ood_mem_right":0.2467,"ood_cpu_right":0.74,"ood_gpu_right":0.73,"ood_cost_per_1k_runs":1962.7659,"ood_n":300,"ood_src_mem":0.7127,"ood_src_cpu":0.0104,"ood_src_gpu":1.1714,"ood_gpu_device_right":0.46,"val_regret":null,"cold":0.5837,"warm":0.1247},"jev-pointer-argmax":{"test_regret":0.3432,"test_geo_regret":0.2035,"test_dollar_regret":0.4343,"test_first_attempt_ok":0.8824,"test_all_right":0.7914,"test_mem_right":0.8448,"test_cpu_right":0.9349,"test_gpu_right":0.9564,"test_cost_per_1k_runs":398.2795,"test_n":5095,"test_src_mem":0.4149,"test_src_cpu":0.139,"test_src_gpu":0.4897,"test_gpu_device_right":0.8061,"ood_regret":0.8737,"ood_geo_regret":0.5891,"ood_dollar_regret":1.0283,"ood_first_attempt_ok":0.7251,"ood_all_right":0.4118,"ood_mem_right":0.4252,"ood_cpu_right":0.7589,"ood_gpu_right":0.8557,"ood_cost_per_1k_runs":1039.4494,"ood_n":6416,"ood_src_mem":0.6267,"ood_src_cpu":0.992,"ood_src_gpu":1.0312,"ood_gpu_device_right":0.5962,"val_regret":0.3205,"cold":0.5237,"warm":0.208},"jev-pointer":{"test_regret":0.1402,"test_geo_regret":0.0784,"test_dollar_regret":0.433,"test_first_attempt_ok":0.9407,"test_all_right":0.8432,"test_mem_right":0.8891,"test_cpu_right":0.9732,"test_gpu_right":0.9478,"test_cost_per_1k_runs":397.9194,"test_n":5095,"test_src_mem":0.1537,"test_src_cpu":0.0083,"test_src_gpu":0.301,"test_gpu_device_right":0.7677,"ood_regret":0.5883,"ood_geo_regret":0.395,"ood_dollar_regret":1.12,"ood_first_attempt_ok":0.7763,"ood_all_right":0.4621,"ood_mem_right":0.4485,"ood_cpu_right":0.8732,"ood_gpu_right":0.8485,"ood_cost_per_1k_runs":1086.4589,"ood_n":6416,"ood_src_mem":0.2937,"ood_src_cpu":0.7628,"ood_src_gpu":0.7499,"ood_gpu_device_right":0.5761,"val_regret":0.1343,"cold":0.2282,"warm":0.0742},"rl-pointer-argmax":{"test_regret":0.0977,"test_geo_regret":0.0389,"test_dollar_regret":0.3949,"test_first_attempt_ok":0.9386,"test_all_right":0.8204,"test_mem_right":0.842,"test_cpu_right":0.9608,"test_gpu_right":0.9692,"test_cost_per_1k_runs":387.3424,"test_n":5095,"test_src_mem":0.146,"test_src_cpu":-0.0495,"test_src_gpu":0.2098,"test_gpu_device_right":0.8629,"ood_regret":0.4784,"ood_geo_regret":0.3128,"ood_dollar_regret":0.9727,"ood_first_attempt_ok":0.7717,"ood_all_right":0.5114,"ood_mem_right":0.4133,"ood_cpu_right":0.8491,"ood_gpu_right":0.918,"ood_cost_per_1k_runs":1010.9486,"ood_n":6416,"ood_src_mem":0.3416,"ood_src_cpu":0.7308,"ood_src_gpu":0.4188,"ood_gpu_device_right":0.7706,"val_regret":0.082,"cold":0.1713,"warm":0.0425},"rl-pointer":{"test_regret":0.2033,"test_geo_regret":0.1446,"test_dollar_regret":0.5542,"test_first_attempt_ok":0.9507,"test_all_right":0.6752,"test_mem_right":0.7233,"test_cpu_right":0.8952,"test_gpu_right":0.9594,"test_cost_per_1k_runs":431.5611,"test_n":5095,"test_src_mem":0.3071,"test_src_cpu":0.0087,"test_src_gpu":0.271,"test_gpu_device_right":0.8192,"ood_regret":0.355,"ood_geo_regret":0.2467,"ood_dollar_regret":1.1385,"ood_first_attempt_ok":0.8767,"ood_all_right":0.4983,"ood_mem_right":0.4601,"ood_cpu_right":0.8348,"ood_gpu_right":0.9074,"ood_cost_per_1k_runs":1095.9313,"ood_n":6416,"ood_src_mem":0.3417,"ood_src_cpu":0.249,"ood_src_gpu":0.4518,"ood_gpu_device_right":0.741,"val_regret":0.2013,"cold":0.2233,"warm":0.1883},"stack-jev-pointer-argmax":{"test_regret":0.1808,"test_geo_regret":0.111,"test_dollar_regret":0.1859,"test_first_attempt_ok":0.9162,"test_all_right":0.8638,"test_mem_right":0.8942,"test_cpu_right":0.9448,"test_gpu_right":0.9851,"test_cost_per_1k_runs":329.2903,"test_n":5095,"test_src_mem":0.2789,"test_src_cpu":0.1047,"test_src_gpu":0.0913,"test_gpu_device_right":0.9336,"ood_regret":1.2584,"ood_geo_regret":0.7624,"ood_dollar_regret":1.1936,"ood_first_attempt_ok":0.7969,"ood_all_right":0.2319,"ood_mem_right":0.3471,"ood_cpu_right":0.4523,"ood_gpu_right":0.7827,"ood_cost_per_1k_runs":1124.1738,"ood_n":6416,"ood_src_mem":0.5688,"ood_src_cpu":1.1758,"ood_src_gpu":2.0219,"ood_gpu_device_right":0.3921,"val_regret":0.157,"cold":0.2373,"warm":0.1385},"stack-jev-pointer":{"test_regret":0.101,"test_geo_regret":0.0585,"test_dollar_regret":0.2895,"test_first_attempt_ok":0.9486,"test_all_right":0.9095,"test_mem_right":0.9466,"test_cpu_right":0.9749,"test_gpu_right":0.9686,"test_cost_per_1k_runs":358.076,"test_n":5095,"test_src_mem":0.1504,"test_src_cpu":-0.012,"test_src_gpu":0.1621,"test_gpu_device_right":0.8603,"ood_regret":0.9462,"ood_geo_regret":0.5416,"ood_dollar_regret":1.0692,"ood_first_attempt_ok":0.8226,"ood_all_right":0.3661,"ood_mem_right":0.3733,"ood_cpu_right":0.7395,"ood_gpu_right":0.8134,"ood_cost_per_1k_runs":1060.4282,"ood_n":6416,"ood_src_mem":0.299,"ood_src_cpu":0.9845,"ood_src_gpu":1.5717,"ood_gpu_device_right":0.478,"val_regret":0.0867,"cold":0.1244,"warm":0.0834},"stack-rl-pointer-argmax":{"test_regret":0.0315,"test_geo_regret":0.0015,"test_dollar_regret":0.1302,"test_first_attempt_ok":0.9784,"test_all_right":0.9219,"test_mem_right":0.9468,"test_cpu_right":0.9684,"test_gpu_right":0.9851,"test_cost_per_1k_runs":313.8231,"test_n":5095,"test_src_mem":0.0595,"test_src_cpu":-0.0514,"test_src_gpu":0.0932,"test_gpu_device_right":0.9336,"ood_regret":1.0203,"ood_geo_regret":0.5707,"ood_dollar_regret":1.2355,"ood_first_attempt_ok":0.8608,"ood_all_right":0.3295,"ood_mem_right":0.4082,"ood_cpu_right":0.7381,"ood_gpu_right":0.7684,"ood_cost_per_1k_runs":1145.6681,"ood_n":6416,"ood_src_mem":0.2641,"ood_src_cpu":0.6428,"ood_src_gpu":2.0826,"ood_gpu_device_right":0.3519,"val_regret":0.0196,"cold":0.075,"warm":-0.0011},"stack-rl-pointer":{"test_regret":0.1612,"test_geo_regret":0.1212,"test_dollar_regret":0.256,"test_first_attempt_ok":0.9715,"test_all_right":0.7847,"test_mem_right":0.8559,"test_cpu_right":0.8856,"test_gpu_right":0.9745,"test_cost_per_1k_runs":348.7626,"test_n":5095,"test_src_mem":0.2821,"test_src_cpu":0.0073,"test_src_gpu":0.1365,"test_gpu_device_right":0.8865,"ood_regret":0.7688,"ood_geo_regret":0.4204,"ood_dollar_regret":0.9972,"ood_first_attempt_ok":0.9353,"ood_all_right":0.407,"ood_mem_right":0.4584,"ood_cpu_right":0.8385,"ood_gpu_right":0.8139,"ood_cost_per_1k_runs":1023.5104,"ood_n":6416,"ood_src_mem":0.267,"ood_src_cpu":0.3109,"ood_src_gpu":1.6367,"ood_gpu_device_right":0.4793,"val_regret":0.1579,"cold":0.1655,"warm":0.158},"pool-jev-pointer":{"test_regret":0.0688,"test_geo_regret":0.0342,"test_dollar_regret":0.287,"test_first_attempt_ok":0.9582,"test_all_right":0.9111,"test_mem_right":0.9392,"test_cpu_right":0.9792,"test_gpu_right":0.9729,"test_cost_per_1k_runs":357.3877,"test_n":5095,"test_src_mem":0.0921,"test_src_cpu":-0.0135,"test_src_gpu":0.1393,"test_gpu_device_right":0.8795,"ood_regret":0.5224,"ood_geo_regret":0.3565,"ood_dollar_regret":0.9477,"ood_first_attempt_ok":0.8111,"ood_all_right":0.4517,"ood_mem_right":0.4451,"ood_cpu_right":0.852,"ood_gpu_right":0.8406,"ood_cost_per_1k_runs":998.1504,"ood_n":6416,"ood_src_mem":0.2166,"ood_src_cpu":0.7159,"ood_src_gpu":0.6802,"ood_gpu_device_right":0.5539,"val_regret":0.0656,"cold":0.1141,"warm":0.035},"pool-rl-pointer":{"test_regret":0.133,"test_geo_regret":0.0936,"test_dollar_regret":0.3259,"test_first_attempt_ok":0.9621,"test_all_right":0.8689,"test_mem_right":0.8987,"test_cpu_right":0.9696,"test_gpu_right":0.9696,"test_cost_per_1k_runs":368.1665,"test_n":5095,"test_src_mem":0.232,"test_src_cpu":-0.0267,"test_src_gpu":0.1609,"test_gpu_device_right":0.8646,"ood_regret":0.5309,"ood_geo_regret":0.3412,"ood_dollar_regret":0.8774,"ood_first_attempt_ok":0.8516,"ood_all_right":0.4359,"ood_mem_right":0.4118,"ood_cpu_right":0.8499,"ood_gpu_right":0.8522,"ood_cost_per_1k_runs":962.1123,"ood_n":6416,"ood_src_mem":0.2072,"ood_src_cpu":0.6005,"ood_src_gpu":0.8042,"ood_gpu_device_right":0.5866,"val_regret":0.1223,"cold":0.1476,"warm":0.1222},"pool-stack-jev-pointer":{"test_regret":0.1005,"test_geo_regret":0.0582,"test_dollar_regret":0.2895,"test_first_attempt_ok":0.9486,"test_all_right":0.9095,"test_mem_right":0.9466,"test_cpu_right":0.9749,"test_gpu_right":0.9686,"test_cost_per_1k_runs":358.0543,"test_n":5095,"test_src_mem":0.1492,"test_src_cpu":-0.0118,"test_src_gpu":0.1621,"test_gpu_device_right":0.8603,"ood_regret":0.9462,"ood_geo_regret":0.5416,"ood_dollar_regret":1.0692,"ood_first_attempt_ok":0.8226,"ood_all_right":0.3661,"ood_mem_right":0.3733,"ood_cpu_right":0.7395,"ood_gpu_right":0.8134,"ood_cost_per_1k_runs":1060.4282,"ood_n":6416,"ood_src_mem":0.299,"ood_src_cpu":0.9845,"ood_src_gpu":1.5717,"ood_gpu_device_right":0.478,"val_regret":0.0865,"cold":0.1246,"warm":0.0825},"pool-stack-rl-pointer":{"test_regret":0.1387,"test_geo_regret":0.0962,"test_dollar_regret":0.2987,"test_first_attempt_ok":0.9625,"test_all_right":0.9062,"test_mem_right":0.94,"test_cpu_right":0.9754,"test_gpu_right":0.9704,"test_cost_per_1k_runs":360.6263,"test_n":5095,"test_src_mem":0.2415,"test_src_cpu":-0.0172,"test_src_gpu":0.1534,"test_gpu_device_right":0.8681,"ood_regret":0.8935,"ood_geo_regret":0.4913,"ood_dollar_regret":1.1066,"ood_first_attempt_ok":0.8621,"ood_all_right":0.3636,"ood_mem_right":0.4138,"ood_cpu_right":0.7718,"ood_gpu_right":0.7968,"ood_cost_per_1k_runs":1079.5747,"ood_n":6416,"ood_src_mem":0.2084,"ood_src_cpu":0.6678,"ood_src_gpu":1.7647,"ood_gpu_device_right":0.4313,"val_regret":0.1306,"cold":0.1621,"warm":0.1212},"pool-jev-pointer-argmax":{"test_regret":0.1682,"test_geo_regret":0.1013,"test_dollar_regret":0.1595,"test_first_attempt_ok":0.9276,"test_all_right":0.8756,"test_mem_right":0.9053,"test_cpu_right":0.9463,"test_gpu_right":0.9872,"test_cost_per_1k_runs":321.9561,"test_n":5095,"test_src_mem":0.2646,"test_src_cpu":0.0977,"test_src_gpu":0.074,"test_gpu_device_right":0.9432,"ood_regret":0.8767,"ood_geo_regret":0.5848,"ood_dollar_regret":1.1045,"ood_first_attempt_ok":0.7567,"ood_all_right":0.3697,"ood_mem_right":0.4356,"ood_cpu_right":0.6791,"ood_gpu_right":0.8265,"ood_cost_per_1k_runs":1078.4988,"ood_n":6416,"ood_src_mem":0.5147,"ood_src_cpu":0.9362,"ood_src_gpu":1.1969,"ood_gpu_device_right":0.5146,"val_regret":0.1707,"cold":0.2392,"warm":0.115},"pool-rl-pointer-argmax":{"test_regret":0.0714,"test_geo_regret":0.0324,"test_dollar_regret":0.1409,"test_first_attempt_ok":0.959,"test_all_right":0.9121,"test_mem_right":0.9405,"test_cpu_right":0.9613,"test_gpu_right":0.9867,"test_cost_per_1k_runs":316.8161,"test_n":5095,"test_src_mem":0.1259,"test_src_cpu":-0.0088,"test_src_gpu":0.0755,"test_gpu_device_right":0.9406,"ood_regret":0.9215,"ood_geo_regret":0.5427,"ood_dollar_regret":1.0156,"ood_first_attempt_ok":0.8251,"ood_all_right":0.3611,"ood_mem_right":0.3878,"ood_cpu_right":0.7616,"ood_gpu_right":0.8013,"ood_cost_per_1k_runs":1032.9761,"ood_n":6416,"ood_src_mem":0.321,"ood_src_cpu":0.7806,"ood_src_gpu":1.6406,"ood_gpu_device_right":0.444,"val_regret":0.0675,"cold":0.1233,"warm":0.0326},"pool-stack-jev-pointer-argmax":{"test_regret":0.1808,"test_geo_regret":0.111,"test_dollar_regret":0.1859,"test_first_attempt_ok":0.9162,"test_all_right":0.8638,"test_mem_right":0.8942,"test_cpu_right":0.9448,"test_gpu_right":0.9851,"test_cost_per_1k_runs":329.2903,"test_n":5095,"test_src_mem":0.2789,"test_src_cpu":0.1047,"test_src_gpu":0.0913,"test_gpu_device_right":0.9336,"ood_regret":1.2584,"ood_geo_regret":0.7624,"ood_dollar_regret":1.1936,"ood_first_attempt_ok":0.7969,"ood_all_right":0.2319,"ood_mem_right":0.3471,"ood_cpu_right":0.4523,"ood_gpu_right":0.7827,"ood_cost_per_1k_runs":1124.1738,"ood_n":6416,"ood_src_mem":0.5688,"ood_src_cpu":1.1758,"ood_src_gpu":2.0219,"ood_gpu_device_right":0.3921,"val_regret":0.157,"cold":0.2373,"warm":0.1385},"pool-stack-rl-pointer-argmax":{"test_regret":0.05,"test_geo_regret":0.0161,"test_dollar_regret":0.1327,"test_first_attempt_ok":0.9725,"test_all_right":0.9258,"test_mem_right":0.9499,"test_cpu_right":0.9686,"test_gpu_right":0.9865,"test_cost_per_1k_runs":314.5371,"test_n":5095,"test_src_mem":0.0827,"test_src_cpu":-0.0212,"test_src_gpu":0.0854,"test_gpu_device_right":0.9397,"ood_regret":1.0619,"ood_geo_regret":0.6266,"ood_dollar_regret":1.1409,"ood_first_attempt_ok":0.8488,"ood_all_right":0.2957,"ood_mem_right":0.3973,"ood_cpu_right":0.6262,"ood_gpu_right":0.7617,"ood_cost_per_1k_runs":1097.1431,"ood_n":6416,"ood_src_mem":0.3443,"ood_src_cpu":0.7455,"ood_src_gpu":2.0374,"ood_gpu_device_right":0.3332,"val_regret":0.0359,"cold":0.0953,"warm":0.0161}} ;
+
+const LABEL = {
+  "static": "static request", "rules": "rules (CUDA, history, pools)", "gbt-dist": "trees, distribution",
+  "zeroshot-27b": "zero-shot 27B", "jev-pointer": "decision 1.7B, decoded",
+  "rl-pointer-argmax": "RL 1.7B, argmax", "rl-pointer": "RL 1.7B, decoded",
+  "stack-jev-pointer": "stacked 1.7B, decoded", "stack-rl-pointer-argmax": "stacked RL 1.7B, argmax", "stack-rl-pointer": "stacked RL 1.7B, decoded",
+  "pool-jev-pointer": "pool × decision, decoded", "pool-rl-pointer": "pool × RL, decoded"
+};
+const ORDER = Object.keys(LABEL);
+const KIND = a => a.startsWith("pool") ? "pool" : a.startsWith("stack") ? "stack" : a.startsWith("rl") ? "rl" : a.startsWith("jev") ? "dec" : a.startsWith("zeroshot") ? "llm" : a.startsWith("gbt") ? "tree" : "rule";
+const COLOR = { rule: "var(--rule-c)", tree: "var(--tree)", llm: "var(--warm)", dec: "var(--accent)", rl: "var(--rl)", stack: "var(--stack)", pool: "var(--pool)" };
+const NS = "http://www.w3.org/2000/svg", MONO = "IBM Plex Mono, monospace";
+const pct = x => (x * 100).toFixed(1) + "%";
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+(function () {
+  const svg = document.getElementById("board"), L = 200, R = 64, T = 8, rowH = 39, MAX = 1.25;
+  const W = 860 - L - R, x = v => L + W * Math.max(0, Math.min(v, MAX)) / MAX;
+  svg.setAttribute("viewBox", `0 0 860 ${T + rowH * ORDER.length + 28}`);
+  [0, 0.25, 0.5, 0.75, 1, 1.25].forEach(v => {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: T + rowH * ORDER.length, stroke: "var(--rule)" }, svg);
+    el("text", { x: x(v), y: T + rowH * ORDER.length + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, (v * 100) + "%");
+  });
+  ORDER.forEach((a, i) => {
+    const d = ARMS[a], y = T + i * rowH, c = COLOR[KIND(a)];
+    el("text", { x: L - 10, y: y + 17, "text-anchor": "end", "font-size": 13, fill: "var(--ink)" }, svg, LABEL[a]);
+    el("rect", { x: L, y: y + 5, width: Math.max(1, x(d.test_regret) - L), height: 13, rx: 2, fill: c }, svg);
+    el("rect", { x: L, y: y + 21, width: Math.max(1, x(d.ood_regret) - L), height: 11, rx: 2, fill: "none", stroke: c, "stroke-width": 1.5 }, svg);
+    el("text", { x: x(d.test_regret) + 6, y: y + 16, "font-size": 11, fill: "var(--ink)", "font-family": MONO }, svg, pct(d.test_regret));
+    el("text", { x: x(d.ood_regret) + 6, y: y + 31, "font-size": 11, fill: "var(--muted)", "font-family": MONO }, svg, pct(d.ood_regret));
+  });
+})();
+(function () {
+  const cols = [["test_regret", "test regret", -1], ["test_first_attempt_ok", "test first ok", 1], ["test_all_right", "test all right", 1],
+    ["ood_regret", "unseen regret", -1], ["ood_first_attempt_ok", "unseen first ok", 1], ["ood_all_right", "unseen all right", 1]];
+  const best = {};
+  cols.forEach(([k, , dir]) => { const vs = ORDER.map(a => ARMS[a][k]); best[k] = dir > 0 ? Math.max(...vs) : Math.min(...vs); });
+  let h = "<thead><tr><th>approach</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead><tbody>";
+  ORDER.forEach(a => {
+    h += `<tr><td><span class="kind" style="background:${COLOR[KIND(a)]}"></span>${LABEL[a]}</td>`;
+    cols.forEach(([k]) => { h += `<td class="${ARMS[a][k] === best[k] ? "best" : ""}">${pct(ARMS[a][k])}</td>`; });
+    h += "</tr>";
+  });
+  document.getElementById("boardtable").innerHTML = h + "</tbody>";
+})();
+</script>
