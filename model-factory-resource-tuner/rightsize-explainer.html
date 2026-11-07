@@ -1,0 +1,593 @@
+<title>RightSize Explainer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Same tokens as the benchmark reports in benchmarks/: one color per model family. */
+:root {
+  --bg: #f5f6f9; --panel: #ffffff; --ink: #161823; --muted: #5d6273; --rule: #dcdfe8; --tint: #eef0fb;
+  --accent: #4d65ff;   /* decision model */
+  --rl: #9a4fd0;       /* RL-tuned decision model */
+  --warm: #c9760a;     /* autoregressive LLM */
+  --tree: #1f9b6a;     /* trees */
+  --pool: #c2417f;     /* pooled hybrid */
+  --stack: #0b87a3;    /* stacked hybrid */
+  --neg: #c0392b;
+  --seq1: #eba9c9; --seq2: #c2417f; --seq3: #6f1a45;  /* familiar share: 0% -> 100% */
+  --off: #e6e8ef;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+    --accent: #7d8fff; --rl: #c48bf2; --warm: #f0a23a; --tree: #43c693; --pool: #ee82b5; --stack: #45c4e0; --neg: #ff7a6b;
+    --seq1: #7d3159; --seq2: #d65c9a; --seq3: #f7c1dc; --off: #232737;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f15; --panel: #151823; --ink: #e9ebf3; --muted: #9aa0b4; --rule: #262a38; --tint: #1a1f33;
+  --accent: #7d8fff; --rl: #c48bf2; --warm: #f0a23a; --tree: #43c693; --pool: #ee82b5; --stack: #45c4e0; --neg: #ff7a6b;
+  --seq1: #7d3159; --seq2: #d65c9a; --seq3: #f7c1dc; --off: #232737;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 980px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; display: grid; gap: 44px; }
+header { display: grid; gap: 12px; }
+.eyebrow, .label { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(34px, 6vw, 52px); line-height: 1.02; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.12; margin: 0; text-wrap: balance; }
+h3 { font-family: var(--font-display); font-weight: 600; font-size: 20px; line-height: 1.2; margin: 0; }
+p { margin: 0; max-width: 68ch; }
+.lede { font-size: 18px; color: var(--ink); }
+section { display: grid; gap: 16px; min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 20px; display: grid; gap: 12px; min-width: 0; }
+.mono { font-family: var(--font-mono); font-size: .88em; }
+.muted { color: var(--muted); }
+a { color: var(--accent); }
+a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* the example run */
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.fact { display: grid; gap: 2px; }
+.fact .v { font-family: var(--font-display); font-weight: 600; font-size: 24px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.fact .k { font-size: 13px; color: var(--muted); }
+
+/* tabs */
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--rule); }
+.tab { font: 500 14px var(--font-body); color: var(--muted); background: none; border: 0; border-bottom: 3px solid transparent; padding: 8px 12px; cursor: pointer; margin-bottom: -1px; }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--c, var(--accent)); }
+.tab .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; background: var(--c); }
+.view { display: grid; gap: 16px; }
+.cols { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+.kv { display: grid; grid-template-columns: 84px 1fr; gap: 6px 14px; margin: 0; }
+.kv dt { font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding-top: 3px; }
+.kv dd { margin: 0; min-width: 0; }
+@media (max-width: 520px) { .kv { grid-template-columns: 1fr; gap: 0; } .kv dd { margin-bottom: 8px; } }
+
+/* feature grid */
+.fgroups { display: grid; gap: 12px; }
+.fgroup { display: grid; gap: 6px; }
+.fgroup .gh { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.cells { display: grid; grid-template-columns: repeat(auto-fill, 14px); gap: 3px; }
+.cell { width: 14px; height: 14px; border-radius: 3px; background: var(--off); border: 0; padding: 0; cursor: default; }
+.cell.on { background: var(--tree); }
+.cell:hover, .cell:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.readout { font-family: var(--font-mono); font-size: 13px; min-height: 1.6em; color: var(--muted); overflow-wrap: anywhere; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip { font-family: var(--font-mono); font-size: 12px; border: 1px solid var(--rule); border-radius: 4px; padding: 1px 7px; background: var(--bg); white-space: nowrap; }
+.chip.hit { border-color: var(--c, var(--accent)); color: var(--ink); background: color-mix(in srgb, var(--c, var(--accent)) 14%, transparent); font-weight: 500; }
+.callout { border-left: 3px solid var(--c, var(--accent)); padding: 4px 0 4px 14px; display: grid; gap: 6px; }
+.callout p { font-size: 15px; }
+
+/* prompt */
+.prompt { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5; background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; max-height: 460px; overflow: auto; white-space: pre; margin: 0; }
+.prompt .sys { color: var(--muted); }
+.prompt .hd { color: var(--warm); font-weight: 500; }
+.prompt .opt { background: color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 2px; }
+.prompt .hint { color: var(--stack); }
+.out { font-family: var(--font-mono); font-size: 14px; background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre; }
+.tok { border-bottom: 2px solid var(--warm); margin-right: 1px; }
+.diagram { overflow-x: auto; }
+.diagram svg { display: block; width: 100%; min-width: 560px; height: auto; }
+.diagram text { font-family: var(--font-mono); font-size: 11px; fill: var(--ink); }
+.diagram .m { fill: var(--muted); }
+.diagram .box { fill: var(--panel); stroke: var(--rule); }
+.diagram .opt { fill: color-mix(in srgb, var(--accent) 16%, var(--panel)); stroke: var(--accent); }
+.diagram .ans { fill: color-mix(in srgb, var(--rl) 18%, var(--panel)); stroke: var(--rl); }
+.diagram .ln { stroke: var(--muted); fill: none; stroke-width: 1.2; }
+.diagram .bar { fill: var(--accent); }
+
+/* pool demo */
+.pool-demo { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
+.dist { display: grid; gap: 4px; }
+.dist .row { display: grid; grid-template-columns: 52px 1fr 40px; gap: 8px; align-items: center; font-family: var(--font-mono); font-size: 12px; }
+.dist .track { height: 10px; background: var(--off); border-radius: 0 4px 4px 0; position: relative; }
+.dist .fill { position: absolute; inset: 0 auto 0 0; border-radius: 0 4px 4px 0; background: var(--c); }
+.dist .row span:last-child { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* tables */
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); vertical-align: bottom; }
+tr.pick td { background: color-mix(in srgb, var(--pool) 10%, transparent); font-weight: 600; }
+td.neg { color: var(--neg); }
+
+/* calculator */
+.calc { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 24px; align-items: start; }
+@media (max-width: 820px) { .calc { grid-template-columns: 1fr; } }
+.controls { display: grid; gap: 16px; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.preset { font: 500 13px var(--font-body); border: 1px solid var(--rule); background: var(--panel); color: var(--ink); border-radius: 999px; padding: 4px 12px; cursor: pointer; }
+.preset[aria-pressed="true"] { border-color: var(--pool); background: color-mix(in srgb, var(--pool) 14%, transparent); }
+.ctl { display: grid; gap: 4px; }
+.ctl label { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; }
+.ctl label output { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+.ctl input[type=range] { width: 100%; accent-color: var(--pool); }
+.ctl .help { font-size: 12.5px; color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.tile { background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; display: grid; gap: 2px; }
+.tile .v { font-family: var(--font-display); font-weight: 600; font-size: 28px; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.tile .k { font-size: 12.5px; color: var(--muted); }
+.tile .v.neg { color: var(--neg); }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; }
+.chart text { font-family: var(--font-mono); font-size: 11px; fill: var(--muted); }
+.chart .grid { stroke: var(--rule); stroke-width: 1; }
+.chart .zero { stroke: var(--muted); stroke-width: 1; }
+.chart .series { fill: none; stroke-width: 2; }
+.chart .dot { stroke: var(--panel); stroke-width: 2; }
+.chart .lbl { font-size: 11.5px; fill: var(--ink); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.legend i { display: inline-block; width: 16px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 7px; }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; box-shadow: 0 4px 14px rgb(0 0 0 / .12); white-space: nowrap; }
+ul.caveats { margin: 0; padding-left: 20px; display: grid; gap: 8px; max-width: 76ch; }
+footer { padding-top: 16px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); display: grid; gap: 6px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Resource tuner · RightSize · round 21 results</div>
+    <h1>What RightSize sees, and what it would save</h1>
+    <p class="lede">RightSize picks a task's memory, CPU and GPU before it runs. Three kinds of model make that pick: gradient-boosted trees, an autoregressive LLM, and a decision model. Each reads a different version of the same task. The best combination of them is then priced against how overprovisioned a customer's workloads are today.</p>
+  </header>
+
+  <section aria-labelledby="s-example">
+    <div class="label">1 · One real task</div>
+    <h2 id="s-example">The task every view below reads</h2>
+    <p>A GPT-style training task from the GPU big-2 corpus (run <span class="mono">gpt_train-fe090d3cc3-r1</span>, test split of <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big2-1">rsg-big2-1</a>). Its second run is being sized: the first run is its history.</p>
+    <div class="card">
+      <div class="facts">
+        <div class="fact"><span class="v" id="f-peak">–</span><span class="k">measured peak GPU memory</span></div>
+        <div class="fact"><span class="v" id="f-util">–</span><span class="k">mean GPU busy</span></div>
+        <div class="fact"><span class="v">L4 · 22 GiB</span><span class="k">cheapest GPU that holds it ($0.98/h)</span></div>
+        <div class="fact"><span class="v">T4 · 15 GiB</span><span class="k">too small: a CUDA OOM, then a retry</span></div>
+      </div>
+      <p class="muted" style="font-size:14px">No model sees the measurement. All three see the same three inputs: the task's source code, the metadata of this run's inputs (bytes, shape, dtype), and what earlier runs of the task used. None of them sees the workload family's name or the generator's settings.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="s-views">
+    <div class="label">2 · Feature spaces</div>
+    <h2 id="s-views">What each model sees</h2>
+    <div class="tabs" role="tablist" aria-label="Model">
+      <button class="tab" role="tab" id="t-trees" aria-controls="v-trees" aria-selected="true" style="--c:var(--tree)"><span class="sw"></span>Trees (GBT)</button>
+      <button class="tab" role="tab" id="t-ar" aria-controls="v-ar" aria-selected="false" style="--c:var(--warm)"><span class="sw"></span>Autoregressive (SFT)</button>
+      <button class="tab" role="tab" id="t-dm" aria-controls="v-dm" aria-selected="false" style="--c:var(--accent)"><span class="sw"></span>Decision model</button>
+      <button class="tab" role="tab" id="t-hy" aria-controls="v-hy" aria-selected="false" style="--c:var(--pool)"><span class="sw"></span>Hybrids</button>
+    </div>
+
+    <div class="view" id="v-trees" role="tabpanel" aria-labelledby="t-trees">
+      <div class="cols">
+        <div class="card">
+          <h3>A row of <span id="n-feat">204</span> numbers</h3>
+          <p style="font-size:15px">The trees never see text. A parser turns the task into a fixed vector. Each square below is one feature; a lit square is non-zero for this task. Hover or focus a square to read it.</p>
+          <div class="fgroups" id="fgroups"></div>
+          <div class="readout" id="readout" aria-live="polite">Hover a square.</div>
+        </div>
+        <div class="card" style="--c:var(--tree)">
+          <dl class="kv">
+            <dt>Input</dt><dd>Input sizes and shapes as log2 numbers, 160 yes/no flags for API strings in the code (<span class="mono">torch.autocast</span>, <span class="mono">GradScaler</span>, <span class="mono">n_jobs=</span> …), numbers pulled out of the code by regex (the <span class="mono">VOCAB, D, LAYERS</span> triple, the batch slice), and the history's peaks scaled to this run's input size.</dd>
+            <dt>Output</dt><dd>A quantile distribution over each axis's cells (17 memory, 16 CPU, 18 GPU). One small model per axis.</dd>
+            <dt>Strength</dt><dd>Reads numbers exactly. For this task, <span class="mono">g_log_d2_layers</span> = log2(1536² × 24) ≈ 25.8 grows with the parameter count, which largely sets the memory.</dd>
+          </dl>
+          <div class="callout" style="--c:var(--tree)">
+            <p><b>Blind spot:</b> a flag records that a string appears in the code, not what it does. <span class="mono">import torch.utils.checkpoint</span> is in this code but never called. Code that wraps the same work in a new API, or a workload family with no features written for it, looks like noise to the trees. That is why they reach 71.9% within ±20% on test GPU families and 9.8% on unseen ones.</p>
+            <p class="muted" style="font-size:13.5px">A literal reading, found while building this page: <span class="mono">npy_itemsize</span> is 8 here because the dtype table has no <span class="mono">int32</span> entry and defaults to 8 bytes.</p>
+          </div>
+          <div><div class="eyebrow" style="margin-bottom:6px">Flags lit for this task</div><div class="chips" id="tokchips" style="--c:var(--tree)"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="view" id="v-ar" role="tabpanel" aria-labelledby="t-ar" hidden>
+      <div class="cols">
+        <div class="card">
+          <h3>The prompt, as text</h3>
+          <p style="font-size:15px">This is the exact prompt the combined bench builds for this run: the system message, then the code, this run's inputs, the history and the options. The LLM reads it as roughly <span id="n-chars">4,100</span> characters of tokens.</p>
+          <pre class="prompt" id="prompt-ar" tabindex="0" aria-label="Prompt text"></pre>
+        </div>
+        <div class="card" style="--c:var(--warm)">
+          <dl class="kv">
+            <dt>Model</dt><dd>Qwen3-1.7B with LoRA (r = 16), fine-tuned on the oracle's answers.</dd>
+            <dt>Output</dt><dd>It writes the answer token by token, through its normal LM head:</dd>
+          </dl>
+          <div class="out" aria-label="Answer format"><span class="tok">{"</span><span class="tok">memory</span><span class="tok">":</span> <span class="tok">"…</span><span class="tok">",</span> <span class="tok">"cpu</span><span class="tok">":</span> <span class="tok">"…</span><span class="tok">",</span> <span class="tok">"gpu</span><span class="tok">":</span> <span class="tok">"22</span><span class="tok">GiB</span><span class="tok">"}</span></div>
+          <p class="muted" style="font-size:13.5px">The GPU value shown is the right answer for this run. Each underline is roughly one token. A GPU pod's memory and CPU come with its machine, so those two values are not scored.</p>
+          <div class="callout" style="--c:var(--warm)">
+            <p><b>Strength:</b> it reads the code itself. Here that means a fixed batch of 16 and a model of width 1,536 with 24 blocks, so a smaller input file does not shrink the peak.</p>
+            <p><b>Blind spot:</b> numbers arrive as digit tokens, not as values. To get a distribution it has to sample (8 completions per run) and count, which costs 8 decodes.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="view" id="v-dm" role="tabpanel" aria-labelledby="t-dm" hidden>
+      <div class="card">
+        <h3>The same prompt, read once, scored against every option</h3>
+        <p style="font-size:15px">The decision model starts from the same LLM and the same prompt, with its LM head removed. A pointer head compares the hidden state at the answer slot (the prompt's last token) with the hidden state at each option's own token in the Options lines. Every axis gets a probability for every option in one forward pass, and no text is generated.</p>
+        <div class="diagram" role="img" aria-label="Pointer head: the answer-slot state is dotted with each option token's state to give one score per option">
+          <svg viewBox="0 0 880 250" id="dm-svg"></svg>
+        </div>
+      </div>
+      <div class="cols">
+        <div class="card">
+          <div class="eyebrow">The keys it points at: the Options lines of the prompt</div>
+          <div id="opt-lines" class="fgroups"></div>
+          <p class="muted" style="font-size:13.5px">The highlighted chip is the oracle's GPU cell for this run. The head gives each chip a probability. A calibrated temperature and an expected-cost decoder then turn the probabilities into the request.</p>
+        </div>
+        <div class="card" style="--c:var(--accent)">
+          <dl class="kv">
+            <dt>Input</dt><dd>The full prompt, as for the autoregressive model. What changes is the readout.</dd>
+            <dt>Output</dt><dd>Three calibrated distributions (memory, CPU, GPU-or-none) from one forward pass.</dd>
+            <dt>RL</dt><dd>The <span class="mono" style="color:var(--rl)">rl-pointer</span> variant starts from this model. It is then trained on the cost simulator's reward (minus the run's regret), so it learns which mistakes cost the most: under-asking, or putting a GPU on a CPU task.</dd>
+          </dl>
+          <div class="callout" style="--c:var(--accent)">
+            <p><b>Why a pointer:</b> the options are read from the prompt, not built into the head, so the same head can rank a different list of machines. On unseen families, the 4B decision model is the most accurate GPU arm (42.1% within ±20%, against 9.8% for the trees).</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="view" id="v-hy" role="tabpanel" aria-labelledby="t-hy" hidden>
+      <div class="cols" style="grid-template-columns:1fr">
+        <div class="card" style="--c:var(--stack)">
+          <h3 style="color:var(--stack)">Stacked: the trees' answer goes into the prompt</h3>
+          <p style="font-size:15px">A stacked arm adds one sentence to the user message, and the LLM is trained and evaluated with it. Training rows get the trees' <i>out-of-fold</i> prediction (5 folds by task), so the LLM learns how far to trust trees that have not seen the run.</p>
+          <pre class="prompt" style="white-space:pre-wrap;max-height:none"><span class="hint">Gradient-boosted trees fit on other tasks' measured runs (they read the input sizes, the API names and numbers in the code, and this task's earlier runs) estimate memory ‹cell› ‹p›, ‹cell› ‹p›; cpu ‹cell› ‹p›, ‹cell› ‹p›; gpu P(no GPU) ‹p›, else ‹cell› ‹p›, ‹cell› ‹p›. Their pick: memory ‹cell›, cpu ‹cell›, gpu ‹cell›.</span></pre>
+          <p class="muted" style="font-size:13.5px">This is the template from <span class="mono">bench_all/prompting.py</span>; the ‹slots› are filled from the trees' distribution.</p>
+        </div>
+        <div class="card" style="--c:var(--pool)">
+          <h3 style="color:var(--pool)">Pooled: the two distributions are blended</h3>
+          <p style="font-size:15px">A pooled arm needs no retraining. For each axis it multiplies the two calibrated distributions, p ∝ p<sub>trees</sub><sup>w</sup> · p<sub>LLM</sub><sup>1−w</sup>, with <i>w</i> tuned on the validation split. Options both models think likely gain probability; an option either one rules out drops. The savings model below uses <b>pool-rl-pointer</b>, where w = 0.6.</p>
+          <div class="ctl">
+            <label for="w">Trees' weight w <output id="w-out">0.6</output></label>
+            <input type="range" id="w" min="0" max="1" step="0.1" value="0.6">
+            <span class="help">These two distributions are made up to show the formula; they are not this run's predictions.</span>
+          </div>
+          <div class="pool-demo">
+            <div class="dist" id="d-trees" style="--c:var(--tree)"></div>
+            <div class="dist" id="d-llm" style="--c:var(--rl)"></div>
+            <div class="dist" id="d-pool" style="--c:var(--pool)"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="s-pick">
+    <div class="label">3 · Which model to price</div>
+    <h2 id="s-pick">pool-rl-pointer: the best on test and unseen families together</h2>
+    <p>On the combined bench (memory + CPU + GPU, <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-big-2">rsa-big-2</a>), each model's dollar cost is divided by the cost of the oracle's right-sized request. That includes the OOM retries and slowdowns its mistakes cause. A multiple of 1.00× is perfect. The models below are ranked by their <b>worse</b> split, since a customer has both kinds of workload. pool-rl-pointer is the only model that stays under 1.9× on both.</p>
+    <div class="card table-wrap">
+      <table id="rank">
+        <thead><tr><th>model</th><th>test families<br>cost ÷ oracle</th><th>unseen families<br>cost ÷ oracle</th><th>worse of the two</th><th>first try runs<br>test / unseen</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="muted" style="font-size:14px">Test families: workloads like the training data (n = 5,095 runs). Unseen families: whole workload kinds never seen in training (n = 6,416). pool-rl-pointer-argmax has a slightly lower average (1.58× against 1.60×), but it costs 2.02× on unseen families.</p>
+  </section>
+
+  <section aria-labelledby="s-save">
+    <div class="label">4 · Savings</div>
+    <h2 id="s-save">What it would save, under your assumptions</h2>
+    <p>Call a customer's <b>overprovisioning multiple</b> what they pay today divided by what right-sized requests would cost. RightSize's multiple comes from the bench: 1.10× for familiar CPU and memory workloads, 1.41× for familiar GPU workloads, and 1.57× and 1.93× for those kinds on unseen families. The saving is 1 − RightSize's multiple ÷ today's multiple, for each kind of workload.</p>
+    <div class="card">
+      <div class="calc">
+        <div class="controls">
+          <div class="ctl">
+            <span class="eyebrow">Presets</span>
+            <div class="presets" id="presets"></div>
+            <span class="help" id="preset-note"></span>
+          </div>
+          <div class="ctl"><label for="spend">Monthly compute spend <output id="spend-out"></output></label><input type="range" id="spend" min="10000" max="2000000" step="10000" value="100000"></div>
+          <div class="ctl"><label for="gpu">Share of spend on GPU pods <output id="gpu-out"></output></label><input type="range" id="gpu" min="0" max="1" step="0.05" value="0.5"></div>
+          <div class="ctl"><label for="mc">Overprovisioning, CPU / memory pods <output id="mc-out"></output></label><input type="range" id="mc" min="1" max="6" step="0.1" value="2"><span class="help">2× means requests cost twice the right-sized amount.</span></div>
+          <div class="ctl"><label for="mg">Overprovisioning, GPU pods <output id="mg-out"></output></label><input type="range" id="mg" min="1" max="6" step="0.1" value="2"><span class="help">E.g. a job that fits a 22 GiB L4 runs on a 44 GiB L40S: about 2.3×.</span></div>
+          <div class="ctl"><label for="fam">Share of workloads like the training set <output id="fam-out"></output></label><input type="range" id="fam" min="0" max="1" step="0.05" value="0.5"><span class="help">0% assumes every workload is a kind RightSize has never seen.</span></div>
+        </div>
+        <div style="display:grid;gap:16px;min-width:0">
+          <div class="tiles" aria-live="polite">
+            <div class="tile"><span class="v" id="o-save">–</span><span class="k">saved per month</span></div>
+            <div class="tile"><span class="v" id="o-pct">–</span><span class="k">of compute spend</span></div>
+            <div class="tile"><span class="v" id="o-new">–</span><span class="k">monthly spend with RightSize</span></div>
+            <div class="tile"><span class="v" id="o-be">–</span><span class="k">break-even overprovisioning</span></div>
+          </div>
+          <div>
+            <div class="legend" id="legend"></div>
+            <div class="chart" id="chart"><svg viewBox="0 0 600 300" role="img" aria-label="Savings percent against overprovisioning multiple"></svg><div class="tip" hidden></div></div>
+            <p class="muted" style="font-size:13px">Savings against today's overprovisioning multiple, with the same multiple for CPU and GPU pods and your GPU share. Below the zero line RightSize costs more than today. The dot is your current settings.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card table-wrap">
+      <div class="eyebrow">Savings by scenario (same multiple for CPU and GPU pods, at your GPU share)</div>
+      <table id="grid"><thead></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <section aria-labelledby="s-caveats">
+    <div class="label">5 · Read this before quoting a number</div>
+    <h2 id="s-caveats">Assumptions and limits</h2>
+    <ul class="caveats">
+      <li><b>The overprovisioning multiples are assumptions, not measurements of any customer.</b> The presets lean on public, vendor-published figures. Datadog's 2023 container report says over 65% of Kubernetes workloads use less than half the CPU and memory they request, which is a multiple of 2× or more. CAST AI's benchmark reports put average use at 10–13% of <i>provisioned</i> CPU and 20–23% of memory. That figure includes idle node capacity, which changing requests alone may not reclaim.</li>
+      <li><b>The bench's workloads are synthetic.</b> 32,082 runs from generated task families, measured on demo.hosted. Real tasks will not match their mix of sizes, and for GPU pods the size mix sets most of the dollars.</li>
+      <li><b>Unseen families are where RightSize is weakest.</b> On them it costs 1.88× right-sized overall. Its savings depend mostly on how much of a customer's work looks like the training set, so a new customer's first month sits nearer the 0% end of that slider. Training on their history moves it the other way.</li>
+      <li><b>The largest GPU runs are under-sampled.</b> 1,569 of the largest runs were censored because the cluster rarely scheduled 4×L4 or 4×L40S nodes. Multi-GPU savings are the least certain.</li>
+      <li><b>A simple rule does better on unseen CPU and memory workloads.</b> Sizing from history times a margin costs 1.37× there, against 1.57× for pool-rl-pointer. A production version would fall back to that rule when a workload looks new.</li>
+      <li><b>The cost model is the bench's own.</b> Pods are priced at on-demand us-east-1 rates by their dominant share of a node (GPU pods at the instance price), with a penalty for each retry and each hour of slowdown. Spot pricing, bin-packing and commitments are not modeled.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <div>Numbers: combined bench <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsa-big-2">rsa-big-2</a> and GPU bench <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsg-big2-1">rsg-big2-1</a>. Write-up: <span class="mono">research_log/2026-10-26-round-21-gpu-big-2-hybrids.md</span>. Reports: <a href="benchmarks/rightsize-bench-combined-big-2.html">RightSize Bench (big-2)</a>, <a href="benchmarks/rightsize-gpu-bench-big-2.html">RightSizeGPU (big-2)</a>.</div>
+    <div>Utilization figures: <a href="https://investors.datadoghq.com/news-releases/news-release-details/datadog-announces-2023-report-real-world-container-use-reveals">Datadog, 2023 container report</a> · <a href="https://cast.ai/press-release/cast-ai-analysis-finds-only-13-percent-of-provisioned-cpus-and-20-percent-of-memory-is-utilized">CAST AI, 2024 benchmark</a> · <a href="https://cast.ai/k8s-cost-benchmark/">CAST AI, Kubernetes cost benchmark</a>.</div>
+  </footer>
+</div>
+
+<script>
+const D = {"mult":{"pool-rl-pointer":{"test":1.3258672877701219,"ood":1.8773709438354074,"test_nogpu":1.0955233557981345,"ood_nogpu":1.568392990145116,"test_gpu":1.4081956141497742,"ood_gpu":1.9246004921505409,"test_first":0.9621197252208047,"ood_first":0.8516209476309227},"pool-rl-pointer-argmax":{"test":1.1409407409492087,"ood":2.0156475821749495,"test_nogpu":1.0570808639333646,"ood_nogpu":1.6967259141357913,"test_gpu":1.170913500665569,"ood_gpu":2.064397100221459,"test_first":0.9589793915603533,"ood_first":0.8251246882793017},"pool-jev-pointer":{"test":1.2870497491668327,"ood":1.947692054739767,"test_nogpu":1.0437515887468243,"ood_nogpu":1.6344229705736546,"test_gpu":1.3740081082915847,"ood_gpu":1.9955775338477406,"test_first":0.9581943081452404,"ood_first":0.8110972568578554},"stack-rl-pointer":{"test":1.255988733652294,"ood":1.997177123997572,"test_nogpu":1.129951172122848,"ood_nogpu":1.36520799091674,"test_gpu":1.3010364213116052,"ood_gpu":2.0937782450420603,"test_first":0.971540726202159,"ood_first":0.9353179551122195},"stack-rl-pointer-argmax":{"test":1.130161998842096,"ood":2.235543473163814,"test_nogpu":1.001980199245257,"ood_nogpu":1.6007620406923533,"test_gpu":1.175976068884206,"ood_gpu":2.332574474814216,"test_first":0.9784102060843964,"ood_first":0.8608167082294265},"rl-pointer-argmax":{"test":1.3949250115889298,"ood":1.972665218208537,"test_nogpu":1.0697100284798295,"ood_nogpu":1.671700493164689,"test_gpu":1.5111616540901753,"ood_gpu":2.018669885702896,"test_first":0.938567222767419,"ood_first":0.7716645885286783},"gbt-dist":{"test":1.3168141824048043,"ood":2.0785386843117615,"test_nogpu":1.1044293939169683,"ood_nogpu":1.6401448552624218,"test_gpu":1.3927236454195562,"ood_gpu":2.1455503991698914,"test_first":0.957801766437684,"ood_first":0.8516209476309227},"jev-pointer":{"test":1.433015580159631,"ood":2.120008622953171,"test_nogpu":1.092637863736568,"ood_nogpu":1.6495043136697938,"test_gpu":1.5546716076926097,"ood_gpu":2.191928660426305,"test_first":0.9407262021589794,"ood_first":0.7763403990024937},"rules":{"test":1.5563061264650329,"ood":2.2005811578842427,"test_nogpu":1.245764050508652,"ood_nogpu":1.373949086575656,"test_gpu":1.6672984550455006,"ood_gpu":2.3269379379859108,"test_first":0.9246319921491658,"ood_first":0.8725062344139651},"static":{"test":2.851786892621113,"ood":3.5909264946914456,"test_nogpu":2.2516161031516786,"ood_nogpu":2.534091008606912,"test_gpu":3.066296804889964,"ood_gpu":3.7524715565802587,"test_first":0.7171736997055937,"ood_first":0.567643391521197}},"groups":{"numbers":[["c_code_lines",55.0],["c_log_max_literal",13.0],["c_max_pool",0.0],["c_min_work_items",0.0],["c_n_pool_decls",0.0],["g_assign_c",24.0],["g_code_lines",55.0],["g_log_assign_a",13.0],["g_log_assign_b",10.585],["g_log_assign_d",0.0],["g_log_batch",4.0],["g_log_d2_layers",25.755],["g_log_max_linear",0.0],["g_log_max_literal",13.0],["g_log_sum_linear",0.0],["m_code_lines",55.0],["m_log_max_literal",13.0]],"tokens":[["c_tok_.apply(",0.0],["c_tok_.str.",0.0],["c_tok_.tolist()",0.0],["c_tok_ExtraTrees",0.0],["c_tok_HistGradientBoosting",0.0],["c_tok_JOIN",0.0],["c_tok_OMP_NUM_THREADS",0.0],["c_tok_OPENBLAS_NUM_THREADS",0.0],["c_tok_OVER (",0.0],["c_tok_POLARS_MAX_THREADS",0.0],["c_tok_ProcessPoolExecutor",0.0],["c_tok_RandomForest",0.0],["c_tok_SET threads",0.0],["c_tok_ThreadPoolExecutor",0.0],["c_tok_X.T @ X",0.0],["c_tok_collect()",0.0],["c_tok_duckdb",0.0],["c_tok_for b in chunk",0.0],["c_tok_groupby",0.0],["c_tok_hashlib",0.0],["c_tok_json.loads",0.0],["c_tok_linalg.solve",0.0],["c_tok_linalg.svd",0.0],["c_tok_lines[i::",0.0],["c_tok_max_workers=",0.0],["c_tok_merge(",0.0],["c_tok_n_estimators=",0.0],["c_tok_n_jobs=",0.0],["c_tok_np.sort",0.0],["c_tok_np.tanh",0.0],["c_tok_pacsv.read_csv",0.0],["c_tok_pd.read_parquet",0.0],["c_tok_phase 1",0.0],["c_tok_phase 2",0.0],["c_tok_scan_parquet",0.0],["c_tok_set_cpu_count",0.0],["c_tok_set_num_threads",0.0],["c_tok_splitlines",0.0],["c_tok_threadpool_limits",0.0],["c_tok_time.sleep",0.0],["c_tok_torch.nn",1.0],["c_tok_use_threads=False",0.0],["c_tok_use_threads=True",0.0],["c_tok_zlib.compress",0.0],["cuda_\"cuda\"",1.0],["cuda_.to(device)",1.0],["cuda_device =",1.0],["cuda_torch.cuda",1.0],["g_tok_.cpu()",0.0],["g_tok_@ X.T",0.0],["g_tok_AMP = True",1.0],["g_tok_Adafactor",0.0],["g_tok_BatchNorm2d",0.0],["g_tok_Conv2d(",0.0],["g_tok_DTYPE",0.0],["g_tok_DataLoader",0.0],["g_tok_Embedding(",1.0],["g_tok_GradScaler",1.0],["g_tok_MultiheadAttention",1.0],["g_tok_RowSharded",0.0],["g_tok_SparseAdam",0.0],["g_tok_TransformerEncoder",0.0],["g_tok_VOCAB",1.0],["g_tok_X.half()",0.0],["g_tok_blocks[:-4]",0.0],["g_tok_caches",0.0],["g_tok_cdist",0.0],["g_tok_channels_last",0.0],["g_tok_checkpoint.checkpoint",0.0],["g_tok_cross_entropy",1.0],["g_tok_device_count()",0.0],["g_tok_enabled=AMP",1.0],["g_tok_float16",1.0],["g_tok_for p in img",0.0],["g_tok_images.to(device)",0.0],["g_tok_inference_mode",0.0],["g_tok_logits",1.0],["g_tok_mmap_mode",0.0],["g_tok_model.half()",0.0],["g_tok_momentum=0.9",0.0],["g_tok_np.random.normal",0.0],["g_tok_nullcontext",0.0],["g_tok_num_workers=0",0.0],["g_tok_num_workers=1",0.0],["g_tok_num_workers=2",0.0],["g_tok_outputs.append(emb)",0.0],["g_tok_per-row",0.0],["g_tok_pin_memory",0.0],["g_tok_place[i]",0.0],["g_tok_requires_grad_(False)",0.0],["g_tok_scaled_dot_product_attention",0.0],["g_tok_sparse=True",0.0],["g_tok_to(device)  # whole",0.0],["g_tok_topk",0.0],["g_tok_torch.autocast",1.0],["g_tok_torch.optim.Adam(",0.0],["g_tok_torch.optim.AdamW(",0.0],["g_tok_torch.optim.SGD(",1.0],["m_tok_ @ ",0.0],["m_tok_.T @",0.0],["m_tok_.append(",0.0],["m_tok_.df()",0.0],["m_tok_/ 255",0.0],["m_tok_AdamW",0.0],["m_tok_Counter(",0.0],["m_tok_Embedding(",1.0],["m_tok_GROUP BY",0.0],["m_tok_HistGradientBoosting",0.0],["m_tok_KMeans",0.0],["m_tok_KNeighbors",0.0],["m_tok_Linear(",1.0],["m_tok_LogisticRegression",0.0],["m_tok_ORDER BY",0.0],["m_tok_OVER (",0.0],["m_tok_RandomForest",0.0],["m_tok_SELECT *",0.0],["m_tok_TfidfVectorizer",0.0],["m_tok_TruncatedSVD",0.0],["m_tok_astype",1.0],["m_tok_batch_size",0.0],["m_tok_chunksize",0.0],["m_tok_collect(",0.0],["m_tok_columns=",0.0],["m_tok_concat(",0.0],["m_tok_cov(",0.0],["m_tok_defaultdict(list)",0.0],["m_tok_describe(",0.0],["m_tok_drop_duplicates",0.0],["m_tok_dtype_backend",0.0],["m_tok_duckdb",0.0],["m_tok_float32",0.0],["m_tok_for line in f",0.0],["m_tok_groupby",0.0],["m_tok_iter_batches",0.0],["m_tok_json.loads",0.0],["m_tok_max_depth=None",0.0],["m_tok_memory_limit",0.0],["m_tok_merge(",0.0],["m_tok_mmap_mode",0.0],["m_tok_n_jobs=",0.0],["m_tok_np.asarray(X[:",0.0],["m_tok_np.load",1.0],["m_tok_pl.read_parquet",0.0],["m_tok_rank(",0.0],["m_tok_read_csv",0.0],["m_tok_read_json",0.0],["m_tok_read_parquet",0.0],["m_tok_read_parquet(",0.0],["m_tok_records = [",0.0],["m_tok_scan_parquet",0.0],["m_tok_sort_values",0.0],["m_tok_streaming",0.0],["m_tok_svd(",0.0],["m_tok_threads",0.0],["m_tok_to_parquet",0.0],["m_tok_toarray",0.0],["m_tok_torch.tensor",0.0],["m_tok_transform(",0.0],["m_tok_uint8",0.0],["m_tok_usecols",0.0]],"history":[["hist_mean_cores",0.0],["hist_peak_cores",0.0],["hist_used_gpu",1.0],["hist_util",85.5],["log_hist_gpu",14.377],["log_hist_mem",0.0],["log_hist_mem_scaled",0.0],["log_hist_size_ratio",-0.595],["n_hist",1.0]],"inputs":[["log_bytes_csv",0.0],["log_bytes_jsonl",0.0],["log_bytes_npy",22.451],["log_bytes_parquet",0.0],["log_rows_visible",0.0],["log_total_bytes",22.451],["n_inputs",1],["ncol_cat",0.0],["ncol_f32",0.0],["ncol_f64",0.0],["ncol_i32",0.0],["ncol_i64",0.0],["ncol_str",0.0],["ncol_text",0.0],["ncols",0.0],["npy_itemsize",8],["npy_log_n",11.448],["npy_log_row",9.003]]},"system":"You size Flyte tasks before they run. Given a task's source code, the metadata of this run's inputs, and what earlier runs of the same task used, choose the cheapest request that runs it: memory, CPU cores, and a GPU or none. Memory is a hard limit: below the peak the pod is OOM-killed and retried with double. CPU below the busiest 15 seconds' use throttles the task and it finishes late. Thread pools the code does not size get one thread. gpu is the peak GPU memory to provision, or none for a task that does not use CUDA; it lands on the cheapest machine that holds it -- T4 (15 GiB, $0.53/h), L4 (22 GiB, $0.98/h), A10G (22 GiB, $1.21/h), L40S (44 GiB, $2.24/h), 4xL4 (88 GiB, $4.60/h), 8xT4 (120 GiB, $7.82/h), 4xL40S (176 GiB, $10.49/h) -- and a GPU pod comes with its host memory and cores. A multi-GPU machine only helps code that spreads its model over every visible GPU. A GPU task given no GPU fails at start; a GPU given to a CPU task is paid for the whole run.","user":"### Task code\n```python\nimport flyte\nfrom flyte.io import File\nimport os\nimport time\nimport numpy as np\nimport torch\nimport torch.utils.checkpoint\n\nenv = flyte.TaskEnvironment(name=\"gpt-train\", image=flyte.Image.from_debian_base().with_pip_packages(\"torch\", \"numpy\"))\n\n\n@env.task\nasync def train_lm(tokens: File) -> dict:\n    tokens_path = await tokens.download()\n    TIME_BUDGET_S = float(os.environ.get(\"TIME_BUDGET_S\", \"45\"))\n    device = \"cuda\" if torch.cuda.is_available() else \"cpu\"\n    AMP = True and device == \"cuda\"\n    scaler = torch.amp.GradScaler(\"cuda\", enabled=AMP)\n    class Block(torch.nn.Module):\n        def __init__(self, d):\n            super().__init__()\n            self.ln1, self.ln2 = torch.nn.LayerNorm(d), torch.nn.LayerNorm(d)\n            self.attn = torch.nn.MultiheadAttention(d, d // 64, batch_first=True)\n            self.mlp = torch.nn.Sequential(torch.nn.Linear(d, 4 * d), torch.nn.GELU(), torch.nn.Linear(4 * d, d))\n        def forward(self, x, mask):\n            h = self.ln1(x)\n            x = x + self.attn(h, h, h, attn_mask=mask, need_weights=False)[0]\n            return x + self.mlp(self.ln2(x))\n    VOCAB, D, LAYERS = 8192, 1536, 24\n    tokens = torch.from_numpy(np.load(tokens_path).astype(np.int64))  # (N, seq + 1)\n    seq = tokens.shape[1] - 1\n    emb = torch.nn.Embedding(VOCAB, D).to(device)\n    pos = torch.nn.Parameter(torch.zeros(1, seq, D, device=device))\n    blocks = torch.nn.ModuleList([Block(D) for _ in range(LAYERS)]).to(device)\n    head = torch.nn.Linear(D, VOCAB, bias=False).to(device)\n    params = [*emb.parameters(), pos, *blocks.parameters(), *head.parameters()]\n    opt = torch.optim.SGD(params, lr=1e-2)\n    mask = torch.triu(torch.full((seq, seq), float('-inf'), device=device), 1)\n    t0 = time.monotonic()\n    steps = 0\n    while time.monotonic() - t0 < TIME_BUDGET_S:\n        i = (steps * 16) % max(1, len(tokens) - 16)\n        xb = tokens[i : i + 16].to(device)\n        with torch.autocast(device_type=device, dtype=torch.float16, enabled=AMP):\n            x = emb(xb[:, :-1]) + pos\n            for blk in blocks:\n                x = blk(x, mask)\n            logits = head(x)\n            loss = torch.nn.functional.cross_entropy(logits.float().reshape(-1, VOCAB), xb[:, 1:].reshape(-1))\n        opt.zero_grad(set_to_none=True)\n        scaler.scale(loss).backward()\n        scaler.step(opt)\n        scaler.update()\n        steps += 1\n    return {\"steps\": steps}\n```\n\n### This run's inputs\ntokens: npy, 5.47 MiB, shape=(2794, 513), dtype=int32\n\n### Earlier runs of this task (memory peaks include the Flyte runtime)\n- inputs tokens: npy, 8.26 MiB, shape=(4220, 513), dtype=int32 -> peak GPU memory 20.78 GiB, GPU busy 86%, 52 s\n\n### Options\nmemory: 256Mi, 384Mi, 512Mi, 768Mi, 1Gi, 1.5Gi, 2Gi, 3Gi, 4Gi, 6Gi, 8Gi, 12Gi, 16Gi, 24Gi, 32Gi, 48Gi, 64Gi\ncpu: 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8\ngpu: none, 1GiB, 1.5GiB, 2GiB, 3GiB, 4GiB, 6GiB, 8GiB, 10GiB, 12GiB, 15GiB, 22GiB, 32GiB, 44GiB, 64GiB, 88GiB, 120GiB, 176GiB\n\nAnswer with JSON only: {\"memory\": \"<one memory option>\", \"cpu\": \"<one cpu option>\", \"gpu\": \"<one gpu option>\"}","peak":20.7779541016,"util":87.2};
+const $ = s => document.querySelector(s);
+const el = (tag, attrs = {}, text) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text != null) e.textContent = text; return e; };
+const NS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs = {}, text) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text != null) e.textContent = text; return e; };
+
+// ── example facts ──
+$("#f-peak").textContent = D.peak.toFixed(1) + " GiB";
+$("#f-util").textContent = Math.round(D.util) + "%";
+
+// ── tabs ──
+const tabs = [...document.querySelectorAll(".tab")];
+function selectTab(t) {
+  tabs.forEach(x => { const on = x === t; x.setAttribute("aria-selected", on); x.tabIndex = on ? 0 : -1; $("#" + x.getAttribute("aria-controls")).hidden = !on; });
+}
+tabs.forEach((t, i) => {
+  t.addEventListener("click", () => selectTab(t));
+  t.addEventListener("keydown", e => {
+    const d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+    if (d) { const n = tabs[(i + d + tabs.length) % tabs.length]; selectTab(n); n.focus(); }
+  });
+});
+selectTab(tabs[0]);
+
+// ── trees: feature grid ──
+const GROUPS = [["inputs", "Input metadata"], ["numbers", "Numbers read from the code"], ["history", "History"], ["tokens", "API-string flags in the code"]];
+let nFeat = 0;
+for (const [g, title] of GROUPS) {
+  const feats = D.groups[g] || [];
+  nFeat += feats.length;
+  const on = feats.filter(f => f[1] !== 0).length;
+  const box = el("div", { class: "fgroup" });
+  const gh = el("div", { class: "gh" });
+  gh.append(el("span", {}, title), el("span", { class: "muted mono" }, `${on} of ${feats.length} non-zero`));
+  const cells = el("div", { class: "cells" });
+  for (const [name, v] of feats) {
+    const c = el("button", { class: "cell" + (v !== 0 ? " on" : ""), type: "button", "aria-label": `${name} = ${v}` });
+    const show = () => { $("#readout").textContent = `${name} = ${v}`; };
+    c.addEventListener("mouseenter", show); c.addEventListener("focus", show);
+    cells.append(c);
+  }
+  box.append(gh, cells);
+  $("#fgroups").append(box);
+}
+$("#n-feat").textContent = nFeat;
+const pretty = n => n.replace(/^(cuda|[mcg]_tok)_/, "");
+const seen = new Set();
+for (const [name, v] of D.groups.tokens) {
+  if (!v) continue;
+  const p = pretty(name);
+  if (seen.has(p)) continue;
+  seen.add(p);
+  $("#tokchips").append(el("span", { class: "chip hit" }, p));
+}
+
+// ── autoregressive: the prompt ──
+function renderPrompt(pre) {
+  pre.append(el("span", { class: "sys" }, "[system]\n" + D.system + "\n\n[user]\n"));
+  for (const line of D.user.split("\n")) {
+    if (line.startsWith("### ")) pre.append(el("span", { class: "hd" }, line));
+    else if (/^(memory|cpu|gpu): /.test(line)) {
+      const [k, rest] = [line.slice(0, line.indexOf(": ") + 2), line.slice(line.indexOf(": ") + 2)];
+      pre.append(document.createTextNode(k));
+      rest.split(", ").forEach((o, i) => { if (i) pre.append(document.createTextNode(", ")); pre.append(el("span", { class: "opt" }, o)); });
+    } else pre.append(document.createTextNode(line));
+    pre.append(document.createTextNode("\n"));
+  }
+}
+renderPrompt($("#prompt-ar"));
+$("#n-chars").textContent = (D.system.length + D.user.length).toLocaleString();
+
+// ── decision model: option chips + pointer diagram ──
+for (const line of D.user.split("\n")) {
+  const m = /^(memory|cpu|gpu): (.*)$/.exec(line);
+  if (!m) continue;
+  const box = el("div", { class: "fgroup" });
+  box.append(el("div", { class: "gh" }, `${m[1]} · ${m[2].split(", ").length} options`));
+  const chips = el("div", { class: "chips", style: "--c:var(--accent)" });
+  for (const o of m[2].split(", ")) chips.append(el("span", { class: "chip" + (m[1] === "gpu" && o === "22GiB" ? " hit" : "") }, o));
+  box.append(chips);
+  $("#opt-lines").append(box);
+}
+(function diagram() {
+  const s = $("#dm-svg");
+  const toks = ["…code…", "…inputs…", "…history…", "gpu:", "none", "…", "15GiB", "22GiB", "32GiB", "…", "Answer…", "⟨slot⟩"];
+  const optIdx = new Set([4, 6, 7, 8]);
+  const x0 = 20, w = 66, gap = 4;
+  s.append(svgEl("text", { x: x0, y: 18, class: "m" }, "prompt tokens"));
+  toks.forEach((t, i) => {
+    const x = x0 + i * (w + gap);
+    const cls = optIdx.has(i) ? "opt" : i === 11 ? "ans" : "box";
+    s.append(svgEl("rect", { x, y: 26, width: w, height: 24, rx: 4, class: cls }));
+    s.append(svgEl("text", { x: x + w / 2, y: 42, "text-anchor": "middle" }, t));
+  });
+  s.append(svgEl("rect", { x: x0, y: 70, width: toks.length * (w + gap) - gap, height: 34, rx: 4, class: "box" }));
+  s.append(svgEl("text", { x: x0 + 12, y: 92 }, "LLM torso (Qwen3-1.7B + LoRA): one forward pass over the whole prompt"));
+  const ys = 124, ax = x0 + 11 * (w + gap) + w / 2;
+  s.append(svgEl("text", { x: x0, y: ys + 10, class: "m" }, "hidden states used"));
+  [...optIdx].forEach((i, k) => {
+    const x = x0 + i * (w + gap) + w / 2;
+    s.append(svgEl("path", { d: `M${x} 104 V${ys + 22}`, class: "ln" }));
+    s.append(svgEl("text", { x, y: ys + 36, "text-anchor": "middle" }, "k(" + toks[i] + ")"));
+    s.append(svgEl("path", { d: `M${x} ${ys + 42} Q${x} 196 ${(x + ax) / 2} 200`, class: "ln" }));
+  });
+  s.append(svgEl("path", { d: `M${ax} 104 V${ys + 22}`, class: "ln" }));
+  s.append(svgEl("text", { x: ax, y: ys + 36, "text-anchor": "middle" }, "q(slot)"));
+  s.append(svgEl("text", { x: 470, y: 216, "text-anchor": "middle" }, "score(option) = q(slot) · k(option) / √d  →  softmax  →  P(option)"));
+  s.append(svgEl("text", { x: 470, y: 236, "text-anchor": "middle", class: "m" }, "the same for memory and cpu; no tokens are generated"));
+})();
+
+// ── hybrids: toy pool ──
+const CELLS = ["15GiB", "22GiB", "32GiB", "44GiB"];
+const PT = [0.10, 0.55, 0.30, 0.05], PL = [0.30, 0.40, 0.05, 0.25];
+function drawDist(id, title, p) {
+  const box = $(id); box.replaceChildren(el("div", { class: "eyebrow" }, title));
+  p.forEach((v, i) => {
+    const row = el("div", { class: "row" }); const tr = el("div", { class: "track" }); const f = el("div", { class: "fill" });
+    f.style.width = (v * 100).toFixed(1) + "%"; tr.append(f);
+    row.append(el("span", {}, CELLS[i]), tr, el("span", {}, Math.round(v * 100) + "%")); box.append(row);
+  });
+}
+function pool() {
+  const w = +$("#w").value; $("#w-out").textContent = w.toFixed(1);
+  const q = PT.map((a, i) => Math.exp(w * Math.log(a + 1e-9) + (1 - w) * Math.log(PL[i] + 1e-9)));
+  const z = q.reduce((a, b) => a + b, 0);
+  drawDist("#d-pool", "pooled", q.map(v => v / z));
+}
+drawDist("#d-trees", "trees (toy)", PT); drawDist("#d-llm", "RL decision model (toy)", PL);
+$("#w").addEventListener("input", pool); pool();
+
+// ── ranking ──
+const LABEL = { "pool-rl-pointer": "pool-rl-pointer (trees × RL decision model)", "pool-rl-pointer-argmax": "pool-rl-pointer-argmax", "pool-jev-pointer": "pool-jev-pointer (trees × decision model)", "stack-rl-pointer": "stack-rl-pointer", "stack-rl-pointer-argmax": "stack-rl-pointer-argmax", "rl-pointer-argmax": "rl-pointer-argmax (RL decision model alone)", "gbt-dist": "gbt-dist (trees alone)", "jev-pointer": "jev-pointer (decision model alone)", "rules": "rules (history × margin)", "static": "static (one request for every run)" };
+const ranked = Object.entries(D.mult).sort((a, b) => Math.max(a[1].test, a[1].ood) - Math.max(b[1].test, b[1].ood));
+for (const [a, m] of ranked) {
+  const tr = el("tr", a === "pool-rl-pointer" ? { class: "pick" } : {});
+  tr.append(el("td", {}, LABEL[a] || a), el("td", {}, m.test.toFixed(2) + "×"), el("td", {}, m.ood.toFixed(2) + "×"),
+            el("td", {}, Math.max(m.test, m.ood).toFixed(2) + "×"), el("td", {}, `${Math.round(m.test_first * 100)}% / ${Math.round(m.ood_first * 100)}%`));
+  $("#rank tbody").append(tr);
+}
+
+// ── savings ──
+const K = D.mult["pool-rl-pointer"];
+const kc = f => f * K.test_nogpu + (1 - f) * K.ood_nogpu;
+const kg = f => f * K.test_gpu + (1 - f) * K.ood_gpu;
+function savings(S, g, mc, mg, f) {
+  const now = S, rs = S * (1 - g) / mc * kc(f) + S * g / mg * kg(f);
+  return { now, rs, save: now - rs, pct: 1 - rs / now };
+}
+const breakEven = (g, f) => (1 - g) * kc(f) + g * kg(f);
+const PRESETS = [
+  { name: "Tuned", mc: 1.5, mg: 1.5, note: "A team that already sizes from history: requests about 1.5× what they need." },
+  { name: "Typical", mc: 2, mg: 2, note: "Datadog 2023: over 65% of workloads use under half of what they request (2× or more)." },
+  { name: "Loose", mc: 3, mg: 3, note: "Defaults copied between tasks, with GPUs picked one size up 'to be safe'." },
+  { name: "Heavy", mc: 5, mg: 4, note: "Close to CAST AI's 10–23% use of provisioned capacity, if requests account for all of it." },
+];
+const money = v => (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 });
+const pctf = v => (v < 0 ? "−" : "") + Math.abs(v * 100).toFixed(0) + "%";
+const ids = ["spend", "gpu", "mc", "mg", "fam"];
+PRESETS.forEach(p => {
+  const b = el("button", { class: "preset", type: "button", "aria-pressed": "false" }, `${p.name} · ${p.mc}× / ${p.mg}×`);
+  b.addEventListener("click", () => { $("#mc").value = p.mc; $("#mg").value = p.mg; update(p); });
+  p.btn = b; $("#presets").append(b);
+});
+ids.forEach(id => $("#" + id).addEventListener("input", () => update()));
+
+const FAMS = [[1, "100% like the training set", "--seq3"], [0.5, "50%", "--seq2"], [0, "0% (all unseen)", "--seq1"]];
+$("#legend").replaceChildren(...FAMS.map(([, t, c]) => { const s = el("span"); const i = el("i"); i.style.background = `var(${c})`; s.append(i, t); return s; }));
+
+function drawChart(g, f, mNow) {
+  const svg = $("#chart svg"); svg.replaceChildren();
+  const W = 600, H = 300, L = 44, R = 110, T = 14, B = 34;
+  const xs = m => L + (m - 1) / 5 * (W - L - R), ys = p => T + (0.8 - p) / 1.2 * (H - T - B);
+  for (let p = -0.4; p <= 0.81; p += 0.2) {
+    const y = ys(p); svg.append(svgEl("line", { x1: L, x2: W - R, y1: y, y2: y, class: Math.abs(p) < 1e-9 ? "zero" : "grid" }));
+    svg.append(svgEl("text", { x: L - 6, y: y + 4, "text-anchor": "end" }, Math.round(p * 100) + "%"));
+  }
+  for (let m = 1; m <= 6; m++) svg.append(svgEl("text", { x: xs(m), y: H - B + 18, "text-anchor": "middle" }, m + "×"));
+  svg.append(svgEl("text", { x: (L + W - R) / 2, y: H - 4, "text-anchor": "middle" }, "today's overprovisioning multiple"));
+  const lines = [];
+  for (const [ff, t, c] of FAMS) {
+    const pts = []; for (let m = 1; m <= 6.0001; m += 0.05) pts.push([m, 1 - breakEven(g, ff) / m]);
+    const d = pts.map(([m, p], i) => `${i ? "L" : "M"}${xs(m).toFixed(1)} ${ys(Math.max(p, -0.4)).toFixed(1)}`).join(" ");
+    svg.append(svgEl("path", { d, class: "series", stroke: `var(${c})` }));
+    const end = pts[pts.length - 1];
+    lines.push({ ff, t, c, y: ys(end[1]) });
+  }
+  // direct labels at the right end, nudged apart
+  lines.sort((a, b) => a.y - b.y); for (let i = 1; i < lines.length; i++) if (lines[i].y - lines[i - 1].y < 17) lines[i].y = lines[i - 1].y + 17;
+  for (const l of lines) svg.append(svgEl("text", { x: W - R + 6, y: l.y + 4, class: "lbl" }, l.ff === 1 ? "100% familiar" : l.ff === 0 ? "0% familiar" : "50% familiar"));
+  // the user's point (same multiple taken as the spend-weighted mean of the two)
+  const p = 1 - breakEven(g, f) / mNow;
+  svg.append(svgEl("circle", { cx: xs(Math.min(mNow, 6)), cy: ys(Math.max(p, -0.4)), r: 6, class: "dot", fill: "var(--pool)" }));
+  // hover: crosshair + readout
+  const hair = svgEl("line", { y1: T, y2: H - B, class: "grid", visibility: "hidden" }); svg.append(hair);
+  const hit = svgEl("rect", { x: L, y: T, width: W - L - R, height: H - T - B, fill: "transparent" }); svg.append(hit);
+  const tip = $("#chart .tip");
+  hit.addEventListener("mousemove", e => {
+    const r = svg.getBoundingClientRect(), sx = (e.clientX - r.left) / r.width * W;
+    const m = Math.min(6, Math.max(1, 1 + (sx - L) / (W - L - R) * 5));
+    hair.setAttribute("x1", xs(m)); hair.setAttribute("x2", xs(m)); hair.setAttribute("visibility", "visible");
+    tip.hidden = false; tip.replaceChildren(el("div", { class: "mono" }, `today ${m.toFixed(1)}×`),
+      ...FAMS.map(([ff, t]) => el("div", {}, `${ff === 1 ? "100%" : ff === 0 ? "0%" : "50%"} familiar: ${pctf(1 - breakEven(g, ff) / m)}`)));
+    const px = (xs(m) / W) * r.width; tip.style.left = Math.min(px + 12, r.width - tip.offsetWidth - 4) + "px"; tip.style.top = "8px";
+  });
+  hit.addEventListener("mouseleave", () => { tip.hidden = true; hair.setAttribute("visibility", "hidden"); });
+}
+
+function drawGrid(g) {
+  const Ms = [1.5, 2, 3, 4, 5], Fs = [1, 0.75, 0.5, 0.25, 0];
+  const head = el("tr"); head.append(el("th", {}, "today's multiple"), ...Fs.map(f => el("th", {}, `${Math.round(f * 100)}% familiar`)));
+  $("#grid thead").replaceChildren(head);
+  $("#grid tbody").replaceChildren(...Ms.map(m => {
+    const tr = el("tr"); tr.append(el("td", {}, m + "×"));
+    for (const f of Fs) { const p = 1 - breakEven(g, f) / m; tr.append(el("td", p < 0 ? { class: "neg" } : {}, pctf(p))); }
+    return tr;
+  }));
+}
+
+function update(preset) {
+  const S = +$("#spend").value, g = +$("#gpu").value, mc = +$("#mc").value, mg = +$("#mg").value, f = +$("#fam").value;
+  $("#spend-out").textContent = money(S); $("#gpu-out").textContent = Math.round(g * 100) + "%";
+  $("#mc-out").textContent = mc.toFixed(1) + "×"; $("#mg-out").textContent = mg.toFixed(1) + "×"; $("#fam-out").textContent = Math.round(f * 100) + "%";
+  const r = savings(S, g, mc, mg, f);
+  $("#o-save").textContent = money(r.save); $("#o-pct").textContent = pctf(r.pct); $("#o-new").textContent = money(r.rs);
+  $("#o-save").classList.toggle("neg", r.save < 0); $("#o-pct").classList.toggle("neg", r.save < 0);
+  $("#o-be").textContent = breakEven(g, f).toFixed(2) + "×";
+  const match = PRESETS.find(p => Math.abs(p.mc - mc) < 1e-6 && Math.abs(p.mg - mg) < 1e-6);
+  PRESETS.forEach(p => p.btn.setAttribute("aria-pressed", p === match));
+  $("#preset-note").textContent = match ? match.note : "Custom multiples.";
+  // the chart's dot: the single multiple that gives the same saving as the two sliders
+  drawChart(g, f, breakEven(g, f) * S / r.rs);
+  drawGrid(g);
+}
+update();
+</script>
