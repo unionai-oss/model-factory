@@ -19,6 +19,7 @@ The runs, findings and corrections behind every number live in
 | RightSizeCPU, with trees x LLM hybrids | big-1 (round 21) | 9,900 | [rightsize-cpu-bench-big-hybrids.html](rightsize-cpu-bench-big-hybrids.html) | [abstract](rightsize-cpu-bench-big-hybrids-abstract.html) | [round 21](../research_log/2026-10-26-round-21-gpu-big-2-hybrids.md) |
 | RightSizeGPU, whole machine ladder, with hybrids | big-2 | 10,000 | [rightsize-gpu-bench-big-2.html](rightsize-gpu-bench-big-2.html) | [abstract](rightsize-gpu-bench-big-2-abstract.html) | [round 21](../research_log/2026-10-26-round-21-gpu-big-2-hybrids.md) |
 | Combined (memory + CPU + GPU, with RL and hybrids) | big-2 | 32,082 | [rightsize-bench-combined-big-2.html](rightsize-bench-combined-big-2.html) | [abstract](rightsize-bench-combined-big-2-abstract.html) | [round 21](../research_log/2026-10-26-round-21-gpu-big-2-hybrids.md) |
+| Combined, Flyte + Kubernetes twins, with a novelty gate | k8s-1 | 32,082 × 2 | [rightsize-bench-k8s.html](rightsize-bench-k8s.html) | [abstract](rightsize-bench-k8s-abstract.html) | [round 22](../research_log/2026-11-06-round-22-k8s-twins.md) |
 
 The round-19 full releases (CPU full-1, GPU full-1) have no pages of their
 own; their numbers appear as the comparison columns in the big-1 reports.

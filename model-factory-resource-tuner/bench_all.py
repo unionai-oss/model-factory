@@ -11,9 +11,11 @@ from resource_tuner.bench_all.stations import (  # noqa: F401
     all_leaderboard,
     all_peek,
     fit_all_arm,
+    gate_all_arms,
     join_corpora,
     pool_all_arms,
     rl_all_policy,
     score_all_arm,
+    staging_counterfactual,
     train_all_policy,
 )

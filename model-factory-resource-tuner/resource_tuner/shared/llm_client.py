@@ -304,6 +304,7 @@ def chat(
     loading_retries: int = 20,
     model: str = "default",
     usage: dict | None = None,
+    extra: dict | None = None,
 ) -> str:
     """One chat completion; returns the assistant text (content only —
     llama.cpp puts hybrid-thinking traces in reasoning_content, which we
@@ -323,6 +324,8 @@ def chat(
             # teacher responses with "no JSON object"). Data generation
             # wants the answer, not the chain of thought.
             "chat_template_kwargs": {"reasoning_effort": "none", "enable_thinking": False},
+            # e.g. vLLM's structured output: {"response_format": {"type": "json_schema", ...}}
+            **(extra or {}),
         }
     ).encode()
     req = urllib.request.Request(

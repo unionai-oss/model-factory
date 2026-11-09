@@ -17,13 +17,19 @@ from ..bench_gpu import features as gpu_features
 
 #: The one signal that a task needs a GPU, as a reader would spot it.
 CUDA_TOKENS = ('"cuda"', "torch.cuda", ".to(device)", "device =")
+#: How a Kubernetes twin stages its inputs, as a reader of its manifest and
+#: module would spot it (round 22): an init container or boto3, and whether
+#: the staging volume is memory-backed.
+K8S_TOKENS = ("kind: Job", "initContainers", "medium: Memory", "import boto3", "download_file")
 
 
-def code_features(code: str) -> dict[str, float]:
+def code_features(code: str, manifest: str = "") -> dict[str, float]:
     f: dict[str, float] = {}
     for prefix, mod in (("m_", mem_features), ("c_", cpu_features), ("g_", gpu_features)):
         f.update({prefix + k: v for k, v in mod.code_features(code).items()})
     f.update({f"cuda_{t}": float(t in code) for t in CUDA_TOKENS})
+    text = code + "\n" + manifest
+    f.update({f"k8s_{t}": float(t in text) for t in K8S_TOKENS})
     return f
 
 
@@ -58,7 +64,8 @@ def row_features(row: dict) -> dict[str, float]:
     inputs = json.loads(row["inputs_json"])
     sizes = json.loads(row["input_bytes_json"])
     history = json.loads(row.get("history_json") or "[]")
-    return {**input_features(inputs, sizes), **code_features(row["task_code"]), **history_features(history, sizes)}
+    return {**input_features(inputs, sizes), **code_features(row["task_code"], row.get("manifest") or ""),
+            **history_features(history, sizes)}
 
 
 _NAMES: list[str] | None = None

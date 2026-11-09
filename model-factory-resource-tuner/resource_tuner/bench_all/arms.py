@@ -4,8 +4,16 @@ CPU, GPU) and tunes its knobs on val for the headline (mean regret).
 - ``static``     one request for every run: a training quantile per axis, no GPU.
 - ``rules``      what a platform team would write: a GPU if the code mentions
                  CUDA (sized by the task's history, else a training quantile);
-                 memory from history x margin, else a quantile; CPU from
+                 memory from history x margin (history as the platform
+                 reports it: Flyte's peaks plus the runtime, a K8s
+                 container's as is), else a quantile; CPU from
                  history, else the largest pool the code declares, else 1.
+- ``rules-sized`` the rules a platform team would write knowing this bench
+                 (round 22, after review): memory scales the nearest-size
+                 earlier run's peak by the input-size ratio; on a first run it
+                 is a base plus k x the input bytes; and it reads the Job's
+                 staging -- + the staged bytes for ``medium: Memory``, + boto3's
+                 48 MiB for ``import boto3`` -- off the manifest and code.
 - ``gbt-dist``   quantile trees per axis (19 levels, read as a distribution)
                  plus a needs-a-GPU classifier; decoded per axis by its
                  bench's decoder, with the no-GPU threshold tuned on val.
@@ -19,13 +27,15 @@ import json
 import numpy as np
 
 from ..bench.arms import DIST_QUANTILES, _gbt, quantiles_to_cell_probs
-from ..bench.grid import required_memory_mib
 from ..bench.scoring import bayes_mem_index
 from ..bench_cpu.features import declared_pools
 from ..bench_cpu.scoring import decode_index as cpu_decode
 from ..bench_gpu.scoring import decode_index as gpu_decode
 from . import grid, scoring
+from .dataset import platform_of
 from .features import CUDA_TOKENS, feature_names, row_features
+from . import k8s
+from .k8s import need_from_peak
 
 QUANTILES = (0.5, 0.75, 0.9, 0.95)
 MARGINS = (1.0, 1.1, 1.25, 1.5, 2.0)
@@ -91,7 +101,7 @@ def _rules_one(row, k, static):
         g = grid.gpu_cell(max(gpus) / 1024 * margin_g) if gpus else static["gpu"]
         return _p(static["mem"], static["cpu"], g)
     mems = [x["peak_mem_mib"] for x in h if "peak_mem_mib" in x]
-    m = grid.mem_cell(required_memory_mib(max(mems)) * margin_m) if mems else static["mem"]
+    m = grid.mem_cell(need_from_peak(max(mems), platform_of(row)) * margin_m) if mems else static["mem"]
     cores = [x.get("peak_cores", x.get("mean_cores", 0.0)) for x in h]
     pools = declared_pools(row["task_code"])
     if cores:
@@ -116,6 +126,58 @@ def fit_rules(train, val):
 
 def predict_rules(state, rows):
     return {r["run_id"]: _rules_one(r, tuple(state["margins"]), state["static"]) for r in rows}
+
+
+# ── rules-sized ─────────────────────────────────────────────────────────
+
+#: A first run's workload peak: base + k x input MiB (tuned on val).
+SIZED_BASE_MIB = (64.0, 128.0, 256.0, 512.0)
+SIZED_K = (0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+def _staging_mib(row) -> float:
+    """What the Job's staging adds on top of the workload, read off its manifest and code."""
+    if (row.get("platform") or "flyte") != "k8s":
+        return 0.0
+    sizes = json.loads(row.get("input_bytes_json") or "{}")
+    tmpfs = "medium: Memory" in (row.get("manifest") or "")
+    boto3 = "import boto3" in row["task_code"]
+    return (k8s.BOTO3_MIB if boto3 else 0.0) + (k8s.staged_bytes(sizes) / 2**20 if tmpfs else 0.0)
+
+
+def _sized_one(row, k, static):
+    margin, base, slope = k
+    h = _hist(row)
+    if mentions_cuda(row["task_code"]):
+        return _rules_one(row, (1.0, 1.0, static.get("margin_g", 1.0)), static)
+    sizes = json.loads(row.get("input_bytes_json") or "{}")
+    total = sum(sizes.values()) or 1
+    mems = [(x["peak_mem_mib"], sum((x.get("input_bytes") or {}).values()) or 1) for x in h if "peak_mem_mib" in x]
+    plat = platform_of(row)
+    if mems:  # the earlier run nearest in size, scaled to this run's size; history already holds the staging
+        peak, hb = min(mems, key=lambda x: abs(np.log(x[1] / total)))
+        m = grid.mem_cell(need_from_peak(peak * total / hb, plat) * margin)
+    else:
+        workload = base + slope * total / 2**20
+        m = grid.mem_cell(need_from_peak(workload + _staging_mib(row), plat))
+    c = _rules_one(row, (1.0, static["margin_c"], 1.0), static)["cpu_idx"]
+    return _p(m, c, grid.NO_GPU)
+
+
+def fit_rules_sized(train, val):
+    st = fit_rules(train, val)
+    static = {**st["static"], "margin_c": st["margins"][1], "margin_g": st["margins"][2]}
+    cold = [r for r in _cpu_rows(val) if not r["n_history"]] or val
+    bs = _tune(list(itertools.product((1.0,), SIZED_BASE_MIB, SIZED_K)),
+               lambda k: {r["run_id"]: _sized_one(r, k, static) for r in cold}, cold)
+    warm = [r for r in _cpu_rows(val) if r["n_history"]] or val
+    mg = _tune([(m, bs[1], bs[2]) for m in MARGINS],
+               lambda k: {r["run_id"]: _sized_one(r, k, static) for r in warm}, warm)
+    return {"static": static, "k": list(mg)}
+
+
+def predict_rules_sized(state, rows):
+    return {r["run_id"]: _sized_one(r, tuple(state["k"]), state["static"]) for r in rows}
 
 
 # ── gbt-dist ────────────────────────────────────────────────────────────
@@ -180,6 +242,7 @@ def predict_gbt_dist(state, rows):
 ARMS = {
     "static": (fit_static, predict_static),
     "rules": (fit_rules, predict_rules),
+    "rules-sized": (fit_rules_sized, predict_rules_sized),
     "gbt-dist": (fit_gbt_dist, predict_gbt_dist),
 }
 
