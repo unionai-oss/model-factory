@@ -11,6 +11,10 @@ so its memory and CPU requests are not scored; a CPU task's right GPU
 answer is "none". Splits are each bench's own (by task; held-out families
 stay ``ood``), and run ids are prefixed by source so they never collide.
 
+Every row is a Flyte task (``platform="flyte"``); ``with_k8s`` adds each
+one's Kubernetes twin (``k8s.twin``: the same code as a plain module in a
+Job manifest, its labels the Flyte measurement plus the staging's cost).
+
 History entries are rewritten to one schema (``peak_mem_mib``,
 ``peak_cores``, ``mean_cores``, ``peak_gpu_mib``, ``mean_util``, whichever
 were measured) so one prompt and one feature set read all three.
@@ -23,9 +27,8 @@ from __future__ import annotations
 import json
 
 from ..bench import dataset as mem_dataset
-from ..bench.grid import required_memory_mib
 from ..bench_gpu import grid as gpu_grid
-from . import grid
+from . import grid, k8s
 
 SPLITS = mem_dataset.SPLITS
 SOURCES = ("mem", "cpu", "gpu")
@@ -61,8 +64,11 @@ def unify_row(r: dict, source: str) -> dict:
     out["history_json"] = json.dumps(_history(json.loads(r.get("history_json") or "[]"), source))
     out["n_history"] = int(r.get("n_history") or 0)
     out["ok"] = bool(r.get("ok")) and not r.get("censored") and not r.get("fills_device")
+    out.update(platform="flyte", staging="", manifest="", twin_of="")
     if source in ("mem", "cpu"):
-        need = float(r["required_mib"]) if source == "mem" else required_memory_mib(float(r["peak_rss_mib"]))
+        # both corpora from the measured peak, with the measured Flyte runtime (``k8s.FLYTE_RUNTIME_MIB``;
+        # RightSizeMem's own required_mib adds the single-axis bench's 180 MiB)
+        need = k8s.flyte_need_mib(float(r["peak_rss_mib"]))
         cores = float(r["avg_cores"]) if source == "mem" else float(r["peak_cores"])
         out.update(need_mib=need, t_peak_frac=float(r.get("t_peak_frac") or 0.5),
                    need_cores=cores, mean_cores=float(r.get("avg_cores") if source == "mem" else r["mean_cores"]),
@@ -95,6 +101,15 @@ def unify(mem_rows: list[dict], cpu_rows: list[dict], gpu_rows: list[dict]) -> l
             + [unify_row(r, "gpu") for r in gpu_rows])
 
 
+def with_k8s(rows: list[dict]) -> list[dict]:
+    """The Flyte rows and their Kubernetes twins (``k8s.with_twins``)."""
+    return k8s.with_twins(rows)
+
+
+def platform_of(row: dict) -> str:
+    return row.get("platform") or "flyte"
+
+
 def usable(row: dict) -> bool:
     return bool(row.get("ok"))
 
@@ -108,15 +123,16 @@ def by_split(rows: list[dict]) -> dict[str, list[dict]]:
 
 
 def balanced(rows: list[dict], per_source: int, seed: int = 0) -> list[dict]:
-    """At most `per_source` rows of each source, deterministic: the LLM arms'
-    training budget, so the largest corpus (RightSizeMem) does not drown the
-    other two."""
+    """At most `per_source` rows of each source and platform, deterministic:
+    the LLM arms' training budget, so the largest corpus (RightSizeMem) does
+    not drown the other two."""
     from random import Random
 
     out = []
     for s in SOURCES:
-        mine = sorted((r for r in rows if r["source"] == s), key=lambda r: r["run_id"])
-        Random(seed).shuffle(mine)
-        out += mine[:per_source] if per_source else mine
+        for p in sorted({platform_of(r) for r in rows}):
+            mine = sorted((r for r in rows if r["source"] == s and platform_of(r) == p), key=lambda r: r["run_id"])
+            Random(seed).shuffle(mine)
+            out += mine[:per_source] if per_source else mine
     Random(seed + 1).shuffle(out)
     return out

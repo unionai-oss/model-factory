@@ -215,13 +215,57 @@ def score(rows: list[dict], preds: dict[str, dict]) -> dict:
     }
 
 
+def paired(rows: list[dict], preds: dict[str, dict]) -> dict:
+    """Flyte run vs its K8s twin, same workload: does the request move the way
+    the need moved? ``mem_shift_direction`` counts every CPU-node pair (both
+    unchanged counts as right); ``moved_direction`` only the pairs whose label moved. On memory (CPU-node runs): the twin's label cell minus the
+    Flyte run's, against the arm's pick on the twin minus its pick on the run."""
+    by_id = {r["run_id"]: r for r in rows}
+    same_dir, exact, both_right, gap, moved, kept = [], [], [], [], [], []
+    for t in rows:
+        f = by_id.get(t.get("twin_of") or "")
+        if f is None or t["run_id"] not in preds or f["run_id"] not in preds:
+            continue
+        pt, pf = preds[t["run_id"]], preds[f["run_id"]]
+        gap.append(ratio(t, int(pt["mem_idx"]), int(pt["cpu_idx"]), int(pt["gpu_idx"]))
+                   - ratio(f, int(pf["mem_idx"]), int(pf["cpu_idx"]), int(pf["gpu_idx"])))
+        if t["source"] == "gpu":
+            continue
+        dl = int(t["label_mem"]) - int(f["label_mem"])
+        dp = int(pt["mem_idx"]) - int(pf["mem_idx"])
+        same_dir.append(np.sign(dl) == np.sign(dp))
+        exact.append(dl == dp)
+        (moved if dl else kept).append(np.sign(dl) == np.sign(dp))
+        both_right.append(mem_right(t, int(pt["mem_idx"])) and mem_right(f, int(pf["mem_idx"])))
+    if not gap:
+        return {"n": 0}
+    return {"n": len(gap), "regret_gap": float(np.mean(gap)), "mem_shift_direction": float(np.mean(same_dir)),
+            "mem_shift_exact": float(np.mean(exact)), "mem_both_right": float(np.mean(both_right)),
+            # split by whether the label moved (round 22, after review): an arm that ignores
+            # the platform scores mem_shift_direction = the unmoved share, and 0 on moved pairs
+            "label_moved": len(moved) / max(len(same_dir), 1),
+            "moved_direction": float(np.mean(moved)) if moved else float("nan"),
+            "unmoved_kept": float(np.mean(kept)) if kept else float("nan")}
+
+
 def score_slices(rows: list[dict], preds: dict[str, dict]) -> dict[str, dict]:
     out = {"all": score(rows, preds)}
+    platforms = sorted({r.get("platform") or "flyte" for r in rows})
     for split in ("val", "test", "ood"):
         sub = [r for r in rows if r["split"] == split]
         out[f"split={split}"] = score(sub, preds)
         for src in ("mem", "cpu", "gpu"):
             out[f"{split}/source={src}"] = score([r for r in sub if r["source"] == src], preds)
+        if len(platforms) > 1:  # round 22: Flyte rows and their K8s twins
+            for p in platforms:
+                mine = [r for r in sub if (r.get("platform") or "flyte") == p]
+                out[f"{split}/platform={p}"] = score(mine, preds)
+                for src in ("mem", "cpu", "gpu"):
+                    out[f"{split}/platform={p}/source={src}"] = score([r for r in mine if r["source"] == src], preds)
+            out[f"{split}/pairs"] = paired(sub, preds)
+            for st in sorted({r.get("staging") for r in sub if r.get("staging")}):
+                out[f"{split}/staging={st}"] = score([r for r in sub if r.get("staging") == st and r["source"] != "gpu"],
+                                                     preds)
     test = [r for r in rows if r["split"] == "test"]
     for cold in (True, False):
         out[f"test/cold={cold}"] = score([r for r in test if (r["n_history"] == 0) == cold], preds)

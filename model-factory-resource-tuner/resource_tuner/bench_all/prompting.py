@@ -3,6 +3,11 @@
 Same layout as the three benches' prompts (code, this run's inputs, the
 task's history, the options), with all three decisions. Nothing says which
 bench a task came from: whether it needs a GPU is read from the code.
+
+Since round 22 a run is a Flyte task or its Kubernetes twin (``k8s``): a
+plain ``job.py`` and its Job manifest, whose history is the container's own
+peaks. The prompt ends the same way on both, so the pointer head's option
+offsets (counted from the end) are one set.
 """
 
 from __future__ import annotations
@@ -10,19 +15,22 @@ from __future__ import annotations
 import json
 import re
 
-from ..bench.grid import FLYTE_RUNTIME_OVERHEAD_MIB, parse_memory
+from ..bench.grid import parse_memory
 from ..bench.prompting import MAX_DESC_CHARS, _clip, _short_inputs
 from ..bench.spec import snap_up, with_hint
 from ..bench_gpu.grid import DEVICES
-from . import grid
+from . import grid, k8s
 
 _DEVICES = ", ".join(f"{d.name} ({d.capacity_gib:g} GiB, ${d.price:.2f}/h)" for d in DEVICES)
 
 SYSTEM = (
-    "You size Flyte tasks before they run. Given a task's source code, the metadata of this run's "
-    "inputs, and what earlier runs of the same task used, choose the cheapest request that runs it: "
-    "memory, CPU cores, and a GPU or none. Memory is a hard limit: below the peak the pod is "
-    "OOM-killed and retried with double. CPU below the busiest 15 seconds' use throttles the task and "
+    "You size batch jobs before they run: Flyte tasks, or Kubernetes Jobs given as a Python module and its "
+    "manifest. Given the code, the metadata of this run's inputs, and what earlier runs of the same job "
+    "used, choose the cheapest request that runs it: memory, CPU cores, and a GPU or none. Memory is a hard "
+    "limit: below the peak the container is OOM-killed and retried with double. A Flyte task's memory "
+    "includes the Flyte runtime; a Kubernetes container's includes whatever the job loads to fetch its "
+    "inputs, and files written to a memory-backed emptyDir (medium: Memory) are charged to it. "
+    "CPU below the busiest 15 seconds' use throttles the task and "
     "it finishes late. Thread pools the code does not size get one thread. gpu is the peak GPU memory "
     f"to provision, or none for a task that does not use CUDA; it lands on the cheapest machine that holds "
     f"it -- {_DEVICES} -- and a GPU pod comes with its host memory and cores. A multi-GPU machine only "
@@ -34,14 +42,17 @@ KEYS = ("memory", "cpu", "gpu")
 OPTIONS = (grid.MEM_OPTIONS, grid.CPU_OPTIONS, grid.GPU_OPTIONS)
 
 
-def format_history(history: list[dict]) -> str:
+def format_history(history: list[dict], platform: str = "flyte") -> str:
     if not history:
         return "none -- this is the first run of this task"
+    # Flyte's history stores the workload's peak (the runtime is added here);
+    # a K8s twin's is the container's (``k8s.container_peak_mib``)
+    overhead = k8s.FLYTE_RUNTIME_MIB if platform == "flyte" else 0.0
     lines = []
     for h in history:
         parts = []
         if "peak_mem_mib" in h:
-            parts.append(f"peak memory {h['peak_mem_mib'] + FLYTE_RUNTIME_OVERHEAD_MIB:,.0f} MiB")
+            parts.append(f"peak memory {h['peak_mem_mib'] + overhead:,.0f} MiB")
         if "peak_cores" in h:
             parts.append(f"peak {h['peak_cores']:.2f} cores (busiest 15 s)")
         if "mean_cores" in h:
@@ -62,10 +73,17 @@ ANSWER = 'Answer with JSON only: {"memory": "<one memory option>", "cpu": "<one 
 
 def user_prompt(row: dict) -> str:
     history = json.loads(row.get("history_json") or "[]")
+    platform = row.get("platform") or "flyte"
+    if platform == "k8s":
+        head = (f"### Job code (job.py)\n```python\n{row['task_code'].strip()}\n```\n\n"
+                f"### Job manifest\n```yaml\n{row['manifest'].strip()}\n```\n\n")
+        hist = "### Earlier runs of this job (container memory peaks, from the cluster's metrics)"
+    else:
+        head = f"### Task code\n```python\n{row['task_code'].strip()}\n```\n\n"
+        hist = "### Earlier runs of this task (memory peaks include the Flyte runtime)"
     return (
-        f"### Task code\n```python\n{row['task_code'].strip()}\n```\n\n"
-        f"### This run's inputs\n{_clip(row['inputs_desc'], MAX_DESC_CHARS)}\n\n"
-        f"### Earlier runs of this task (memory peaks include the Flyte runtime)\n{format_history(history)}\n\n"
+        f"{head}### This run's inputs\n{_clip(row['inputs_desc'], MAX_DESC_CHARS)}\n\n"
+        f"{hist}\n{format_history(history, platform)}\n\n"
         f"### Options\n{options_text()}\n\n{ANSWER}"
     )
 
@@ -97,12 +115,28 @@ _JSON = re.compile(r"\{[^{}]*\}")
 _GIB = re.compile(r"(\d+(?:\.\d+)?)\s*([MG])?i?B?", re.IGNORECASE)
 
 
+_QTY = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(Gi|Mi|Ki|GiB|MiB|KiB|GB|MB|G|M|K)?\s*$", re.IGNORECASE)
+_TO_MIB = {"gi": 1024.0, "gib": 1024.0, "g": 1e9 / 2**20, "gb": 1e9 / 2**20, "mi": 1.0, "mib": 1.0,
+           "m": 1e6 / 2**20, "mb": 1e6 / 2**20, "ki": 1 / 1024, "kib": 1 / 1024, "k": 1e3 / 2**20}
+
+
 def _mem(v) -> int | None:
+    """'2Gi', '2 GiB', '2GB', '768Mi', 3072 -> a memory cell (a bare number is MiB)."""
     try:
         mib = parse_memory(v)
     except (TypeError, ValueError):
-        return None
+        m = _QTY.match(str(v))
+        if not m:
+            return None
+        mib = float(m.group(1)) * _TO_MIB.get((m.group(2) or "mi").lower(), 1.0)
     return grid.mem_cell(mib) if mib > 0 else None
+
+
+def _cpu(v) -> int | None:
+    """'2', 2.5, '500m' (Kubernetes millicores), '2 cores' -> the smallest CPU cell >= it."""
+    s = str(v).strip().lower()
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*m$", s)
+    return snap_up(float(m.group(1)) / 1000 if m else v, list(grid.CPU_GRID))
 
 
 def _gpu(v) -> int | None:
@@ -129,7 +163,7 @@ def parse_answer(text: str) -> tuple[int, int, int] | None:
         mi = _mem(obj["memory"])
         if mi is None:
             continue
-        ci = snap_up(obj.get("cpu", 1), list(grid.CPU_GRID))
+        ci = _cpu(obj.get("cpu", 1))
         gi = _gpu(obj.get("gpu", "none"))
         return mi, grid.cpu_cell(1) if ci is None else ci, grid.NO_GPU if gi is None else gi
     return None

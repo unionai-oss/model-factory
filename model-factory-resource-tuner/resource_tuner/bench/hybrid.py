@@ -40,8 +40,9 @@ FOLDS = 5
 
 def fold_of(row: dict, k: int = FOLDS) -> int:
     """Folds by task: both runs of a task land in the same fold, so a run's
-    out-of-fold prediction never saw its sibling."""
-    return zlib.crc32(str(row["task_id"]).encode()) % k
+    out-of-fold prediction never saw its sibling -- nor its K8s twin (the
+    combined bench's ``<task>@k8s``, round 22)."""
+    return zlib.crc32(str(row["task_id"]).split("@")[0].encode()) % k
 
 
 def crossfit(train: list[dict], val: list[dict], eval_rows: list[dict], fit, predict, k: int = FOLDS) -> dict[str, dict]:

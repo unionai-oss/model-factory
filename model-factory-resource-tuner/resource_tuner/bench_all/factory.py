@@ -15,6 +15,14 @@
             └──── .all("arm") ───────────────────────┬────────────┘
     rt-allbench-leaderboard [release]        all_leaderboard
 
+Round 22 builds the same graph a second time as ``rightsize-k8s-bench``
+(artifacts ``rt-k8sbench-*``): the standing corpora pinned, each run joined
+with its Kubernetes twin (``k8s``), a larger training budget. Its arms
+include ``jev-pointer-flyte``, the decision model trained on the Flyte rows
+only, and it has no stacked arm. It adds ``rt-k8sbench-gate`` (``gating``):
+novelty gates over the trained arms and the Flyte -> K8s adapter, no
+retraining.
+
 Round 21 adds the hybrids (``bench.hybrid``): the ``stack-jev-pointer`` arm
 (the trees' estimate in the decision model's prompt), a second RL node
 from it (``rt-allbench-rl-stack``), and ``rt-allbench-pool`` -- gbt-dist
@@ -46,16 +54,7 @@ MEM_RELEASE = "v2"
 #: big-2 joins a new GPU corpus with the standing CPU one (big-1), not a re-measured CPU corpus.
 CPU_RELEASE = "big-1"
 
-ARTIFACT_CORPUS = "rt-allbench-corpus"
-ARTIFACT_ARM = "rt-allbench-arm"
-ARTIFACT_RL = "rt-allbench-rl"
-ARTIFACT_SCORECARD = "rt-allbench-scorecard"
-ARTIFACT_RL_SCORECARD = "rt-allbench-rl-scorecard"
-ARTIFACT_RL_STACK = "rt-allbench-rl-stack"
-ARTIFACT_RL_STACK_SCORECARD = "rt-allbench-rl-stack-scorecard"
-ARTIFACT_POOL = "rt-allbench-pool"
-ARTIFACT_POOL_SCORECARD = "rt-allbench-pool-scorecard"
-ARTIFACT_LEADERBOARD = "rt-allbench-leaderboard"
+#: Artifacts are named ``<prefix>-<suffix>``: rt-allbench-corpus, rt-k8sbench-leaderboard, ...
 
 PARTITION_RELEASE = "release"
 PARTITION_ARM = "arm"
@@ -65,53 +64,104 @@ def _task(name: str):
     return Task.get(name, auto_version="latest")
 
 
-def build_graph() -> factory.Factory:
+def build_graph(name: str = FACTORY_NAME, prefix: str = "rt-allbench", gpu_release: str | None = None,
+                platforms: str = "flyte", stack: bool = True, arm_knobs: dict | None = None, gate: bool = False,
+                description: str = "RightSize Bench: the whole request -- memory, CPU and GPU -- under one cost model",
+                ) -> factory.Factory:
+    """The combined bench's graph. ``gpu_release`` pins the GPU corpus (None:
+    the target's ``release`` names it); ``platforms`` is the corpus's
+    (``"flyte,k8s"`` adds the Kubernetes twins); ``stack`` adds the stacked
+    decision model's RL node; ``arm_knobs`` reach ``fit_all_arm`` (training
+    budget, context length); ``gate`` adds the post-hoc arms (``gating``)."""
+    def art(suffix: str) -> str:
+        return f"{prefix}-{suffix}"
+
     mem = factory.source(SOURCE_MEM, partitions={PARTITION_RELEASE: str}, kind="data",
                          description="RightSizeMem's measured corpus")
     cpu = factory.source(SOURCE_CPU, partitions={PARTITION_RELEASE: str}, kind="data",
                          description="RightSizeCPU's measured corpus")
     gpu = factory.source(SOURCE_GPU, partitions={PARTITION_RELEASE: str}, kind="data",
                          description="RightSizeGPU's measured corpus")
-    corpus = factory.build(ARTIFACT_CORPUS, kind="data",
-                           description="All three benches' runs, labelled on every axis each one measured",
+    corpus_desc = "All three benches' runs, labelled on every axis each one measured"
+    if "k8s" in platforms:
+        corpus_desc += ", and each run's Kubernetes twin"
+    # partitioned by release even when every source is pinned (round 22), so a release names its corpus
+    corpus = factory.build(art("corpus"), partitions={PARTITION_RELEASE: str}, kind="data", description=corpus_desc,
                            ).using(_task("rt-allbench.join_corpora"), mem=mem.select(release=MEM_RELEASE),
-                                   cpu=cpu.select(release=CPU_RELEASE), gpu=gpu)
-    arm = factory.build(ARTIFACT_ARM, partitions={PARTITION_RELEASE: str, PARTITION_ARM: str}, kind="model",
+                                   cpu=cpu.select(release=CPU_RELEASE),
+                                   gpu=gpu.select(release=gpu_release) if gpu_release else gpu, platforms=platforms)
+    arm = factory.build(art("arm"), partitions={PARTITION_RELEASE: str, PARTITION_ARM: str}, kind="model",
                         description="One arm's whole request (memory, CPU, GPU) for val/test/ood",
-                        ).using(_task("rt-allbench.fit_all_arm"), corpus=corpus, arm=factory.partition(PARTITION_ARM))
-    rl = factory.build(ARTIFACT_RL, kind="model",
+                        ).using(_task("rt-allbench.fit_all_arm"), corpus=corpus, arm=factory.partition(PARTITION_ARM),
+                                release=factory.partition(PARTITION_RELEASE), **(arm_knobs or {}))
+    rl = factory.build(art("rl"), kind="model",
                        description="The supervised decision model, RL-tuned on the joint cost",
-                       ).using(_task("rt-bench-gpu.rl_all_policy"), corpus=corpus, arm_dirs=arm.all(PARTITION_ARM))
-    scorecard = factory.build(ARTIFACT_SCORECARD, kind="data",
+                       ).using(_task("rt-allbench-train.rl_all_policy"), corpus=corpus, arm_dirs=arm.all(PARTITION_ARM))
+    scorecard = factory.build(art("scorecard"), kind="data",
                               description="Joint regret, first-attempt success, per-axis accuracy -- per split and source",
                               ).using(_task("rt-allbench.score_all_arm"), corpus=corpus, arm_dir=arm,
                                       arm=factory.partition(PARTITION_ARM))
-    rl_card = factory.build(ARTIFACT_RL_SCORECARD, kind="data", description="The RL policy's scorecard",
+    rl_card = factory.build(art("rl-scorecard"), kind="data", description="The RL policy's scorecard",
                             ).using(_task("rt-allbench.score_all_arm"), corpus=corpus, arm_dir=rl, arm="rl-pointer")
-    rl_stack = factory.build(ARTIFACT_RL_STACK, kind="model",
-                             description="The stacked decision model (trees' estimate in its prompt), RL-tuned on the joint cost",
-                             ).using(_task("rt-bench-gpu.rl_all_policy"), corpus=corpus, arm_dirs=arm.all(PARTITION_ARM),
-                                     base_arm="stack-jev-pointer")
-    rl_stack_card = factory.build(ARTIFACT_RL_STACK_SCORECARD, kind="data", description="The stacked RL policy's scorecard",
-                                  ).using(_task("rt-allbench.score_all_arm"), corpus=corpus, arm_dir=rl_stack,
-                                          arm="stack-rl-pointer")
-    pool = factory.build(ARTIFACT_POOL, kind="model",
+    pool_inputs = {"corpus": corpus, "arm_dirs": arm.all(PARTITION_ARM), "rl_dir": rl}
+    board_inputs = {"scorecards": scorecard.all(PARTITION_ARM), "rl_scorecard": rl_card}
+    if stack:
+        rl_stack = factory.build(art("rl-stack"), kind="model",
+                                 description="The stacked decision model (trees' estimate in its prompt), RL-tuned on the joint cost",
+                                 ).using(_task("rt-allbench-train.rl_all_policy"), corpus=corpus,
+                                         arm_dirs=arm.all(PARTITION_ARM), base_arm="stack-jev-pointer")
+        board_inputs["rl_stack_scorecard"] = factory.build(
+            art("rl-stack-scorecard"), kind="data", description="The stacked RL policy's scorecard",
+        ).using(_task("rt-allbench.score_all_arm"), corpus=corpus, arm_dir=rl_stack, arm="stack-rl-pointer")
+        pool_inputs["rl_stack_dir"] = rl_stack
+    pool = factory.build(art("pool"), kind="model",
                          description="gbt-dist x every decision model (supervised, stacked, RL), log pool per axis",
-                         ).using(_task("rt-allbench.pool_all_arms"), corpus=corpus, arm_dirs=arm.all(PARTITION_ARM),
-                                 rl_dir=rl, rl_stack_dir=rl_stack)
-    pool_card = factory.build(ARTIFACT_POOL_SCORECARD, kind="data", description="The pooled hybrids' scorecard",
-                              ).using(_task("rt-allbench.score_all_arm"), corpus=corpus, arm_dir=pool, arm="pool")
-    board = factory.build(ARTIFACT_LEADERBOARD, kind="data", description="All arms side by side for one release",
-                          ).using(_task("rt-allbench.all_leaderboard"), scorecards=scorecard.all(PARTITION_ARM),
-                                  rl_scorecard=rl_card, rl_stack_scorecard=rl_stack_card, pool_scorecard=pool_card)
-    return factory.Factory(FACTORY_NAME, board,
-                           description="RightSize Bench: the whole request -- memory, CPU and GPU -- under one cost model")
+                         ).using(_task("rt-allbench.pool_all_arms"), **pool_inputs)
+    board_inputs["pool_scorecard"] = factory.build(
+        art("pool-scorecard"), kind="data", description="The pooled hybrids' scorecard",
+    ).using(_task("rt-allbench.score_all_arm"), corpus=corpus, arm_dir=pool, arm="pool")
+    if gate:
+        gate_arm = factory.build(art("gate"), kind="model",
+                                 description="Novelty gates (pooled champion on familiar runs, RL policy on novel "
+                                             "ones) and the Flyte -> K8s adapter, over the trained arms",
+                                 ).using(_task("rt-allbench.gate_all_arms"), corpus=corpus, arm_dirs=arm.all(PARTITION_ARM),
+                                         rl_dir=rl, pool_dir=pool)
+        board_inputs["counterfactual"] = factory.build(
+            art("counterfactual"), kind="data",
+            description="Sampled runs as Jobs under all four stagings, and with neutral names: does each approach read the manifest?",
+        ).using(_task("rt-allbench-train.staging_counterfactual"), corpus=corpus, arm_dirs=arm.all(PARTITION_ARM),
+                rl_dir=rl, pool_dir=pool)
+        board_inputs["gate_scorecard"] = factory.build(
+            art("gate-scorecard"), kind="data", description="The gates' and adapters' scorecard",
+        ).using(_task("rt-allbench.score_all_arm"), corpus=corpus, arm_dir=gate_arm, arm="gate")
+    board = factory.build(art("leaderboard"), kind="data", description="All arms side by side for one release",
+                          ).using(_task("rt-allbench.all_leaderboard"), **board_inputs)
+    return factory.Factory(name, board, description=description)
 
 
 rightsize_all_bench = build_graph()
 
+#: Round 22: every run of the standing corpora (RightSizeMem v2, RightSizeCPU
+#: big-1, RightSizeGPU big-2) and its Kubernetes twin (``k8s``), every
+#: training row the trainer's 12 h allows (L4, rt-l4timing-2: 0.9 s per training sample and
+#: 0.24 s per scored row at 3,072 tokens -> 5,000 rows per source and platform, one epoch).
+K8S_FACTORY_NAME = "rightsize-k8s-bench"
+GPU_RELEASE_K8S = "big-2"
+#: ``seed`` seeds the decision models (init, batch order; the rows are the same
+#: draw): k8s-1 trained at 0 (twice: rsk-k8s-1, rsk-k8s-1-gate), k8s-2 at 1. A replicate
+#: release ``k8s-2-s<k>`` trains the same corpus at seed k (``stations.seed_of``).
+K8S_ARM_KNOBS = {"per_source": 5000, "epochs": 1, "max_len": 3072, "seed": 1}
+#: The arms of a K8s release (``--partition arm=...``).
+K8S_ARMS = ("static", "rules", "rules-sized", "gbt-dist", "gbt-dist-flyte", "gbt-dist-k8s", "zeroshot-27b",
+            "zeroshot-27b-json", "jev-pointer", "jev-pointer-flyte", "jev-pointer-k8s")
+rightsize_k8s_bench = build_graph(
+    K8S_FACTORY_NAME, prefix="rt-k8sbench", gpu_release=GPU_RELEASE_K8S, platforms="flyte,k8s", stack=False,
+    arm_knobs=K8S_ARM_KNOBS, gate=True,
+    description="RightSize Bench, Flyte and Kubernetes: every run as a Flyte task and as a plain K8s Job")
+
 
 if __name__ == "__main__":
     flyte.init_from_config()
-    print(rightsize_all_bench.graph())
-    print("validation:", rightsize_all_bench.validate() or "ok")
+    for f in (rightsize_all_bench, rightsize_k8s_bench):
+        print(f.graph())
+        print("validation:", f.validate() or "ok")

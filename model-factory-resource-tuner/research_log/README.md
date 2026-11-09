@@ -39,6 +39,30 @@ Conventions:
 | 2026-10-24 | [round-19-rightsize-cpu-gpu-full](2026-10-23-round-19-rightsize-cpu-gpu-full.md) | Full releases (880 CPU / 640 GPU runs; 3-run shards, `full-*` sizing, 4B decision arm). **CPU ordering flips**: 4B decision head 89.6% / 88.7% within ±25% (test / unseen), trees 89.6% / 76.2%, zero-shot 27B falls to 74.6% / 83.8% and still fails phased code (8%). **GPU memory stays near 50%** (gbt-dist 50.5% test, SFT 37.3% unseen); 26 encoder runs unmeasurable (outputs accumulate on device); utilization still saturated |
 | 2026-10-26 | [round-20-rightsize-big-and-combined](2026-10-24-round-20-rightsize-big-and-combined.md) | **big** releases at ~10^4 runs, plus a combined memory+CPU+GPU bench with a GRPO-style RL arm. CPU big-1 (rsc-big-1, 23 h): 1.7B decision head 97.9% within ±25% on test, but unseen families stay at 84-86% (4B 86.1%, 27B zero-shot 83.7%, gbt-dist 68.4%), no better than full-1. Combined shakedown (rsa-full-3): RL head argmax 12.6% test regret vs 23.6% supervised. **Combined big-1 (rsa-big-1)**: with 10,500 supervised runs the decision model reaches 9.7% and RL argmax 8.0% (lead 11 -> 1.7 points); on unseen families RL is worse (37.3% vs 34.1%) and `rules` is best (32.5%). **GPU big-1 (rsg-big-3)**: gbt-dist 71.3% within ±20% on test, 4B decision model 50.5% on unseen (trees 25.7%); accuracy decoding never leaves the T4 (6.4% OOM), argmax reads cost 13-16% |
 | 2026-10-28 | [round-21-gpu-big-2-hybrids](2026-10-26-round-21-gpu-big-2-hybrids.md) | **GPU big-2** on the cluster's whole machine ladder (T4 -> 4xL40S; sharded lm_finetune / llm_generate / recsys_train): 74.7% of runs fit a T4 (big-1: 94.8%), but 4xL4 / 4xL40S capacity never came and 1,569 large runs are censored. **Trees x LLM hybrids** (stacked hints, log pools) on CPU, GPU and combined: best in distribution everywhere (CPU 98.5%, GPU 74.8%, combined **3.2% regret** for RL from the stacked model), worst learned arm on unseen families (combined 77-126% vs rl-pointer 35.5%): the trust in the trees is learned where the trees are right. Only the combined pool beats its LLM on both splits |
+| 2026-11-08 | [round-22-k8s-twins](2026-11-06-round-22-k8s-twins.md) | **Every run gets a Kubernetes twin**: the same body as `job.py` plus a Job manifest, four stagings (init container / boto3 x disk / tmpfs), labels by exact accounting from the Flyte measurement, checked on 176 measured runs. Combined bench with twins (test n=10,190, unseen n=12,832). Trained on both platforms, K8s regret is within 1-3 points of Flyte, and the decision model moves memory with the one-line tmpfs difference in 77-81% of pairs (rules 43%). A Flyte-only model does not transfer (K8s memory right 30-40%); a staging adapter fixes accuracy but not regret. **A label-free kNN novelty gate** (pooled trees on familiar runs, rl-pointer on novel ones) scores **6.9% test / 36.8% unseen**, the best arm on each split, on two independent trainings. Its detector is perfect here only because unseen families import unseen libraries (numbers-only: AUROC 0.67) |
+
+## Standing results — round 22: Flyte + Kubernetes twins (as of 2026-11-08)
+
+From [rsk-k8s-1-gate](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-1-gate)
+(replicate 2; replicate 1 is
+[rsk-k8s-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-1)):
+the combined bench (v2 + CPU big-1 + GPU big-2) and every run's K8s twin,
+test n=10,190 / unseen n=12,832. Regret is the mean cost ratio to the oracle, minus 1.
+
+| arm | regret: test / unseen | K8s: test / unseen | K8s memory right (test) | $ per 1k test runs (oracle $280) |
+|---|---|---|---|---|
+| static | 90.6% / 114.2% | 89.3% / 115.1% | -- | $794 |
+| rules | 40.9% / 48.9% | 42.4% / 49.8% | -- | $437 |
+| gbt-dist | 13.1% / 68.8% | 11.6% / 69.9% | 92.8% | $366 |
+| jev-pointer (1.7B, both platforms) | 13.2% / 51.1% | 13.8% / 50.9% | 90.4% | $397 |
+| jev-pointer-flyte (Flyte rows only) | 16.6% / 43.8% | 18.0% / 42.6% | 30.5% | $389 |
+| rl-pointer | 13.9% / **36.8%** | 13.7% / **35.4%** | 73.5% | $411 |
+| pool-rl-pointer-argmax | **6.6%** / 94.5% | 7.3% / 98.9% | 94.0% | $321 |
+| **gate-rl-pointer** (kNN, q0.95) | 6.9% / **36.8%** | 7.8% / **35.4%** | 92.3% | $328 |
+
+Unseen-family regret of the argmax and pooled arms moves by 8-25 points
+between two trainings; test regret moves by about 1. Details:
+[round-22](2026-11-06-round-22-k8s-twins.md).
 
 ## Standing results — round 21: big releases with trees x LLM hybrids (as of 2026-10-28)
 
