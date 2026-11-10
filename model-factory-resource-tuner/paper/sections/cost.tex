@@ -1,0 +1,51 @@
+\section{Cost model and metrics}
+\label{sec:cost}
+
+We score a request by the dollars it takes to get the pod to finish successfully,
+counting failed attempts, retries and lateness, all simulated from the run's
+measurements. Each axis fails the way it fails on Kubernetes. If memory is too low, the
+container is OOM-killed partway through (at the point where the run reached 90\% of its
+peak) and retried with double the memory, for up to eight attempts. If CPU is too low, the
+run is throttled: each second that wanted $u$ cores takes $\max(1, u/\text{limit})$
+seconds, replayed against the measured per-second series. If the GPU is too small, the
+run hits a CUDA out-of-memory error and is retried on the next machine up. A GPU task
+given no GPU fails at start and is retried on a T4, and a CPU task given a GPU runs
+normally but pays the GPU node's price.
+
+A CPU pod is priced by its dominant share of an \code{m6i.xlarge} (4 vCPU, 16\,GiB,
+\$0.192 per hour), that is $p(m,c) = 0.192\cdot\max(c/4,\ \text{GiB}(m)/16)$. A GPU pod
+pays the on-demand price of its machine. Every attempt also pays 0.02 hours for image
+pull and start-up. We normalize every run to one nominal hour of work, so that short
+measured runs stand in for longer production tasks.
+
+On top of dollars, two penalties account for time. Each retry adds one oracle cost, which
+stands for the delay of running again, and each hour of lateness adds one oracle hourly
+price. These defaults match an orchestrator that retries automatically. A raw Job with
+\code{backoffLimit: 0} simply fails and waits for someone to resubmit it, so in
+\cref{sec:res-sens} we also score everything with retry penalties of 5 and 20 oracle
+costs.
+
+The \emph{oracle} requests the label cell on each axis, and no GPU for a CPU task. It is
+the label rather than the cheapest possible request. Asking for one CPU cell below the
+busiest window only throttles that window, which can cost less than the cores it saves, so
+CPU regret can occasionally be slightly negative.
+
+\paragraph{Metrics.}
+Our headline metric is \emph{regret}, the mean over runs of an approach's cost divided by
+the oracle's cost, minus one. Every run counts equally however much it costs, and this is
+also the quantity that every approach tunes on validation. \emph{Dollar regret} is total
+cost over total oracle cost, minus one, so large jobs count for more. We also report the
+share of runs whose first attempt succeeds, and how often the memory request fits and is
+at most one cell above the label. For pairs of pods that come from the same run but
+differ in one detail of the pod spec, we check whether an approach's memory request moves
+in the same direction as the label (\cref{sec:res-manifest}). We report this separately
+for pairs whose label moved and pairs whose label did not.
+
+\paragraph{Uncertainty.}
+Runs of the same task share code, and a run's Job and Flyte pods share a workload, so the
+rows are not independent. Every interval in this paper is therefore a 95\% percentile
+interval from a task-clustered Poisson bootstrap~\citep{efron1993bootstrap,field2007clustered}
+with 2,000 replicates. Each task, including all of its runs and both pods of each run,
+gets a single Poisson(1) weight. Differences between approaches and between pod types are
+bootstrapped as paired differences on the same rows. We report variation between
+trainings separately, across three seeds (\cref{sec:res-seeds}).

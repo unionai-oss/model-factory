@@ -1,0 +1,35 @@
+\section{Related work}
+\label{sec:related}
+
+\paragraph{Sizing from history.}
+Autopilot~\citep{rzadca2020autopilot} sets Google's container limits from the usage
+history of a job's tasks, using moving-window and ML recommenders. Kubernetes' Vertical
+Pod Autoscaler~\citep{k8svpa} recommends requests from a decaying histogram of observed
+usage. Borg traces show that most jobs over-request~\citep{verma2015borg,tirmazi2020borg}.
+Resource Central~\citep{cortez2017resourcecentral} predicts VM utilization from a
+subscription's history. All of these size workloads that have run before, and run long
+enough to observe. RightSize Bench reports first runs (no history) and runs with history
+separately. Quasar~\citep{delimitrou2014quasar} classifies new workloads from short
+profiling runs; RightSize Bench allows no profiling, only what a scheduler can read
+before the pod starts.
+
+\paragraph{Learned predictors.}
+Quantile regression~\citep{koenker1978quantile} with gradient-boosted
+trees~\citep{friedman2001gbm,ke2017lightgbm} is a standard way to predict a distribution
+of resource need, and is the strongest classical approach here. Our decision model
+replaces a language model's output layer with a pointer head~\citep{vinyals2015pointer}
+that scores option tokens written in the prompt. It is adapted with LoRA~\citep{hu2022lora}
+on Qwen3~\citep{qwen3}.
+
+\paragraph{Training on the objective.}
+Group-relative policy optimization (GRPO)~\citep{shao2024deepseekmath} drops PPO's value
+network by normalizing rewards within a group of samples for the same prompt. Our policy
+is three categorical distributions, so a group is sampled from one forward pass, and the
+reward is the benchmark's own cost simulator.
+
+\paragraph{Combining and routing models.}
+Logarithmic opinion pools~\citep{genest1986pools} combine calibrated distributions by a
+weighted geometric mean. Temperature scaling~\citep{guo2017calibration} calibrates each
+model before pooling. Distance to the $k$ nearest training points is a standard
+out-of-distribution signal~\citep{sun2022knnood}; our gate uses it to choose between two
+models.

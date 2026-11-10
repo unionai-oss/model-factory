@@ -1,0 +1,32 @@
+\section{Experimental setup}
+\label{sec:setup}
+
+The whole benchmark runs as one Flyte factory on an EKS cluster: a graph of cached tasks,
+each of which publishes a versioned artifact (\cref{fig:factory}). The trees and rules fit
+on a CPU pod, each decision model and the RL model train on one NVIDIA L4, and the
+zero-shot model runs as a shared vLLM service in the same cluster. Each of these is
+itself a batch pod that someone had to size.
+
+\begin{figure}[tbp]
+\begin{lstlisting}
+rt-bench-corpus[v2]   rt-cpubench-corpus[big-1]   rt-gpubench-corpus[big-2]        sources
+      `---------------------+-----------------------------'
+rt-k8sbench-corpus [release]              join_corpora: every run as a Job pod and a Flyte pod
+      |-- rt-k8sbench-arm [release, arm]  fit_all_arm      CPU pod | hosted 27B | L4
+      |-- rt-k8sbench-rl                  rl_all_policy    L4: decision model -> GRPO
+      |-- rt-k8sbench-pool                pool_all_arms    trees x every decision model
+      |-- rt-k8sbench-gate                gate_all_arms    kNN / numeric / disagreement gates, adapter
+      |-- counterfactual                  staging_counterfactual, neutral names
+rt-k8sbench-scorecard [release, arm]      score_all_arm    every split, pod type, staging, pair slice
+rt-k8sbench-leaderboard [release]         all_leaderboard
+\end{lstlisting}
+\caption{The benchmark as a Flyte factory. Re-running it rebuilds only what changed.}
+\label{fig:factory}
+\end{figure}
+
+We trained k8s-2 three times on the same data (\code{rsk-k8s-2}, \code{-s2} and
+\code{-s3}). The seed controls data order, LoRA initialization and RL sampling. GPU kernels
+are not bit-for-bit deterministic, so even the same seed would not reproduce a model
+exactly. The zero-shot model is scored once, with seed 1. Unless we say otherwise, tables
+show seed 1 with its bootstrap interval, and \cref{sec:res-seeds} reports the spread across
+all three seeds. \Cref{app:runs} lists every cluster run.

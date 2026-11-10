@@ -1,0 +1,22 @@
+\begin{tabular}{@{}lrrrrrrrr@{}}
+\toprule
+& \multicolumn{2}{c}{Job pods: regret (\%)} & \multicolumn{2}{c}{Flyte pods} & \multicolumn{2}{c}{Job \$ regret} & \multicolumn{2}{c}{Job, 3 seeds: mean (range)} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(l){8-9}
+approach & test & unseen & test & unseen & test & unseen & test & unseen \\
+\midrule
+static & 89.3\,{\scriptsize[84.7, 93.7]} & 115.1\,{\scriptsize[111.2, 119.2]} & 91.5 & 112.8 & 183.0 & 258.1 & 89.3 & 115.1 \\
+rules & 42.4\,{\scriptsize[37.9, 46.7]} & 49.8\,{\scriptsize[47.0, 52.5]} & 41.3 & 48.0 & 56.9 & 120.3 & 42.4 & 49.8 \\
+rules-sized & 37.7\,{\scriptsize[33.8, 41.6]} & \textbf{39.2}\,{\scriptsize[37.3, 41.2]} & 37.3 & 41.1 & 55.9 & 117.9 & 37.7 & 39.2 \\
+zero-shot 27B & 48.8\,{\scriptsize[33.1, 67.2]} & 42.8\,{\scriptsize[29.6, 57.2]} & 35.7 & 52.0 & 86.0 & 30.0 & --- & --- \\
+zero-shot 27B, JSON & 48.8\,{\scriptsize[31.9, 67.7]} & 44.4\,{\scriptsize[31.2, 59.2]} & 21.8 & 51.5 & 100.8 & 81.9 & --- & --- \\
+trees & 11.5\,{\scriptsize[10.2, 12.8]} & 69.1\,{\scriptsize[66.3, 71.8]} & 14.6 & 69.0 & 30.6 & \textbf{85.6} & 11.5 & 69.1 \\
+decision & 12.6\,{\scriptsize[11.3, 14.0]} & 47.8\,{\scriptsize[45.6, 50.4]} & 11.3 & 43.0 & 39.6 & 119.0 & 13.7\,{\scriptsize(12.6--15.0)} & 49.5\,{\scriptsize(44.2--56.6)} \\
+decision, argmax & 30.3\,{\scriptsize[28.0, 32.5]} & 69.1\,{\scriptsize[66.2, 72.1]} & 28.7 & 63.8 & 39.8 & 107.2 & 30.8\,{\scriptsize(30.3--31.7)} & 72.6\,{\scriptsize(68.1--80.6)} \\
+RL & 14.6\,{\scriptsize[13.2, 16.1]} & 39.3\,{\scriptsize[37.3, 41.4]} & 14.3 & \textbf{40.2} & 50.6 & 127.9 & 16.2\,{\scriptsize(14.6--17.4)} & 37.7\,{\scriptsize(35.5--39.3)} \\
+RL, argmax & 8.5\,{\scriptsize[7.1, 9.9]} & 46.5\,{\scriptsize[44.2, 48.8]} & 8.6 & 46.2 & 35.3 & 106.4 & 8.4\,{\scriptsize(8.2--8.6)} & 45.0\,{\scriptsize(41.3--47.2)} \\
+pool $\times$ decision & \textbf{6.6}\,{\scriptsize[5.6, 7.6]} & 56.8\,{\scriptsize[54.5, 59.2]} & \textbf{5.5} & 51.4 & 27.6 & 95.0 & 6.8\,{\scriptsize(6.6--6.9)} & 55.7\,{\scriptsize(52.1--58.3)} \\
+pool $\times$ RL & 10.5\,{\scriptsize[9.4, 11.8]} & 49.6\,{\scriptsize[47.5, 51.8]} & 11.1 & 50.3 & 34.7 & 100.8 & 10.7\,{\scriptsize(10.5--11.0)} & 53.9\,{\scriptsize(49.6--61.3)} \\
+pool $\times$ RL, argmax & 7.2\,{\scriptsize[6.0, 8.4]} & 79.4\,{\scriptsize[75.7, 83.2]} & 7.1 & 78.1 & \textbf{15.7} & 111.6 & 8.6\,{\scriptsize(6.8--11.8)} & 89.6\,{\scriptsize(78.6--110.9)} \\
+gate (kNN, $q$ 0.95) & 8.1\,{\scriptsize[6.9, 9.4]} & 39.3\,{\scriptsize[37.3, 41.4]} & 7.6 & \textbf{40.2} & 19.5 & 127.9 & 9.6\,{\scriptsize(8.1--12.7)} & 37.7\,{\scriptsize(35.5--39.3)} \\
+\bottomrule
+\end{tabular}

@@ -1,0 +1,74 @@
+\section{Discussion}
+\label{sec:discussion}
+
+\paragraph{Benchmarking Kubernetes pods from one set of measurements.}
+Because the user code is the same whichever way a pod is submitted, one measurement of
+the workload can label both a raw Job and a Flyte task, as long as the accounting for the
+pod's edges is right. Getting it right took real pods. Sibling processes in one pod
+confirmed the arithmetic, but only per-container cgroups showed where tmpfs pages are
+charged, that the first release's init containers could not hold their inputs, and that
+the Flyte runtime was less than half the size we had assumed. Anyone deriving Kubernetes
+labels this way should check them against the cgroup, not against another RSS
+measurement.
+
+\paragraph{What a model learns from Jobs.}
+A model trained on Jobs reads the manifest. It changes its memory request when the
+volume medium changes, and it does so on first runs where nothing else gives the staging
+away. Flyte tasks add nothing to that model's accuracy on Jobs, and a Flyte-only model
+does not transfer well even after an explicit adapter. For a team that submits pods both
+ways, the practical advice is to train on the pods it actually runs. Flyte history is still
+useful for sizing Flyte tasks, and the corrected adapter recovers part of the gap when Job
+history is missing.
+
+\paragraph{Familiar and unfamiliar code.}
+The gap between the two splits is the main open problem. On familiar code the best
+approaches are within 7--8\% of the oracle. On new kinds of code, the best trained model is
+39\% above it, and a careful rule matches it. Pooling the trees with a language model helps
+on familiar code and hurts on new code, because the pool's weight is tuned on familiar
+families. The gate recovers the better of the two on each split, but on this benchmark its
+detector has an easy job, since new families usually bring new libraries. A benchmark
+that separates unfamiliar code from unfamiliar libraries would test it properly.
+
+\paragraph{Cost, not accuracy.}
+Accuracy on the label and cost often disagree. Cost-aware decoding over-asks on purpose,
+the Flyte-to-Job adapter was judged a failure until its runtime constant was corrected, and
+the ranking on new code flips when retries become expensive. A benchmark for this
+decision has to score money, and it has to say what a failure costs.
+
+\section{Limitations}
+\label{sec:limitations}
+
+The workloads are synthetic. They use real libraries and real code paths, but the tasks
+are generated, the data is random, and runs take seconds to minutes. Production tasks are
+longer and messier. The seven unseen families were chosen by hand, and six of them
+introduce a library that no training family uses, so the benchmark does not test new code
+built only from familiar libraries. The people who wrote the generators also wrote the tree
+features and the rules, and the task names give away the family, although removing them
+changes regret by less than four points.
+
+The labels carry three known biases. The \code{ru\_maxrss} floor and memory-mapped inputs
+make about a third of labels one cell larger than strictly needed, so the oracle is
+slightly generous. Process pools are labelled by their largest process rather than their
+total, which is why two of 100 real pods failed at their label. And RightSizeMem has no
+per-second CPU series, so its throttling is modelled from mean cores. The Job labels are
+derived rather than measured for every run. We validated them on 100 runs in real pods
+and 176 in a single pod, but we did not re-measure GPU runs as Jobs, and the four stagings
+leave out sidecars, CSI drivers and other init work.
+
+The cost model uses list prices, with no spot discounts or bin-packing, and prices a retry
+at one oracle cost by default; \cref{sec:res-sens} shows how much that choice matters. We
+trained three times, which shows that rankings on new code within about ten points are not
+stable, but three seeds are not enough to put tight intervals on that variation. The
+zero-shot model was scored on a sample of about 300 runs per split, and only once.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+RightSize Bench scores the request a scheduler makes before a Kubernetes pod runs, in
+dollars, across 33 families of task code submitted both as raw Jobs and through Flyte.
+Checking its labels in real pods fixed two errors and measured the cost of Flyte's runtime
+at about 70\,MiB. A small model trained on Jobs reads the manifest and, pooled with
+gradient-boosted trees, comes within 7\% of the oracle on familiar code. On unfamiliar
+code, the best trained model and a careful rule are both about 39\% above the oracle, and
+the rule is safer when failures are expensive. Closing that gap, and testing a novelty
+detector on code that looks familiar but is not, is the work that remains.

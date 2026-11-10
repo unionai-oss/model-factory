@@ -1,0 +1,22 @@
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+& \multicolumn{2}{c}{test} & \multicolumn{2}{c}{unseen} \\
+\cmidrule(lr){2-3}\cmidrule(l){4-5}
+approach & first run & with history & first run & with history \\
+\midrule
+static & 98.4 & 82.5 & 131.7 & 100.8 \\
+rules & 66.1 & 24.6 & 73.3 & 29.4 \\
+rules-sized & 72.5 & 11.6 & 68.6 & \textbf{13.8} \\
+zero-shot 27B & 84.2 & 18.4 & 57.7 & 32.2 \\
+zero-shot 27B, JSON & 75.8 & 25.6 & 79.8 & 19.5 \\
+trees & 16.1 & 8.1 & 110.5 & 33.3 \\
+decision & 21.7 & 5.8 & 77.3 & 22.3 \\
+decision, argmax & 48.1 & 17.0 & 108.5 & 35.0 \\
+RL & 20.6 & 10.1 & \textbf{61.4} & 20.1 \\
+RL, argmax & 17.7 & \textbf{1.6} & 76.0 & 21.0 \\
+pool $\times$ decision & \textbf{10.8} & 3.5 & 99.4 & 19.8 \\
+pool $\times$ RL & 13.7 & 8.2 & 85.8 & 18.2 \\
+pool $\times$ RL, argmax & 13.5 & 2.5 & 140.7 & 26.2 \\
+gate (kNN, $q$ 0.95) & 14.5 & 3.4 & \textbf{61.4} & 20.1 \\
+\bottomrule
+\end{tabular}

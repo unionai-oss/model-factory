@@ -1,0 +1,73 @@
+### Job code (job.py)
+```python
+import pandas as pd
+import json
+import os
+import sys
+
+
+def join_orders_catalog(orders_path: str, catalog_path: str) -> dict:
+    orders = pd.read_parquet(orders_path)
+    catalog = pd.read_parquet(catalog_path)
+    catalog = catalog.drop_duplicates("sku", keep="last")
+    joined = orders.merge(catalog, on="sku", how="inner")
+    joined["revenue"] = joined["qty"] * joined["price"]
+    by_brand = joined.groupby("brand", observed=True)["revenue"].sum()
+    return {"rows": int(len(joined)), "brands": int(len(by_brand))}
+
+
+if __name__ == "__main__":
+    result = join_orders_catalog(sys.argv[1], sys.argv[2])
+    os.makedirs("/data/out", exist_ok=True)
+    with open("/data/out/result.json", "w") as f:
+        json.dump(result, f)
+```
+
+### Job manifest
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: pandas-join-
+  labels: {app.kubernetes.io/name: pandas-join}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: stage-inputs
+          image: amazon/aws-cli:2.17.0
+          command: [sh, -c, "aws s3 cp $INPUT_ORDERS /data/orders.parquet && aws s3 cp $INPUT_CATALOG /data/catalog.parquet"]
+          env: [{name: INPUT_ORDERS, value: "s3://batch-data/pandas-join/56ef2668/run-1/orders.parquet"}, {name: INPUT_CATALOG, value: "s3://batch-data/pandas-join/56ef2668/run-1/catalog.parquet"}]
+          resources: {requests: {cpu: 500m, memory: 256Mi}, limits: {memory: 281Mi}}
+          volumeMounts: [{name: data, mountPath: /data}]
+      containers:
+        - name: main
+          image: registry.internal/batch/pandas-join:84b6a081
+          command: [sh, -c, "python /app/job.py /data/orders.parquet /data/catalog.parquet && aws s3 cp /data/out/result.json $OUTPUT_URI"]
+          env:
+            - {name: OMP_NUM_THREADS, value: "1"}
+            - {name: OPENBLAS_NUM_THREADS, value: "1"}
+            - {name: MKL_NUM_THREADS, value: "1"}
+            - {name: OUTPUT_URI, value: "s3://batch-data/pandas-join/56ef2668/run-1/out/"}
+          resources: {}  # to be decided
+          volumeMounts: [{name: data, mountPath: /data}]
+      volumes:
+        - name: data
+          emptyDir: {medium: Memory}
+```
+
+### This run's inputs
+orders: parquet, 15.48 MiB, 632,510 rows, schema=[order_id: int64, sku: int64, qty: int32, price: double, ts: int64]
+catalog: parquet, 9.43 MiB, 80,000 rows, schema=[sku: int64, attr0: double, attr1: double, attr2: double, attr3: double, attr4: double, attr5: double, attr6: double, attr7: double, attr8: double, attr9: double, attr10: double, attr11: double, brand: string (dictionary)]
+
+### Earlier runs of this job (container memory peaks, from the cluster's metrics)
+- inputs orders: parquet, 49.05 MiB, 2,013,227 rows; catalog: parquet, 9.43 MiB, 80,000 rows -> peak memory 668 MiB, mean 0.99 cores, 1 s
+
+### Options
+memory: 256Mi, 384Mi, 512Mi, 768Mi, 1Gi, 1.5Gi, 2Gi, 3Gi, 4Gi, 6Gi, 8Gi, 12Gi, 16Gi, 24Gi, 32Gi, 48Gi, 64Gi
+cpu: 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8
+gpu: none, 1GiB, 1.5GiB, 2GiB, 3GiB, 4GiB, 6GiB, 8GiB, 10GiB, 12GiB, 15GiB, 22GiB, 32GiB, 44GiB, 64GiB, 88GiB, 120GiB, 176GiB
+
+Answer with JSON only: {"memory": "<one memory option>", "cpu": "<one cpu option>", "gpu": "<one gpu option>"}

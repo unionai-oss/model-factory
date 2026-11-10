@@ -1,0 +1,82 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{newtxtext,newtxmath}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{threeparttable}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage[section]{placeins}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+
+\definecolor{ink}{HTML}{1F2328}
+\definecolor{muted}{HTML}{6A737D}
+\definecolor{kube}{HTML}{326CE5}
+\definecolor{flyte}{HTML}{8A4FD3}
+\definecolor{codebg}{HTML}{F6F8FA}
+
+\lstdefinestyle{code}{
+  basicstyle=\ttfamily\scriptsize,
+  backgroundcolor=\color{codebg},
+  frame=single, rulecolor=\color{codebg},
+  columns=fullflexible, keepspaces=true,
+  breaklines=true, breakatwhitespace=false,
+  showstringspaces=false,
+  xleftmargin=2pt, xrightmargin=2pt,
+}
+\lstset{style=code}
+
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.8}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.7}
+\setcounter{topnumber}{3}
+\setcounter{totalnumber}{5}
+\captionsetup{font=small,labelfont=bf}
+\setlist{nosep,leftmargin=*}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\pp}{\,pp}
+\newcommand{\ci}[2]{\,[#1,\,#2]}
+
+\title{RightSize Bench: Learning Kubernetes Resource Requests from Code\\[2pt]
+\large Sizing the pod before it runs, through a raw Job or an AI-native interface}
+\author{Niels Bantilan\\ Union.ai\\ \texttt{niels@union.ai}}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\input{sections/abstract}
+\input{sections/intro}
+\input{sections/background}
+\input{sections/related}
+\input{sections/problem}
+\input{sections/dataset}
+\input{sections/twins}
+\input{sections/validation}
+\input{sections/cost}
+\input{sections/methods}
+\input{sections/setup}
+\input{sections/results}
+\input{sections/discussion}
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\appendix
+\input{sections/appendix}
+
+\end{document}

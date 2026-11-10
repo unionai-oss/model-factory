@@ -1,0 +1,24 @@
+\begin{tabular}{@{}lrr@{}}
+\toprule
+& \multicolumn{2}{c}{Job $-$ Flyte regret, paired (pp)} \\
+\cmidrule(l){2-3}
+approach & test & unseen \\
+\midrule
+static & -2.2\,{\scriptsize[-3.2, -1.2]} & +2.3\,{\scriptsize[+1.4, +3.4]} \\
+rules & +1.1\,{\scriptsize[-0.5, +2.5]} & +1.7\,{\scriptsize[+0.8, +2.6]} \\
+rules-sized & +0.4\,{\scriptsize[-1.1, +1.6]} & -1.8\,{\scriptsize[-2.5, -1.2]} \\
+zero-shot 27B & +13.1\,{\scriptsize[-4.8, +32.7]} & -9.2\,{\scriptsize[-25.8, +6.7]} \\
+zero-shot 27B, JSON & +27.0\,{\scriptsize[+13.9, +41.5]} & -7.1\,{\scriptsize[-37.9, +14.6]} \\
+trees & -3.1\,{\scriptsize[-4.0, -2.3]} & +0.1\,{\scriptsize[-0.9, +1.1]} \\
+decision & +1.4\,{\scriptsize[+0.4, +2.3]} & +4.8\,{\scriptsize[+3.5, +6.1]} \\
+decision, argmax & +1.6\,{\scriptsize[-0.0, +3.4]} & +5.4\,{\scriptsize[+3.6, +7.0]} \\
+RL & +0.3\,{\scriptsize[-0.4, +1.0]} & -0.9\,{\scriptsize[-2.0, +0.1]} \\
+RL, argmax & -0.1\,{\scriptsize[-1.0, +0.7]} & +0.3\,{\scriptsize[-0.9, +1.5]} \\
+pool $\times$ decision & +1.1\,{\scriptsize[+0.5, +1.6]} & +5.4\,{\scriptsize[+4.1, +6.8]} \\
+pool $\times$ RL & -0.6\,{\scriptsize[-1.2, +0.1]} & -0.7\,{\scriptsize[-2.0, +0.5]} \\
+pool $\times$ RL, argmax & +0.1\,{\scriptsize[-0.8, +1.1]} & +1.2\,{\scriptsize[-0.2, +2.6]} \\
+gate (kNN, $q$ 0.95) & +0.6\,{\scriptsize[-0.4, +1.6]} & -0.9\,{\scriptsize[-1.9, +0.1]} \\
+decision, Job-only & -7.3\,{\scriptsize[-8.6, -6.0]} & +2.5\,{\scriptsize[+0.5, +4.4]} \\
+decision, Flyte-only & +25.3\,{\scriptsize[+23.1, +27.5]} & +10.5\,{\scriptsize[+8.4, +12.6]} \\
+\bottomrule
+\end{tabular}

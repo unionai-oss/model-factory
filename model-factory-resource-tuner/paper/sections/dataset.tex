@@ -1,0 +1,121 @@
+\section{Dataset}
+\label{sec:dataset}
+
+The benchmark combines three corpora. Each one was built by its own single-axis benchmark
+using the same recipe. We wrote families of code generators, sampled tasks from each
+family, and measured several runs of each task at different input sizes in Kubernetes
+pods. \Cref{tab:corpora} summarizes the three corpora, and \cref{app:families} lists every
+family. All of these measurements describe the workload itself, independent of how its
+pod was submitted. \Cref{sec:twins} then works out what a Job pod and a Flyte pod each
+need, starting from the same measurement.
+
+\begin{table}[tbp]
+\centering\small
+\caption{The three corpora. RightSizeGPU's 2,052 unusable runs: 1,569 censored (out of
+memory on the largest shape they reached), 51 failed, and 432 the combined bench drops
+because their peak filled the device, which makes the measured peak only a lower bound.
+RightSizeMem's 166 unusable runs exceeded its 20\,GiB guard or 900\,s timeout.}
+\label{tab:corpora}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}llrrrrrrl@{}}
+\toprule
+corpus & release & families & held out & tasks/fam. & runs/task & measured & usable & labels \\
+\midrule
+RightSizeMem & v2    & 12 & 2 & 400 & 3 & 14,400 & 14,234 & peak memory; mean cores \\
+RightSizeCPU & big-1 & 11 & 2 & 450 & 2 &  9,900 &  9,900 & peak memory; busiest 15\,s \\
+RightSizeGPU & big-2 & 10 & 3 & 500 & 2 & 10,000 &  7,948 & peak GPU memory, sharding \\
+\midrule
+combined     & k8s-2 & 33 & 7 &     &   & 34,300 & 32,082 & \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Families, tasks and runs}
+A \emph{family} is a Python generator. Given a seed, it writes a task function and the
+specification of its inputs, and it draws a few hidden settings, which we call knobs,
+that decide how input bytes turn into resource use. A pandas family, for example,
+decides whether to project columns, which dtype backend to use and whether to downcast
+floats. A training family picks width, depth, batch size, mixed precision and
+checkpointing, and a CPU family picks a thread-pool size or leaves it unset. The knobs
+show up only in the code an approach reads. They are never given to an approach directly,
+and we keep them only to slice the results.
+
+Each run scales the leading dimension of the task's inputs by a factor drawn
+log-uniformly from $[0.25, 4]$ for RightSizeMem and from $[0.5, 2]$ for the CPU and GPU
+corpora. Runs are shuffled, so a task's history can be larger or smaller than the current
+run. The inputs are synthetic: normal floats, uniform integers, dictionary-encoded
+categories, random strings, Zipf-distributed word ids for text, and random bytes for
+images, written as Parquet, CSV, JSONL or \code{.npy}. CPU and GPU workloads loop until a
+per-task time budget runs out (30--60\,s for CPU and 45--90\,s for GPU), while RightSizeMem
+workloads run to completion.
+
+\subsection{RightSizeMem v2: peak memory}
+RightSizeMem has twelve families, chosen because they turn input bytes into memory in
+different ways. They include pandas group-bys and joins, polars pipelines in eager, lazy
+and streaming modes, DuckDB queries with and without a memory limit, chunked CSV and
+JSONL readers, NumPy linear algebra with optional memory mapping, scikit-learn
+estimators, TF-IDF, a small PyTorch model on CPU, image batches and pure-Python grouping.
+
+Each run uses three processes. A child process writes the inputs to a temporary
+directory, a fresh interpreter runs the task body on those files, and the parent reads
+the child's \code{ru\_maxrss} and CPU time from \code{wait4}. BLAS and OpenMP are limited
+to one thread, and workloads set their own threads in code. The workload's peak memory
+$w$ is its \code{ru\_maxrss}. As we show in \cref{sec:validation}, on Linux this value
+includes the measuring parent's own peak at the time of \code{exec}, about 158\,MiB here,
+which makes about a third of the smaller workloads' labels one cell higher than needed.
+
+\subsection{RightSizeCPU big-1: the busiest 15 seconds}
+RightSizeCPU has eleven families, chosen for how they use cores, since CPU need depends on
+parallelism much more than on input size. They cover NumPy BLAS with and without a thread
+cap, polars and DuckDB with explicit thread settings, scikit-learn ensembles, serial
+pandas, Python thread pools that hold or release the GIL, process pools, a CPU PyTorch
+model, pyarrow CSV parsing, an I/O-bound pool and a task with two phases.
+
+CPU time for the whole process tree is sampled every second. Each pod runs two
+measurements side by side on disjoint sets of seven cores, and a check of 44 runs
+against single-run pods put all 44 within 25\% of each other. The CPU label is the
+busiest 15-second average, because that is the resolution at which cluster monitoring
+(Prometheus scraping cAdvisor every 15\,s) sees a container. Peak memory is measured as in
+RightSizeMem.
+
+\subsection{RightSizeGPU big-2: peak GPU memory across a machine ladder}
+RightSizeGPU has ten PyTorch families: a tabular MLP, a CNN, a CNN limited by its data
+loader, a GPT language model, a transformer encoder, a recommender with sharded
+embeddings, blocked matrix multiplication, nearest-neighbour search, fine-tuning of
+decoders from 0.6B to 7B parameters split across GPUs, and generation with a KV cache.
+NVML reports memory and utilization on every visible GPU every half second. Each run
+starts on a T4 and moves up the machine ladder (\cref{tab:ladder}) whenever it runs out
+of device memory, and a run that runs out of memory on the largest machine it reached is
+censored. The oracle machine for a run is the cheapest one it fits on. For machines a run
+was not measured on, we model the fit from its per-GPU peak and, for sharded code, its
+imbalance across GPUs.
+
+\subsection{Splits and history}
+Runs are split by task, never by run. A hash of the task id sends 70\% of each family's
+tasks to training, 10\% to validation and 20\% to test. The seven held-out families go
+entirely to a separate \emph{unseen} split. The test split therefore measures how well an
+approach handles new tasks from familiar families, and the unseen split measures how well
+it handles new kinds of code. Every setting that an approach tunes is chosen on
+validation, which contains familiar families only.
+
+The $k$-th run of a task carries the task's earlier runs as its history. A task's first
+run has no history at all, and these cold starts make up 33--50\% of each split.
+
+\begin{table}[tbp]
+\centering\small
+\caption{Usable runs per split. Each run appears twice in the bench, once as a Job and
+once as a Flyte task, in the same split.}
+\label{tab:splits}
+\begin{tabular}{@{}lrrrrl@{}}
+\toprule
+source & train & val & test & unseen & unseen families \\
+\midrule
+mem & 8,457 & 1,138 & 2,316 & 2,323 & duckdb\_sql, image\_batch \\
+cpu & 5,628 &   838 & 1,634 & 1,800 & duckdb\_sql, pyarrow\_csv \\
+gpu & 3,968 &   542 & 1,145 & 2,293 & recsys\_train, knn\_search, llm\_generate \\
+\midrule
+runs        & 18,053 & 2,518 &  5,095 &  6,416 & \\
+pods (rows) & 36,106 & 5,036 & 10,190 & 12,832 & \\
+\bottomrule
+\end{tabular}
+\end{table}

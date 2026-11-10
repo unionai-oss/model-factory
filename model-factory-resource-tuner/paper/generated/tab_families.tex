@@ -1,0 +1,41 @@
+\begin{tabular}{@{}llllr@{}}
+\toprule
+corpus & family & driver & sample input & lines \\
+\midrule
+RightSizeMem & \code{csv\_chunked} & code & {\scriptsize\ttfamily readings: csv, header: device,x0,x1,x2,x3,x4,x5,x6,x7,tag0} & 13 \\
+ & \code{jsonl\_records} & both & {\scriptsize\ttfamily logs: jsonl, first record keys: ['user', 'score0', 'scor\ldots} & 17 \\
+ & \code{numpy\_linalg} & both & {\scriptsize\ttfamily matrix: npy, shape=(326345, 128), dtype=float64} & 15 \\
+ & \code{pandas\_groupby} & both & {\scriptsize\ttfamily events: parquet, 1,790,583 rows, schema=[customer\_id: i\ldots} & 14 \\
+ & \code{pandas\_join} & both & {\scriptsize\ttfamily orders: parquet, 632,344 rows, schema=[order\_id: int64,\ldots} & 19 \\
+ & \code{polars\_pipeline} & code & {\scriptsize\ttfamily events: parquet, 2,236,012 rows, schema=[user\_id: int64\ldots} & 15 \\
+ & \code{python\_grouping} & both & {\scriptsize\ttfamily rows: csv, header: key,value,note0,note1,note2} & 18 \\
+ & \code{sklearn\_fit} & both & {\scriptsize\ttfamily train: parquet, 326,345 rows, schema=[x0: double, x1: do\ldots} & 19 \\
+ & \code{tfidf\_text} & both & {\scriptsize\ttfamily docs: parquet, 52,765 rows, schema=[doc\_id: int64, text\ldots} & 16 \\
+ & \code{torch\_train} & both & {\scriptsize\ttfamily train: parquet, 1,710,807 rows, schema=[x0: double, x1:\ldots} & 39 \\
+ & \code{duckdb\_sql (unseen)} & code & {\scriptsize\ttfamily events: parquet, 2,403,570 rows, schema=[account\_id: in\ldots} & 15 \\
+ & \code{image\_batch (unseen)} & both & {\scriptsize\ttfamily images: npy, shape=(52998, 128, 128, 3), dtype=uint8} & 15 \\
+\midrule
+RightSizeCPU & \code{io\_bound} & io & {\scriptsize\ttfamily events: jsonl, first record keys: ['user', 'event', 'pay\ldots} & 27 \\
+ & \code{mixed\_phases} & phases & {\scriptsize\ttfamily matrix: npy, shape=(101438, 256), dtype=float64} & 28 \\
+ & \code{numpy\_blas} & threads & {\scriptsize\ttfamily features: npy, shape=(135042, 512), dtype=float32} & 25 \\
+ & \code{pandas\_serial} & serial & {\scriptsize\ttfamily orders: parquet, 893,225 rows, schema=[customer\_id: int\ldots} & 20 \\
+ & \code{polars\_groupby} & threads & {\scriptsize\ttfamily events: parquet, 5,464,904 rows, schema=[key: int64, reg\ldots} & 22 \\
+ & \code{process\_pool} & processes & {\scriptsize\ttfamily docs: csv, header: id,text} & 31 \\
+ & \code{python\_threadpool} & gil & {\scriptsize\ttfamily blob: npy, shape=(1773, 65536), dtype=uint8} & 29 \\
+ & \code{sklearn\_ensemble} & threads & {\scriptsize\ttfamily train: parquet, 177,376 rows, schema=[f0: double, f1: do\ldots} & 22 \\
+ & \code{torch\_cpu} & threads & {\scriptsize\ttfamily train: parquet, 177,376 rows, schema=[f0: double, f1: do\ldots} & 32 \\
+ & \code{duckdb\_sql (unseen)} & threads & {\scriptsize\ttfamily ledger: parquet, 5,464,904 rows, schema=[account\_id: in\ldots} & 22 \\
+ & \code{pyarrow\_csv (unseen)} & threads & {\scriptsize\ttfamily readings: csv, header: sensor,r0,r1,r2,r3} & 24 \\
+\midrule
+RightSizeGPU & \code{blocked\_gemm} & blocks & {\scriptsize\ttfamily vectors: npy, shape=(48071, 256), dtype=float32} & 28 \\
+ & \code{cnn\_train} & activations & {\scriptsize\ttfamily images: npy, shape=(4409, 224, 224, 3), dtype=uint8} & 35 \\
+ & \code{encoder\_infer} & data & {\scriptsize\ttfamily tokens: npy, shape=(44344, 512), dtype=int32} & 35 \\
+ & \code{gpt\_train} & activations & {\scriptsize\ttfamily tokens: npy, shape=(17737, 1025), dtype=int32} & 55 \\
+ & \code{lm\_finetune (sharded)} & params & {\scriptsize\ttfamily tokens: npy, shape=(1181, 1025), dtype=int32} & 63 \\
+ & \code{loader\_bound} & input\_bound & {\scriptsize\ttfamily images: npy, shape=(7681, 64, 64, 3), dtype=uint8} & 43 \\
+ & \code{mlp\_tabular} & params & {\scriptsize\ttfamily train: parquet, 480,714 rows, schema=[f0: float, f1: flo\ldots} & 36 \\
+ & \code{knn\_search (unseen)} & blocks & {\scriptsize\ttfamily index: npy, shape=(240357, 128), dtype=float32} & 27 \\
+ & \code{llm\_generate (unseen) (sharded)} & kv\_cache & {\scriptsize\ttfamily prompts: npy, shape=(3313, 2048), dtype=int32} & 59 \\
+ & \code{recsys\_train (unseen) (sharded)} & params & {\scriptsize\ttfamily clicks: parquet, 1,786,450 rows, schema=[user: int64, it\ldots} & 53 \\
+\bottomrule
+\end{tabular}

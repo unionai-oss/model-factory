@@ -1,0 +1,88 @@
+\section{Every run as a Job and as a Flyte task}
+\label{sec:twins}
+
+The workload code was generated as Flyte tasks, but nothing in the body of a task
+depends on Flyte. We use that to put every measured run into the benchmark twice, once as
+a raw Kubernetes Job and once as a Flyte task, with the task body unchanged in both. To
+make the Job version, \code{job.py}, we turn \code{File} parameters into paths, drop the
+\code{flyte} import, and add a \code{\_\_main\_\_} block that stages the inputs, calls the
+function and writes \code{result.json} for upload. A \code{batch/v1} manifest goes with
+it, carrying the image, the input locations, the thread settings the measurement used,
+the staging volume and an empty \code{resources} block, which is the request still to be
+decided. \Cref{fig:twin} shows one task written both ways.
+
+\begin{figure}[tbp]
+\centering
+\begin{minipage}[t]{0.48\linewidth}
+\textbf{\small Flyte task}
+\lstinputlisting[language=Python]{figures/ex_flyte.py}
+\textbf{\small Job manifest (boto3-tmpfs)}
+\lstinputlisting{figures/ex_manifest.yaml}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.50\linewidth}
+\textbf{\small \code{job.py} (boto3 staging)}
+\lstinputlisting[language=Python]{figures/ex_job.py}
+\end{minipage}
+\caption{One RightSizeMem task, as a Flyte task and as a raw Job. The disk staging
+differs from this manifest in one line, \code{emptyDir: \{\}}. The init-container
+stagings add an \code{aws-cli} init container that copies the inputs to \code{/data}, and
+\code{job.py} then reads them from \code{argv} (\cref{app:prompt}).}
+\label{fig:twin}
+\end{figure}
+
+\subsection{Stagings}
+How a Job's inputs reach its container is the biggest thing that changes its memory
+need. Each task is assigned one of four stagings by a hash of its id, and all of its runs
+share it (\cref{tab:stagings}). Inputs are fetched either by an init container running
+\code{aws-cli} or by the job itself with boto3, and they land either on node disk or on a
+memory-backed volume.
+
+\begin{table}[tbp]
+\centering\small
+\caption{The four Job stagings.}
+\label{tab:stagings}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}lrlll@{}}
+\toprule
+staging & share & who fetches the inputs & where they land & memory need beyond the workload \\
+\midrule
+init-disk   & 30\% & aws-cli init container & \code{emptyDir} on node disk & --- \\
+init-tmpfs  & 20\% & aws-cli init container & \code{emptyDir}, \code{medium: Memory} & $+B$ (staged bytes) \\
+boto3-disk  & 30\% & the job itself, boto3  & \code{emptyDir} on node disk & $+48$\,MiB (boto3) \\
+boto3-tmpfs & 20\% & the job itself, boto3  & \code{emptyDir}, \code{medium: Memory} & $+48$\,MiB $+B$ \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Label accounting}
+\label{sec:accounting}
+Let $w$ be the workload's measured peak memory (\cref{sec:dataset}) and let $B$ be the
+size of the staged inputs plus the result file, with each file rounded up to whole pages.
+The two kinds of pod need
+\begin{align*}
+\text{Job:}\quad & 1.05\,\bigl(w + 48\,\text{MiB}\cdot[\text{boto3}] + B\cdot[\text{tmpfs}]\bigr),\\
+\text{Flyte:}\quad & 1.05\,\bigl(w + R\bigr), \qquad R = 70\,\text{MiB},
+\end{align*}
+where the factor 1.05 is headroom and the memory label is the smallest grid cell at or
+above the need. Each term has a simple reason. Files on a memory-backed volume are
+charged to memory byte for byte, while the same files on node disk are reclaimable page
+cache and add nothing, since the measured workloads already read local files. The boto3
+client adds 48\,MiB to a workload's peak. Its download also runs inside the job, taking
+$d = \text{bytes}/440\,\text{MB/s} + 0.4\,\text{s per object} + 0.7\,\text{s}$ at about
+1.8 cores, so we prepend that window to the run's CPU series. For a light job with a large
+input, the download can be the busiest 15 seconds of the run. The Flyte runtime $R$ is
+70\,MiB, measured in real task pods (\cref{sec:validation}). Earlier releases used a value
+of 180\,MiB that had never been measured. Staging does not change GPU need.
+
+The manifest sizes the init container at $256\,\text{MiB} + B$ for tmpfs stagings, so
+that it can hold what it writes. Our first release used a flat 256\,Mi, which real pods
+showed cannot work for larger inputs (\cref{sec:validation}). Histories are reported in
+each interface's own units: a Job's earlier runs report the container's peak as cAdvisor
+would, and a Flyte task's report the peak including the runtime, as Flyte's UI would.
+
+The staging constants come from an in-cluster probe using boto3 1.43 under cgroup~v2. A
+bare interpreter holds 11\,MiB. With boto3 imported, a client built and a file downloaded,
+the process holds 74--80\,MiB, and it never peaks above that final level. Inside a real
+workload boto3 adds only 48\,MiB at the median, because it shares modules the workload has
+already loaded. Download throughput rises from 122\,MB/s for a 64\,MiB object to
+417--431\,MB/s for a 4\,GiB one.

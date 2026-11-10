@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: pandas-join-
+  labels: {app.kubernetes.io/name: pandas-join}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: main
+          image: registry.internal/batch/pandas-join:3ee28a49
+          command: [python, /app/job.py]
+          env:
+            - {name: INPUT_ORDERS, value: "s3://batch-data/pandas-join/a1b2c3d4/run-1/orders.parquet"}
+            - {name: INPUT_CATALOG, value: "s3://batch-data/pandas-join/a1b2c3d4/run-1/catalog.parquet"}
+            - {name: OMP_NUM_THREADS, value: "1"}
+            - {name: OPENBLAS_NUM_THREADS, value: "1"}
+            - {name: MKL_NUM_THREADS, value: "1"}
+            - {name: OUTPUT_URI, value: "s3://batch-data/pandas-join/a1b2c3d4/run-1/out/"}
+          resources: {}  # to be decided
+          volumeMounts: [{name: data, mountPath: /data}]
+      volumes:
+        - name: data
+          emptyDir: {medium: Memory}
+
+

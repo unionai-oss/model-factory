@@ -1,0 +1,172 @@
+\begin{thebibliography}{23}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Cortez et~al.(2017)Cortez, Bonde, Muzio, Russinovich, Fontoura, and
+  Bianchini]{cortez2017resourcecentral}
+Eli Cortez, Anand Bonde, Alexandre Muzio, Mark Russinovich, Marcus Fontoura,
+  and Ricardo Bianchini.
+\newblock Resource central: Understanding and predicting workloads for improved
+  resource management in large cloud platforms.
+\newblock In \emph{Proceedings of the 26th Symposium on Operating Systems
+  Principles (SOSP)}, 2017.
+\newblock \doi{10.1145/3132747.3132772}.
+
+\bibitem[Delimitrou and Kozyrakis(2014)]{delimitrou2014quasar}
+Christina Delimitrou and Christos Kozyrakis.
+\newblock Quasar: Resource-efficient and {QoS}-aware cluster management.
+\newblock In \emph{Proceedings of the 19th International Conference on
+  Architectural Support for Programming Languages and Operating Systems
+  (ASPLOS)}, 2014.
+\newblock \doi{10.1145/2541940.2541941}.
+
+\bibitem[Efron and Tibshirani(1993)]{efron1993bootstrap}
+Bradley Efron and Robert~J. Tibshirani.
+\newblock \emph{An Introduction to the Bootstrap}.
+\newblock Chapman \& Hall, 1993.
+
+\bibitem[Field and Welsh(2007)]{field2007clustered}
+Christopher~A. Field and Alan~H. Welsh.
+\newblock Bootstrapping clustered data.
+\newblock \emph{Journal of the Royal Statistical Society: Series B (Statistical
+  Methodology)}, 69\penalty0 (3):\penalty0 369--390, 2007.
+\newblock \doi{10.1111/j.1467-9868.2007.00593.x}.
+
+\bibitem[{Flyte Authors}(2025)]{flyte}
+{Flyte Authors}.
+\newblock Flyte.
+\newblock \url{https://flyte.org}, 2025.
+
+\bibitem[Friedman(2001)]{friedman2001gbm}
+Jerome~H. Friedman.
+\newblock Greedy function approximation: A gradient boosting machine.
+\newblock \emph{The Annals of Statistics}, 29\penalty0 (5):\penalty0
+  1189--1232, 2001.
+\newblock \doi{10.1214/aos/1013203451}.
+
+\bibitem[Genest and Zidek(1986)]{genest1986pools}
+Christian Genest and James~V. Zidek.
+\newblock Combining probability distributions: A critique and an annotated
+  bibliography.
+\newblock \emph{Statistical Science}, 1\penalty0 (1):\penalty0 114--135, 1986.
+\newblock \doi{10.1214/ss/1177013825}.
+
+\bibitem[Guo et~al.(2017)Guo, Pleiss, Sun, and Weinberger]{guo2017calibration}
+Chuan Guo, Geoff Pleiss, Yu~Sun, and Kilian~Q. Weinberger.
+\newblock On calibration of modern neural networks.
+\newblock In \emph{Proceedings of the 34th International Conference on Machine
+  Learning (ICML)}, 2017.
+
+\bibitem[Heo(2024)]{cgroupv2}
+Tejun Heo.
+\newblock Control group v2.
+\newblock Linux kernel documentation,
+  \url{https://docs.kernel.org/admin-guide/cgroup-v2.html}, 2024.
+
+\bibitem[Hu et~al.(2022)Hu, Shen, Wallis, Allen-Zhu, Li, Wang, Wang, and
+  Chen]{hu2022lora}
+Edward~J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean
+  Wang, Lu~Wang, and Weizhu Chen.
+\newblock {LoRA}: Low-rank adaptation of large language models.
+\newblock In \emph{International Conference on Learning Representations}, 2022.
+
+\bibitem[Ke et~al.(2017)Ke, Meng, Finley, Wang, Chen, Ma, Ye, and
+  Liu]{ke2017lightgbm}
+Guolin Ke, Qi~Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei
+  Ye, and Tie-Yan Liu.
+\newblock {LightGBM}: A highly efficient gradient boosting decision tree.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~30, 2017.
+
+\bibitem[Koenker and Bassett(1978)]{koenker1978quantile}
+Roger Koenker and Gilbert Bassett.
+\newblock Regression quantiles.
+\newblock \emph{Econometrica}, 46\penalty0 (1):\penalty0 33--50, 1978.
+\newblock \doi{10.2307/1913643}.
+
+\bibitem[{Kubernetes Authors}(2024{\natexlab{a}})]{k8sresources}
+{Kubernetes Authors}.
+\newblock Resource management for pods and containers.
+\newblock
+  \url{https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/},
+  2024{\natexlab{a}}.
+
+\bibitem[{Kubernetes Authors}(2024{\natexlab{b}})]{k8svolumes}
+{Kubernetes Authors}.
+\newblock Volumes: {emptyDir}.
+\newblock \url{https://kubernetes.io/docs/concepts/storage/volumes/#emptydir},
+  2024{\natexlab{b}}.
+
+\bibitem[{Kubernetes Authors}(2024{\natexlab{c}})]{k8svpa}
+{Kubernetes Authors}.
+\newblock Vertical pod autoscaler.
+\newblock
+  \url{https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler},
+  2024{\natexlab{c}}.
+
+\bibitem[Kwon et~al.(2023)Kwon, Li, Zhuang, Sheng, Zheng, Yu, Gonzalez, Zhang,
+  and Stoica]{kwon2023vllm}
+Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody~Hao Yu,
+  Joseph~E. Gonzalez, Hao Zhang, and Ion Stoica.
+\newblock Efficient memory management for large language model serving with
+  {PagedAttention}.
+\newblock In \emph{Proceedings of the 29th Symposium on Operating Systems
+  Principles (SOSP)}, 2023.
+\newblock \doi{10.1145/3600006.3613165}.
+
+\bibitem[{Qwen Team}(2025)]{qwen3}
+{Qwen Team}.
+\newblock {Qwen3} technical report, 2025.
+
+\bibitem[Rzadca et~al.(2020)Rzadca, Findeisen, Swiderski, Zych, Broniek,
+  Kusmierek, Nowak, Strack, Witusowski, Hand, and Wilkes]{rzadca2020autopilot}
+Krzysztof Rzadca, Pawel Findeisen, Jacek Swiderski, Przemyslaw Zych, Przemyslaw
+  Broniek, Jarek Kusmierek, Pawel Nowak, Beata Strack, Piotr Witusowski, Steven
+  Hand, and John Wilkes.
+\newblock Autopilot: Workload autoscaling at {Google}.
+\newblock In \emph{Proceedings of the Fifteenth European Conference on Computer
+  Systems (EuroSys)}, 2020.
+\newblock \doi{10.1145/3342195.3387524}.
+
+\bibitem[Shao et~al.(2024)Shao, Wang, Zhu, Xu, Song, Bi, Zhang, Zhang, Li, Wu,
+  and Guo]{shao2024deepseekmath}
+Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei
+  Zhang, Mingchuan Zhang, Y.~K. Li, Y.~Wu, and Daya Guo.
+\newblock {DeepSeekMath}: Pushing the limits of mathematical reasoning in open
+  language models, 2024.
+
+\bibitem[Sun et~al.(2022)Sun, Ming, Zhu, and Li]{sun2022knnood}
+Yiyou Sun, Yifei Ming, Xiaojin Zhu, and Yixuan Li.
+\newblock Out-of-distribution detection with deep nearest neighbors.
+\newblock In \emph{Proceedings of the 39th International Conference on Machine
+  Learning (ICML)}, 2022.
+
+\bibitem[Tirmazi et~al.(2020)Tirmazi, Barker, Deng, Haque, Qin, Hand,
+  Harchol-Balter, and Wilkes]{tirmazi2020borg}
+Muhammad Tirmazi, Adam Barker, Nan Deng, Md~E. Haque, Zhijing~Gene Qin, Steven
+  Hand, Mor Harchol-Balter, and John Wilkes.
+\newblock {Borg}: The next generation.
+\newblock In \emph{Proceedings of the Fifteenth European Conference on Computer
+  Systems (EuroSys)}, 2020.
+\newblock \doi{10.1145/3342195.3387517}.
+
+\bibitem[Verma et~al.(2015)Verma, Pedrosa, Korupolu, Oppenheimer, Tune, and
+  Wilkes]{verma2015borg}
+Abhishek Verma, Luis Pedrosa, Madhukar Korupolu, David Oppenheimer, Eric Tune,
+  and John Wilkes.
+\newblock Large-scale cluster management at {Google} with {Borg}.
+\newblock In \emph{Proceedings of the Tenth European Conference on Computer
+  Systems (EuroSys)}, 2015.
+\newblock \doi{10.1145/2741948.2741964}.
+
+\bibitem[Vinyals et~al.(2015)Vinyals, Fortunato, and
+  Jaitly]{vinyals2015pointer}
+Oriol Vinyals, Meire Fortunato, and Navdeep Jaitly.
+\newblock Pointer networks.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~28, 2015.
+
+\end{thebibliography}

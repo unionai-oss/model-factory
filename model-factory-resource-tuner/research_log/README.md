@@ -41,28 +41,28 @@ Conventions:
 | 2026-10-28 | [round-21-gpu-big-2-hybrids](2026-10-26-round-21-gpu-big-2-hybrids.md) | **GPU big-2** on the cluster's whole machine ladder (T4 -> 4xL40S; sharded lm_finetune / llm_generate / recsys_train): 74.7% of runs fit a T4 (big-1: 94.8%), but 4xL4 / 4xL40S capacity never came and 1,569 large runs are censored. **Trees x LLM hybrids** (stacked hints, log pools) on CPU, GPU and combined: best in distribution everywhere (CPU 98.5%, GPU 74.8%, combined **3.2% regret** for RL from the stacked model), worst learned arm on unseen families (combined 77-126% vs rl-pointer 35.5%): the trust in the trees is learned where the trees are right. Only the combined pool beats its LLM on both splits |
 | 2026-11-08 | [round-22-k8s-twins](2026-11-06-round-22-k8s-twins.md) | **Every run gets a Kubernetes twin**: the same body as `job.py` plus a Job manifest, four stagings (init container / boto3 x disk / tmpfs), labels by exact accounting from the Flyte measurement, checked on 176 measured runs. Combined bench with twins (test n=10,190, unseen n=12,832). Trained on both platforms, K8s regret is within 1-3 points of Flyte, and the decision model moves memory with the one-line tmpfs difference in 77-81% of pairs (rules 43%). A Flyte-only model does not transfer (K8s memory right 30-40%); a staging adapter fixes accuracy but not regret. **A label-free kNN novelty gate** (pooled trees on familiar runs, rl-pointer on novel ones) scores **6.9% test / 36.8% unseen**, the best arm on each split, on two independent trainings. Its detector is perfect here only because unseen families import unseen libraries (numbers-only: AUROC 0.67) |
 
-## Standing results — round 22: Flyte + Kubernetes twins (as of 2026-11-08)
+| 2026-11-09 | [round-23-review-real-pods](2026-11-08-round-23-review-real-pods.md) | **Review, real pods, and the k8s-2 release.** ~480 real pods check the Job labels against per-container cgroups: the Flyte runtime is ~70 MiB, not the unmeasured 180 (2/3 of Flyte labels were a cell high), and k8s-1's 256Mi init containers could not hold tmpfs inputs over ~250 MiB (7% of Job rows); both fixed in k8s-2, trained 3 times. Job pods: pool x decision **6.6%** test; on unseen families RL, the pre-registered gate and a new `rules-sized` baseline tie at **~39%**, and `rules-sized` wins when an OOM costs a resubmission. Models trained on Jobs read the manifest (72-78% right on a disk-to-tmpfs counterfactual; Flyte-only 21%); Flyte rows add nothing on Jobs. Paper rewritten Kubernetes-first, as LaTeX (`paper/`) + HTML |
 
-From [rsk-k8s-1-gate](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-1-gate)
-(replicate 2; replicate 1 is
-[rsk-k8s-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-1)):
-the combined bench (v2 + CPU big-1 + GPU big-2) and every run's K8s twin,
-test n=10,190 / unseen n=12,832. Regret is the mean cost ratio to the oracle, minus 1.
+## Standing results — round 23: Kubernetes Jobs and Flyte tasks, k8s-2 (as of 2026-11-09)
 
-| arm | regret: test / unseen | K8s: test / unseen | K8s memory right (test) | $ per 1k test runs (oracle $280) |
+From [rsk-k8s-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2) (seed 1), with
+[rsk-k8s-2-s2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2-s2) and [rsk-k8s-2-s3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2-s3)
+for the range across trainings. The combined bench (v2 + CPU big-1 + GPU big-2),
+each run as a raw Job and as a Flyte task: 5,095 test and 6,416 unseen pods of each kind.
+Regret is the mean cost ratio to the oracle minus 1, on **Job pods**, with 95%
+task-clustered intervals. Paper: [`paper/`](../paper/), pages: [`benchmarks/rightsize-bench-k8s.html`](../benchmarks/rightsize-bench-k8s.html).
+
+| arm | Job test | Job unseen | 3 seeds, test / unseen | $ per 1k Job runs, test / unseen (oracle $282 / $517) |
 |---|---|---|---|---|
-| static | 90.6% / 114.2% | 89.3% / 115.1% | -- | $794 |
-| rules | 40.9% / 48.9% | 42.4% / 49.8% | -- | $437 |
-| gbt-dist | 13.1% / 68.8% | 11.6% / 69.9% | 92.8% | $366 |
-| jev-pointer (1.7B, both platforms) | 13.2% / 51.1% | 13.8% / 50.9% | 90.4% | $397 |
-| jev-pointer-flyte (Flyte rows only) | 16.6% / 43.8% | 18.0% / 42.6% | 30.5% | $389 |
-| rl-pointer | 13.9% / **36.8%** | 13.7% / **35.4%** | 73.5% | $411 |
-| pool-rl-pointer-argmax | **6.6%** / 94.5% | 7.3% / 98.9% | 94.0% | $321 |
-| **gate-rl-pointer** (kNN, q0.95) | 6.9% / **36.8%** | 7.8% / **35.4%** | 92.3% | $328 |
-
-Unseen-family regret of the argmax and pooled arms moves by 8-25 points
-between two trainings; test regret moves by about 1. Details:
-[round-22](2026-11-06-round-22-k8s-twins.md).
+| static | 89.3% | 115.1% | fixed | $797 / $1,850 |
+| rules | 42.4% | 49.8% | fixed | $442 / $1,138 |
+| rules-sized | 37.7% | **39.2%** [37.3, 41.2] | fixed | $439 / $1,126 |
+| gbt-dist | 11.5% | 69.1% | fixed | $368 / **$959** |
+| jev-pointer (1.7B, both pod types) | 12.6% | 47.8% | 12.6-15.0 / 44.2-56.6 | $393 / $1,131 |
+| rl-pointer | 14.6% | 39.3% | 14.6-17.4 / 35.5-39.3 | $424 / $1,177 |
+| pool x jev-pointer | **6.6%** [5.6, 7.6] | 56.8% | 6.6-6.9 / 52.1-58.3 | $359 / $1,007 |
+| pool x rl-pointer, argmax | 7.2% | 79.4% | 6.8-11.8 / 78.6-110.9 | **$326** / $1,093 |
+| gate (kNN q0.95, pre-registered) | 8.1% | 39.3% | 8.1-12.7 / 35.5-39.3 | $337 / $1,177 |
 
 ## Standing results — round 21: big releases with trees x LLM hybrids (as of 2026-10-28)
 
