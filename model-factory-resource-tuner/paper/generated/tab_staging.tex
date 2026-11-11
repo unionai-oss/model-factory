@@ -1,0 +1,20 @@
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+approach & init-disk & init-tmpfs & boto3-disk & boto3-tmpfs \\
+\midrule
+static & 85.2 & 79.1 & 60.5 & 69.6 \\
+rules & 47.7 & 54.7 & 43.5 & 43.7 \\
+rules-sized & 38.7 & 42.7 & 46.4 & 35.0 \\
+zero-shot 27B & 42.3 & 67.7 & 26.5 & 75.6 \\
+zero-shot 27B, JSON & 23.6 & 61.9 & 52.4 & 68.0 \\
+trees & 12.8 & 13.8 & 8.9 & 5.3 \\
+decision & 7.2 & 4.5 & 7.9 & 6.0 \\
+decision, argmax & 30.3 & 25.4 & 27.3 & 22.0 \\
+RL & 12.0 & 11.9 & 10.2 & 7.7 \\
+RL, argmax & 5.9 & 3.7 & \textbf{4.8} & 3.4 \\
+pool $\times$ decision & \textbf{4.8} & \textbf{2.6} & 5.8 & \textbf{3.0} \\
+pool $\times$ RL & 10.7 & 10.4 & 6.5 & 4.7 \\
+pool $\times$ RL, argmax & 9.3 & 7.0 & 6.7 & 3.7 \\
+gate (kNN, $q$ 0.95) & 9.5 & 7.7 & 6.9 & 4.6 \\
+\bottomrule
+\end{tabular}

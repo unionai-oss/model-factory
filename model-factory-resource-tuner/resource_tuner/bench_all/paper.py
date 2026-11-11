@@ -113,3 +113,11 @@ async def paper_export(corpus: flyte.io.File, arm_dirs: list[flyte.io.Dir], part
                 metas[v] = meta
         out = {"picks": picks, "metas": metas}
     return base64.b64encode(gzip.compress(json.dumps(out, default=float).encode())).decode()
+
+
+@allbench_env.task(report=False)
+async def paper_file(f: flyte.io.File) -> str:
+    """A station's JSON output (the counterfactual's), inline: gzipped, base64."""
+    path = await f.download()
+    with open(path, "rb") as fh:
+        return base64.b64encode(gzip.compress(fh.read())).decode()

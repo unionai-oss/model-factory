@@ -34,8 +34,11 @@ The questions:
 | [rt-k8spod-pilot-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-k8spod-pilot-2) | the same, fixed | succeeded, and found that **k8s-1's init-tmpfs manifests do not run** (Finding 5). Also three harness bugs: `job.py`'s own `/data/out/result.json` overwrote the probe's; a process pool cannot pickle a function from an `exec`'d module; spot scheduling failures. Fixed |
 | [rt-k8spod-pilot-3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-k8spod-pilot-3) | the same, fixed, plus init-tmpfs at a sized init limit and at k8s-1's 256Mi, and the job at its label without the staged bytes | succeeded (25 runs) |
 | [rt-k8spod-1](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-k8spod-1) | **the twin in real pods**: 100 runs (48 RightSizeMem, 44 RightSizeCPU, 8 init-tmpfs with inputs over 300 MiB). Each run as a real Flyte task, and as its Job pod at a generous limit, at its label cell and one cell below. init-tmpfs also with k8s-1's 256Mi init container, and at its label without the staged bytes. About 480 pods | succeeded: Findings 4-6 |
-| [rsk-k8s-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2) | **k8s-2**: the corrected corpus (measured Flyte runtime, sized init containers) and every arm, seed 1, with the new arms (rules-sized, single-platform trees, jev-pointer-k8s, zeroshot-27b with room to answer, zeroshot-27b-json) and the counterfactual station | running |
-| [rsk-k8s-2-s2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2-s2), [rsk-k8s-2-s3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2-s3) | the same corpus, retrained at seeds 2 and 3 (release `k8s-2-s<k>`, `stations.seed_of`), every arm but zero-shot: three trainings of k8s-2 | running |
+| [rsk-k8s-2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2) | **k8s-2**: the corrected corpus (measured Flyte runtime, sized init containers) and every arm, seed 1, with the new arms (rules-sized, single-platform trees, jev-pointer-k8s, zeroshot-27b with room to answer, zeroshot-27b-json) and the counterfactual station | succeeded, about 15 h (the counterfactual station alone took about 3 h): Findings 7-12 |
+| [rsk-k8s-2-s2](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2-s2), [rsk-k8s-2-s3](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2-s3) | the same corpus, retrained at seeds 2 and 3 (release `k8s-2-s<k>`, `stations.seed_of`), every arm but zero-shot: three trainings of k8s-2 | both succeeded: Finding 12 |
+
+| [rt-paper-k2s1-rows](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-paper-k2s1-rows), [-picks](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-paper-k2s1-picks), [-prompts](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-paper-k2s1-prompts), [rt-paper-k2s1g-picks](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-paper-k2s1g-picks), [rt-paper-k2s2g-picks](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-paper-k2s2g-picks), [rt-paper-k2s3g-picks](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-paper-k2s3g-picks) | `paper_export` on the three k8s-2 runs (the `g` exports include the gate's arm) | succeeded |
+| [rt-paper-k2s1-cf](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-paper-k2s1-cf), [rt-paper-k2s2-cf](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-paper-k2s2-cf), [rt-paper-k2s3-cf](https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rt-paper-k2s3-cf) | `paper_file` on each counterfactual station's output | succeeded |
 
 ## Findings
 
@@ -158,7 +161,7 @@ cgroup's anon + shmem sampled from task start.
 | review claim | verdict | what changed |
 |---|---|---|
 | The Flyte-only ablation is calibrated and pooled on K8s val rows | **true** (`_policy_predictions`, `pool_all`) | single-platform arms tune on their own platform's val rows and pool with single-platform trees (`gbt-dist-flyte`, `gbt-dist-k8s`) |
-| The kNN gate's AUROC 0.9999 is a scale artifact | **true**: constant-on-train features got sd = 1e-9 | constant features keep their raw unit; the old scaling stays as `knn-raw` for comparison |
+| The kNN gate's AUROC 0.9999 is a scale artifact | the scaling bug was real (constant-on-train features got sd = 1e-9), but it was **not** the cause: fixed, the AUROC is still 0.999 (Finding 11) | constant features keep their raw unit; the old scaling stays as `knn-raw` for comparison |
 | The adapter still moves CPU | **true** (`adapted` passed its own distribution through `adapt_probs`) | memory only, as the paper said |
 | The cost model is not a raw Job's (`backoffLimit: 0`) | true as stated | OOM-penalty sweep offline (1, 5, 20 oracle costs per retry) |
 | The rules baseline is weak for K8s | fair | `rules-sized`: history scaled by input size, cold starts from input bytes, staging read off the manifest |
@@ -167,6 +170,127 @@ cgroup's anon + shmem sampled from task start.
 | Gate members chosen after seeing unseen results | **true** for the members and signal | k8s-2 is the pre-registered confirmation: members, signal and q fixed before it ran, at a new seed |
 | "Within 3 points" unsupported without CIs | partly: holds for decoded arms, with CIs (Finding 1) | CIs everywhere in the paper |
 | Dollar regret ranks differently on unseen | true (already §9.6) | both metrics in the abstract |
+
+### 7. k8s-2 leaderboard (seed 1, Job pods, 95% task-clustered intervals)
+
+Each split has 5,095 Job pods for test and 6,416 for unseen.
+
+| approach | test | unseen | Flyte test / unseen | Job $ regret, test | 3 seeds, test / unseen |
+|---|---|---|---|---|---|
+| static | 89.3 [84.7, 93.7] | 115.1 | 91.5 / 112.8 | 183.0 | fixed |
+| rules | 42.4 [37.9, 46.7] | 49.8 | 41.3 / 48.0 | 56.9 | fixed |
+| rules-sized (new) | 37.7 [33.8, 41.6] | **39.2** [37.3, 41.2] | 37.3 / 41.1 | 55.9 | fixed |
+| zero-shot 27B, 8,192 tokens | 48.8 [33.1, 67.2] | 42.8 [29.6, 57.2] | 35.7 / 52.0 | 86.0 | one training |
+| trees (gbt-dist) | 11.5 [10.2, 12.8] | 69.1 | 14.6 / 69.0 | 30.6 | fixed |
+| decision (jev-pointer) | 12.6 [11.3, 14.0] | 47.8 | 11.3 / 43.0 | 39.6 | 12.6-15.0 / 44.2-56.6 |
+| RL (rl-pointer) | 14.6 [13.2, 16.1] | 39.3 [37.3, 41.4] | 14.3 / 40.2 | 50.6 | 14.6-17.4 / 35.5-39.3 |
+| pool x decision | **6.6** [5.6, 7.6] | 56.8 | 5.5 / 51.4 | 27.6 | 6.6-6.9 / 52.1-58.3 |
+| pool x RL, argmax | 7.2 [6.0, 8.4] | 79.4 | 7.1 / 78.1 | **15.7** | 6.8-11.8 / 78.6-110.9 |
+| gate (kNN, q 0.95, pre-registered) | 8.1 [6.9, 9.4] | 39.3 [37.3, 41.4] | 7.6 / 40.2 | 19.5 | 8.1-12.7 / 35.5-39.3 |
+
+- Familiar code: the pools lead, and pool x decision and pool x RL argmax
+  are tied.
+- New code: RL, the gate and `rules-sized` tie at about 39%. The pools
+  fall to 50-79%.
+- The pre-registered gate is confirmed in the sense that matters. It is
+  near the top on both splits, which no other trained arm is. But it does
+  not beat `rules-sized` on new code.
+
+### 8. Training data: Jobs only, Flyte only, both
+
+Regret on Job pods, test:
+
+| arm | trained on both | Jobs only | Flyte only |
+|---|---|---|---|
+| decision | 12.6 | 13.2 | 37.3 |
+| pool x decision | 6.6 | 7.7 | 24.8 |
+| trees | 11.5 | 11.8 | 18.3 |
+
+- Flyte rows do not help with Jobs. decision minus decision-k8s is
+  -0.6 [-1.8, +0.7] points on test.
+- A Flyte-only model does not transfer to Jobs.
+- The Flyte-to-Job adapter now helps on every seed:
+  - seed 1: 37.3 -> 28.6
+  - seed 2: 33.8 -> 22.1
+  - seed 3: 37.5 -> 28.6
+
+  Round 22 found that it hurt. That was the wrong 180 MiB constant:
+  the adapter subtracted a runtime that was not there.
+
+### 9. The counterfactual: models trained on Jobs read the manifest
+
+The setup: 1,189 first runs (test and unseen), each rendered as a Job
+under all four stagings, 4,756 pods in all. Only the manifest and the
+fetch code change, and with no history the manifest is the only
+evidence of the staging. On test, switching disk to tmpfs moves the
+label in 48.6% of pairs, and init to boto3 in 20.4%.
+
+Where the label moved under the medium contrast, the request moved the
+right way:
+
+| arm | test | unseen |
+|---|---|---|
+| decision, trees, RL, pools | 72-78% | 64-78% |
+| decision, Flyte-only | 21% | 32% |
+| static, rules | 0% | 0% |
+
+Static and rules have nothing but defaults on a first run, so they
+never move.
+
+On unseen pairs whose label did not move, the trained arms still moved
+their request in 57-80% of them. They overreact to `medium: Memory`
+when the staged bytes are small.
+
+The real run/Job pairs were also re-measured. With R = 70, only 29.9%
+of pairs move: 638 up and 543 down. On moved pairs, the trained arms
+move the right way in 56-67%, and the rules in 25%.
+
+### 10. The task's name barely matters
+
+The counterfactual's first runs and their real twins were re-scored
+with neutral names, with no retraining.
+
+- Test: every trained arm except Flyte-only changes by less than a
+  point. Flyte-only changes by +1.8.
+- Unseen: arms change by +0.5 to +3.6.
+
+### 11. The gate's kNN fix changed nothing
+
+With constant-on-train features left in raw units, the kNN distance
+still separates unseen from validation with AUROC 0.999. It sends 100%
+of unseen pods to RL, and its requests are identical to `knn-raw`.
+
+So the 1e-9 scaling was not what made the detector perfect. The unseen
+families really are far from the training code: median distance 7.6,
+against 1.0 for validation.
+
+Without code tokens the AUROC is 0.67 and unseen regret is 62%.
+
+### 12. Three trainings, retry cost, dollars
+
+**Seeds.**
+- The top of the familiar-code board is stable:
+  - pool x decision 6.6-6.9
+  - RL argmax 8.2-8.6
+- New-code numbers move by up to 12 points for the decision model and
+  32 for pool x RL argmax. RL varies least (35.5-39.3).
+
+**Retry cost.** At an OOM penalty of 5 or 20 oracle costs (a raw Job
+with `backoffLimit: 0`, resubmitted by hand), `rules-sized` is the best
+arm on unseen code:
+- penalty 5: 112.5% vs RL/gate 135.7%
+- penalty 20: 387.2% vs 497.1%
+
+pool x decision stays best on familiar code at every penalty from 1 to
+20.
+
+**Dollars.** On unseen code the trees are cheapest ($959 per 1,000 Job
+runs). The gate and RL cost $1,177, `rules-sized` $1,126, and the
+oracle $517.
+
+**Zero-shot.** With 8,192 tokens it answers, and it is about as good as
+the rules: 48.8% test and 42.8% unseen, with wide intervals. The JSON
+schema variant is 48.8% / 44.4%.
 
 ## Code changes
 
@@ -207,3 +331,15 @@ cgroup's anon + shmem sampled from task start.
 - `shared/llm_client.chat(extra=)`, used for structured output.
 - `bench_all/factory.py`: the `counterfactual` node; `K8S_ARM_KNOBS`
   seed 1; `K8S_ARMS`.
+- `paper/` (new): the LaTeX paper (`make`, `make arxiv`), with:
+  - `scripts/export.py`, `export_cf.py` and `analyze.py`: exports,
+    bootstrap and sensitivity;
+  - `scripts/tables.py`: the generated tables;
+  - `scripts/to_html.py`: the HTML report, rendered from the same LaTeX
+    by pandoc;
+  - `scripts/abstract_html.py`: the one-page abstract.
+- `bench_all/paper.py`: `paper_file`, a station's JSON output returned
+  inline (for the counterfactual).
+- `benchmarks/rightsize-bench-k8s{,-abstract}.html` and
+  `rightsize-bench-k8s.pdf`: rewritten Kubernetes-first from k8s-2.
+

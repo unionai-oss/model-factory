@@ -1,0 +1,121 @@
+\section{Checking the labels in real pods}
+\label{sec:validation}
+
+Because the labels in \cref{sec:accounting} are derived rather than measured directly, we
+checked them twice. The first check (rt-k8sval-2) re-ran 176 corpus runs both as Flyte
+tasks and as their rendered \code{job.py}, as sibling processes inside one pod. It
+confirmed the arithmetic of the accounting. Measured over predicted memory was
+0.999--1.000 at the median for every staging, and tmpfs was charged at exactly the input
+size. A single pod has a single memory cgroup, though, so this check could not show
+where the kernel charges pages when a pod has several containers.
+
+The second check (rt-k8spod-1) used real pods. We took 100 runs (48 from RightSizeMem, 44
+from RightSizeCPU, and 8 init-tmpfs runs with inputs over 300\,MiB) and gave each of them
+pods of its own, about 480 in all (\cref{tab:podprobe}). Every container sampled its own
+cgroup's memory counters every 50 milliseconds.
+
+\begin{table}[tbp]
+\centering\small
+\caption{The pods in the real-pod check (rt-k8spod-1).}
+\label{tab:podprobe}
+\begin{tabular}{@{}lp{0.62\linewidth}@{}}
+\toprule
+pod & what it measures \\
+\midrule
+Flyte task & the run as a real Flyte task: the rendered module in a fresh task pod, with its inputs downloaded by Flyte \\
+Job, generous limit & the pod the manifest describes, with each container reading its own cgroup \\
+Job at its label & does the run fit when the job container's limit is set to the label? \\
+Job one cell lower & does the cell below the label fail? \\
+init-tmpfs extras & the first release's flat 256\,Mi init container, and the job at its label minus the staged bytes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{The Flyte runtime.}
+Before a task's own module is imported, the Flyte task container already holds 55.0\,MiB
+of anonymous memory, with almost no variation across the 100 runs (p10--p90
+54.9--55.0\,MiB). Its peak is a median 70\,MiB above the same run's peak as a plain Job
+(p10 53, p90 242\,MiB), so running a workload inside the runtime's process costs slightly
+more than the runtime does on its own. The 180\,MiB used in earlier releases had no
+measurement behind it. With that value, the Flyte label matched the real container's cell
+for only 23\% of runs and was one cell too high for 70\%. With 70\,MiB, it matches for
+58\%, is one cell high for 33\% and one cell low for 9\%. The low ones are process pools,
+where the container counts every worker process, and some DuckDB and polars runs. The
+k8s-2 release uses 70\,MiB, which lowers 61\% of the Flyte labels on CPU nodes by one
+cell.
+
+\paragraph{Where tmpfs pages are charged.}
+A tmpfs page is charged to the container that writes it. When the job downloads its own
+inputs (boto3-tmpfs), the job container's shared memory grows by the staged size times
+1.0001 at the median ($n=23$). When an init container stages them (init-tmpfs), the init
+container's shared memory equals the staged size and the job container's stays at zero
+($n=31$). The pages outlive the init container, however, and still count against the
+pod. With its limit set to the label minus the staged bytes, the job was OOM-killed in 9
+of 31 init-tmpfs pods, and with the full label 30 of 31 ran. So adding the staged bytes to
+the label is correct, even though the pages are enforced through the pod's limit rather
+than the container's.
+
+\paragraph{The first release's init containers.}
+With the flat 256\,Mi init container of the first release, every staging up to 162\,MiB
+ran and none of 254\,MiB or more did. Ten of those were confirmed OOM-killed while staging,
+and six more failed. In that release, 982 of the 2,756 evaluated init-tmpfs Jobs staged
+more than 200\,MiB, which means 7\% of all Job rows described pods that could never have
+started. The k8s-2 release sizes the init container at 256\,MiB plus the staged bytes.
+
+\paragraph{Labels as limits.}
+When we set the job container's limit to its label, 98 of 100 runs succeeded
+(\cref{tab:limits}). Both failures were process pools, where the label records the largest
+single process but the cgroup counts all of them together. One cell below the label, 25
+of the 97 runs that started were OOM-killed.
+
+\begin{table}[tbp]
+\centering\small
+\caption{Job pods with the limit at the label cell and one cell below it (rt-k8spod-1).
+``Other'' is a failure that was not an OOM kill.}
+\label{tab:limits}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+& \multicolumn{3}{c}{at label} & \multicolumn{3}{c}{one cell below} \\
+\cmidrule(lr){2-4}\cmidrule(l){5-7}
+staging & ran & OOM & other & ran & OOM & other \\
+\midrule
+init-disk   & 22 & 1 & 0 & 17 & 5 & 1 \\
+init-tmpfs  & 30 & 1 & 0 & 24 & 7 & 0 \\
+boto3-disk  & 23 & 0 & 0 & 16 & 6 & 1 \\
+boto3-tmpfs & 23 & 0 & 0 & 15 & 7 & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Labels are sometimes a cell too generous.}
+We also compared each corpus label with the job container's measured peak of anonymous
+plus shared memory, plus the same 5\% headroom (\cref{tab:cells}). Depending on the
+staging, the label falls in the same cell for 52--68\% of runs and within one cell for
+91--100\%. It is higher for 26--48\% of runs and lower for at most 6\%. Two things push
+labels up. The first is a quirk of \code{ru\_maxrss}: on Linux, the value a parent reads
+for its child through \code{wait4} includes the parent's own high-water mark at the moment
+the child calls \code{exec}, because the kernel carries the old address space's peak into
+the new one. The measuring parent in our corpora held about 158\,MiB, so even the smallest
+workloads report at least that much. The second is memory-mapped input files, which RSS
+counts but the kernel can reclaim; \code{numpy\_linalg} and \code{image\_batch} both map
+their inputs. Neither effect causes a run to fail at its label, but together they make
+about a third of labels one cell larger than strictly necessary. The oracle in
+\cref{sec:cost} inherits this, so all regrets in this paper are measured against a
+slightly generous oracle.
+
+\begin{table}[tbp]
+\centering\small
+\caption{The corpus Job label compared with the job container's measured cgroup peak, in
+grid cells.}
+\label{tab:cells}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+staging & $n$ & same cell & within one & higher & lower \\
+\midrule
+init-disk   & 23 & 65\% &  91\% & 30\% & 4\% \\
+init-tmpfs  & 31 & 68\% &  97\% & 26\% & 6\% \\
+boto3-disk  & 23 & 52\% &  96\% & 48\% & 0\% \\
+boto3-tmpfs & 23 & 52\% & 100\% & 48\% & 0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
