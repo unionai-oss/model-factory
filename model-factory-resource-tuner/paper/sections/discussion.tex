@@ -1,74 +1,73 @@
 \section{Discussion}
 \label{sec:discussion}
 
-\paragraph{Benchmarking Kubernetes pods from one set of measurements.}
-Because the user code is the same whichever way a pod is submitted, one measurement of
-the workload can label both a raw Job and a Flyte task, as long as the accounting for the
-pod's edges is right. Getting it right took real pods. Sibling processes in one pod
-confirmed the arithmetic, but only per-container cgroups showed where tmpfs pages are
-charged, that the first release's init containers could not hold their inputs, and that
-the Flyte runtime was less than half the size we had assumed. Anyone deriving Kubernetes
-labels this way should check them against the cgroup, not against another RSS
-measurement.
+\paragraph{One measurement, two kinds of pod.}
+The user code is the same whichever way a pod is submitted, so one measurement of the workload can label both a
+raw Job and a Flyte task, as long as the accounting for the pod's edges is right. Getting it right took real pods.
+Sibling processes in one pod confirmed the arithmetic. Only per-container cgroups showed where tmpfs pages are
+charged, that the first release's init containers could not hold their inputs, and that the Flyte runtime was less
+than half the size we had assumed. Labels derived this way should be checked against the cgroup, since a second RSS
+measurement repeats the first one's biases.
 
 \paragraph{What a model learns from Jobs.}
-A model trained on Jobs reads the manifest. It changes its memory request when the
-volume medium changes, and it does so on first runs where nothing else gives the staging
-away. Flyte tasks add nothing to that model's accuracy on Jobs, and a Flyte-only model
-does not transfer well even after an explicit adapter. For a team that submits pods both
-ways, the practical advice is to train on the pods it actually runs. Flyte history is still
-useful for sizing Flyte tasks, and the corrected adapter recovers part of the gap when Job
-history is missing.
+A model trained on Jobs reads the manifest. It changes its memory request when the volume medium changes, on first
+runs where nothing else gives the staging away. Flyte tasks add little to that model's accuracy on Jobs, and a
+Flyte-only model transfers poorly; an adapter that applies the accounting helps only when it can also see the run's
+Flyte task. For a team that submits pods both ways, the practical advice is to train on the pods it actually runs.
 
-\paragraph{Familiar and unfamiliar code.}
-The gap between the two splits is the main open problem. On familiar code the best
-approaches are within 7--8\% of the oracle. On new kinds of code, the best trained model is
-39\% above it, and a careful rule matches it. Pooling the trees with a language model helps
-on familiar code and hurts on new code, because the pool's weight is tuned on familiar
-families. The gate recovers the better of the two on each split, but on this benchmark its
-detector has an easy job, since new families usually bring new libraries. A benchmark
-that separates unfamiliar code from unfamiliar libraries would test it properly.
+\paragraph{Familiar code, new programs and new families.}
+The benchmark separates three levels of novelty, and the models handle them differently. Most familiar-family test
+tasks repeat a training program at a new input size, which every trained approach handles well. New programs from
+familiar families cost the decision model the most and the pooled RL model almost nothing. New families cost every
+approach, and there a rule that reads input sizes and the pod spec is as good as anything we trained. Pooling the
+trees with a language model helps on familiar code and hurts on new families, because the pool's weight is tuned
+on familiar families. A gate can recover the better approach on each split when its detector works, and on this
+benchmark the detector's job is easy. A benchmark with held-out families built only from familiar code tokens
+would test it properly.
 
 \paragraph{Cost, not accuracy.}
-Accuracy on the label and cost often disagree. Cost-aware decoding over-asks on purpose,
-the Flyte-to-Job adapter was judged a failure until its runtime constant was corrected, and
-the ranking on new code flips when retries become expensive. A benchmark for this
+The read-out that matches labels best is not the one that costs least. Cost-aware decoding over-asks memory on purpose. The
+label itself is not the cheapest request: one CPU cell below the busiest window is often cheaper, which is why
+our first release, scored against the label, reported negative regret. And the ranking on new code flips when
+retries get expensive. A benchmark for this
 decision has to score money, and it has to say what a failure costs.
 
 \section{Limitations}
 \label{sec:limitations}
 
-The workloads are synthetic. They use real libraries and real code paths, but the tasks
-are generated, the data is random, and runs take seconds to minutes. Production tasks are
-longer and messier. The seven unseen families were chosen by hand, and six of them
-introduce a library that no training family uses, so the benchmark does not test new code
-built only from familiar libraries. The people who wrote the generators also wrote the tree
-features and the rules, and the task names give away the family, although removing them
-changes regret by less than four points.
+\paragraph{The tasks.}
+The workloads are synthetic. They use real libraries and real code paths, but the tasks are generated, the data is
+random, and runs take seconds to minutes. Several families have only a handful of distinct programs, so most of the
+familiar-family test split repeats training code. The seven held-out families were chosen by hand, two of them are
+DuckDB families from different corpora, and only DuckDB is a library the training families never import. The code
+names the family through task names, function names and input schemas; the neutral-name test removes only the
+first. The people who wrote the generators also wrote the tree features and the rules.
 
-The labels carry three known biases. The \code{ru\_maxrss} floor and memory-mapped inputs
-make about a third of labels one cell larger than strictly needed, so the oracle is
-slightly generous. Process pools are labelled by their largest process rather than their
-total, which is why two of 100 real pods failed at their label. And RightSizeMem has no
-per-second CPU series, so its throttling is modelled from mean cores. The Job labels are
-derived rather than measured for every run. We validated them on 100 runs in real pods
-and 176 in a single pod, but we did not re-measure GPU runs as Jobs, and the four stagings
-leave out sidecars, CSI drivers and other init work.
+\paragraph{The labels.}
+The \code{ru\_maxrss} floor and memory-mapped inputs make about a third of memory labels one cell larger than needed;
+on tmpfs stagings a mapped input may be counted twice. Process pools are labelled by their largest process, which is
+why two of 100 real pods failed at their label. RightSizeMem has no per-second CPU series, so its throttling is
+modelled from mean cores. The Job labels and the Job history are derived from the workload measurement with the
+same accounting, and were checked on 100 runs in real pods and 176 in one pod; no Flyte pod was run with its limit at
+its label, and GPU runs were not re-measured as Jobs. Most multi-GPU runs were censored because the cluster had no
+capacity for them, single-GPU runs that outgrew a T4 were measured on an L40S, and fits on unmeasured machines are
+modelled, so the GPU labels above a T4 rest partly on the fit model.
 
-The cost model uses list prices, with no spot discounts or bin-packing, and prices a retry
-at one oracle cost by default; \cref{sec:res-sens} shows how much that choice matters. We
-trained three times, which shows that rankings on new code within about ten points are not
-stable, but three seeds are not enough to put tight intervals on that variation. The
-zero-shot model was scored on a sample of about 300 runs per split, and only once.
+\paragraph{The evaluation.}
+The cost model uses list prices with no spot discounts or bin-packing, and every approach was tuned at a retry penalty
+of 1; we re-priced fixed requests at other penalties without re-tuning. Generalization to new kinds of code rests on
+seven families, so family-clustered intervals on the unseen split are wide, and the gate's members were chosen with
+those families in view. The RL model's calibration temperature sits at its search bound. We trained three times,
+enough to show that rankings on new code within about ten points are not stable and not enough to bound that
+variation. The zero-shot model was scored once, on 130 test and 150 unseen Job pods.
 
 \section{Conclusion}
 \label{sec:conclusion}
 
-RightSize Bench scores the request a scheduler makes before a Kubernetes pod runs, in
-dollars, across 33 families of task code submitted both as raw Jobs and through Flyte.
-Checking its labels in real pods fixed two errors and measured the cost of Flyte's runtime
-at about 70\,MiB. A small model trained on Jobs reads the manifest and, pooled with
-gradient-boosted trees, comes within 7\% of the oracle on familiar code. On unfamiliar
-code, the best trained model and a careful rule are both about 39\% above the oracle, and
-the rule is safer when failures are expensive. Closing that gap, and testing a novelty
-detector on code that looks familiar but is not, is the work that remains.
+RightSize Bench scores the request a scheduler makes before a Kubernetes pod runs, in dollars against the cheapest
+request, across 33 families of task code submitted both as raw Jobs and through Flyte. Checking its labels in real
+pods fixed two errors and measured Flyte's runtime at about 70\,MiB. Gradient-boosted trees pooled with a small decision
+model trained on Jobs come within 12\% of the cheapest request on familiar code, and the decision model reads the
+manifest. On held-out families a careful rule does as well as any model we trained, and it holds up best when
+failures are expensive. The open problems are new programs and new families, and a benchmark whose held-out code
+does not announce itself through new tokens. The dataset, the models and the factory that builds them are public.

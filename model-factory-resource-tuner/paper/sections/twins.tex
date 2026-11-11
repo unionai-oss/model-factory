@@ -1,7 +1,7 @@
 \section{Every run as a Job and as a Flyte task}
 \label{sec:twins}
 
-The workload code was generated as Flyte tasks, but nothing in the body of a task
+The workload code was generated as Flyte tasks, and nothing in the body of a task
 depends on Flyte. We use that to put every measured run into the benchmark twice, once as
 a raw Kubernetes Job and once as a Flyte task, with the task body unchanged in both. To
 make the Job version, \code{job.py}, we turn \code{File} parameters into paths, drop the
@@ -64,21 +64,25 @@ The two kinds of pod need
 \text{Flyte:}\quad & 1.05\,\bigl(w + R\bigr), \qquad R = 70\,\text{MiB},
 \end{align*}
 where the factor 1.05 is headroom and the memory label is the smallest grid cell at or
-above the need. Each term has a simple reason. Files on a memory-backed volume are
+above the need. Files on a memory-backed volume are
 charged to memory byte for byte, while the same files on node disk are reclaimable page
 cache and add nothing, since the measured workloads already read local files. The boto3
 client adds 48\,MiB to a workload's peak. Its download also runs inside the job, taking
 $d = \text{bytes}/440\,\text{MB/s} + 0.4\,\text{s per object} + 0.7\,\text{s}$ at about
 1.8 cores, so we prepend that window to the run's CPU series. For a light job with a large
 input, the download can be the busiest 15 seconds of the run. The Flyte runtime $R$ is
-70\,MiB, measured in real task pods (\cref{sec:validation}). Earlier releases used a value
-of 180\,MiB that had never been measured. Staging does not change GPU need.
+70\,MiB, measured in real task pods (\cref{sec:validation}). Our first release used
+180\,MiB, a value no probe had measured. Staging does not change GPU need.
 
 The manifest sizes the init container at $256\,\text{MiB} + B$ for tmpfs stagings, so
 that it can hold what it writes. Our first release used a flat 256\,Mi, which real pods
 showed cannot work for larger inputs (\cref{sec:validation}). Histories are reported in
 each interface's own units: a Job's earlier runs report the container's peak as cAdvisor
-would, and a Flyte task's report the peak including the runtime, as Flyte's UI would.
+would, and a Flyte task's report the peak including the runtime, as Flyte's UI would. A Job's
+history is computed with the same accounting as its label, so an earlier run's reported peak is
+exactly its need without the headroom. Real cAdvisor peaks are noisier, and \code{max\_usage}
+also counts page cache. The init container's own download time is not priced, while the boto3
+stagings pay for theirs inside the job, which makes the init stagings slightly cheaper than they are.
 
 The staging constants come from an in-cluster probe using boto3 1.43 under cgroup~v2. A
 bare interpreter holds 11\,MiB. With boto3 imported, a client built and a file downloaded,

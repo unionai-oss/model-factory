@@ -1,12 +1,12 @@
 \section{Checking the labels in real pods}
 \label{sec:validation}
 
-Because the labels in \cref{sec:accounting} are derived rather than measured directly, we
+The Job labels in \cref{sec:accounting} are derived from the workload's measurement, so we
 checked them twice. The first check (rt-k8sval-2) re-ran 176 corpus runs both as Flyte
 tasks and as their rendered \code{job.py}, as sibling processes inside one pod. It
 confirmed the arithmetic of the accounting. Measured over predicted memory was
 0.999--1.000 at the median for every staging, and tmpfs was charged at exactly the input
-size. A single pod has a single memory cgroup, though, so this check could not show
+size. A pod with one container has one memory cgroup, so this check could not show
 where the kernel charges pages when a pod has several containers.
 
 The second check (rt-k8spod-1) used real pods. We took 100 runs (48 from RightSizeMem, 44
@@ -36,8 +36,7 @@ Before a task's own module is imported, the Flyte task container already holds 5
 of anonymous memory, with almost no variation across the 100 runs (p10--p90
 54.9--55.0\,MiB). Its peak is a median 70\,MiB above the same run's peak as a plain Job
 (p10 53, p90 242\,MiB), so running a workload inside the runtime's process costs slightly
-more than the runtime does on its own. The 180\,MiB used in earlier releases had no
-measurement behind it. With that value, the Flyte label matched the real container's cell
+more than the runtime does on its own. With the first release's 180\,MiB, the Flyte label matched the real container's cell
 for only 23\% of runs and was one cell too high for 70\%. With 70\,MiB, it matches for
 58\%, is one cell high for 33\% and one cell low for 9\%. The low ones are process pools,
 where the container counts every worker process, and some DuckDB and polars runs. The
@@ -51,9 +50,8 @@ inputs (boto3-tmpfs), the job container's shared memory grows by the staged size
 container's shared memory equals the staged size and the job container's stays at zero
 ($n=31$). The pages outlive the init container, however, and still count against the
 pod. With its limit set to the label minus the staged bytes, the job was OOM-killed in 9
-of 31 init-tmpfs pods, and with the full label 30 of 31 ran. So adding the staged bytes to
-the label is correct, even though the pages are enforced through the pod's limit rather
-than the container's.
+of 31 init-tmpfs pods, and with the full label 30 of 31 ran. Adding the staged bytes to the label is therefore correct; the pages are enforced
+through the pod's limit, not the container's.
 
 \paragraph{The first release's init containers.}
 With the flat 256\,Mi init container of the first release, every staging up to 162\,MiB
@@ -98,10 +96,11 @@ the child calls \code{exec}, because the kernel carries the old address space's 
 the new one. The measuring parent in our corpora held about 158\,MiB, so even the smallest
 workloads report at least that much. The second is memory-mapped input files, which RSS
 counts but the kernel can reclaim; \code{numpy\_linalg} and \code{image\_batch} both map
-their inputs. Neither effect causes a run to fail at its label, but together they make
-about a third of labels one cell larger than strictly necessary. The oracle in
-\cref{sec:cost} inherits this, so all regrets in this paper are measured against a
-slightly generous oracle.
+their inputs. Neither effect makes a run fail at its label, and together they make about a third of
+labels one cell larger than necessary. The same comparison explains why 72 of the 97 Job pods
+that started one cell below their label still ran: for many of them the label is one cell high.
+The simulator of \cref{sec:cost} replays the measured need, so the cheapest request it finds
+inherits the same bias, and regret is measured against a slightly generous floor.
 
 \begin{table}[tbp]
 \centering\small

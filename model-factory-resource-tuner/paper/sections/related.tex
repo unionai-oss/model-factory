@@ -16,20 +16,21 @@ before the pod starts.
 \paragraph{Learned predictors.}
 Quantile regression~\citep{koenker1978quantile} with gradient-boosted
 trees~\citep{friedman2001gbm,ke2017lightgbm} is a standard way to predict a distribution
-of resource need, and is the strongest classical approach here. Our decision model
+of resource need; it is the strongest classical approach here. Our decision model
 replaces a language model's output layer with a pointer head~\citep{vinyals2015pointer}
 that scores option tokens written in the prompt. It is adapted with LoRA~\citep{hu2022lora}
 on Qwen3~\citep{qwen3}.
 
 \paragraph{Training on the objective.}
 Group-relative policy optimization (GRPO)~\citep{shao2024deepseekmath} drops PPO's value
-network by normalizing rewards within a group of samples for the same prompt. Our policy
-is three categorical distributions, so a group is sampled from one forward pass, and the
-reward is the benchmark's own cost simulator.
+network by normalizing rewards within a group of samples for the same prompt. We use that
+group-normalized advantage with a single on-policy step per batch. Our policy is three
+categorical distributions, so a group is sampled from one forward pass, and the reward is the
+benchmark's own cost simulator.
 
 \paragraph{Combining and routing models.}
 Logarithmic opinion pools~\citep{genest1986pools} combine calibrated distributions by a
 weighted geometric mean. Temperature scaling~\citep{guo2017calibration} calibrates each
-model before pooling. Distance to the $k$ nearest training points is a standard
+model before pooling. Distance to the $k$ nearest training points is a common
 out-of-distribution signal~\citep{sun2022knnood}; our gate uses it to choose between two
 models.
