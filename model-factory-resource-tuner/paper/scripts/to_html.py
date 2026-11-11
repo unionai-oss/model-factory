@@ -4,13 +4,17 @@
 
 The PDF build must run first: section, table and figure numbers come from
 main.aux, and citation numbers from main.bbl, so the report numbers everything
-the way the PDF does. Pandoc converts the prose and tables; the pgfplots
-figure is redrawn as inline SVG from the same data file.
+the way the PDF does. Pandoc converts the prose and tables. Figures are
+inlined as SVG: the charts from figures/fig_*.svg (scripts/figures.py), the
+TikZ diagrams converted from their PDFs with pdftocairo. Their colors are
+mapped to the report's CSS variables, so they follow its light and dark themes.
 """
 import html
 import os
 import re
+import subprocess
 import sys
+import tempfile
 
 import pypandoc
 
@@ -85,7 +89,7 @@ def number(t, letters=False):
 tex = number(expand(body)) + "\n" + number(expand(appendix), letters=True)
 abstract_tex = abstract[abstract.index("\\begin{abstract}") + 16:abstract.index("\\end{abstract}")]
 
-nums = "".join(read(f"generated/{f}") for f in ("num_pairs.tex", "num_cf.tex"))
+nums = "".join(read(f"generated/{f}") for f in ("num_main.tex", "num_pairs.tex", "num_cf.tex"))
 
 
 def unwrap(t, opener):
@@ -120,7 +124,6 @@ def number_captions(t):
 def simplify(t):
     t = number_captions(t)
     t = re.sub(r"\\cmidrule(\([^)]*\))?\{[^}]*\}", "", t)
-    t = re.sub(r"\\begin\{tikzpicture\}.*?\\end\{tikzpicture\}", "FIGURELEADERBOARD", t, flags=re.S)
     t = re.sub(r"\\lstinputlisting(?:\[[^\]]*\])?\{([^}]+)\}", verbatim, t)
     t = t.replace("\\begin{lstlisting}", "\\begin{verbatim}").replace("\\end{lstlisting}", "\\end{verbatim}")
     t = unwrap(t, "\\resizebox{\\linewidth}{!}{")
@@ -139,30 +142,63 @@ to_html = lambda t: pypandoc.convert_text(pre + simplify(t), "html5", format="la
 body_html = to_html(tex)
 abstract_html = to_html(abstract_tex)
 
-# ── the figure, as SVG ──────────────────────────────────────────────────
-rows = []
-for ln in read("generated/fig_leaderboard.dat").splitlines()[1:]:
-    m = re.match(r"(\d+) \{(.*)\} (.*)", ln)
-    rows.append((m.group(2).replace("$\\times$", "×").replace("$q$", "q"), *map(float, m.group(3).split())))
-W, L, R, T, RH = 760, 190, 20, 14, 26
-H = T + RH * len(rows) + 46
-x = lambda v: L + (W - L - R) * min(v, 125) / 125  # noqa: E731
-svg = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Regret on Job pods by approach, test and unseen">']
-for g in range(0, 121, 20):
-    svg.append(f'<line x1="{x(g):.1f}" x2="{x(g):.1f}" y1="{T}" y2="{T + RH * len(rows)}" stroke="var(--rule)"/>')
-    svg.append(f'<text x="{x(g):.1f}" y="{T + RH * len(rows) + 16}" text-anchor="middle" font-size="11" fill="var(--muted)">{g}</text>')
-svg.append(f'<text x="{(L + W - R) / 2:.0f}" y="{H - 8}" text-anchor="middle" font-size="12" fill="var(--muted)">regret on Job pods (%)</text>')
-for i, (name, t, tl, th, o, ol, oh) in enumerate(rows):
-    y = T + RH * i + RH / 2
-    svg.append(f'<text x="{L - 10}" y="{y + 4:.1f}" text-anchor="end" font-size="12.5" fill="var(--ink)">{html.escape(name)}</text>')
-    for v, lo, hi, dy, col, fill in ((t, tl, th, -4, "var(--accent)", "var(--accent)"), (o, ol, oh, 4, "var(--rl)", "var(--panel)")):
-        svg.append(f'<line x1="{x(lo):.1f}" x2="{x(hi):.1f}" y1="{y + dy:.1f}" y2="{y + dy:.1f}" stroke="{col}" stroke-width="1.5"/>')
-        svg.append(f'<circle cx="{x(v):.1f}" cy="{y + dy:.1f}" r="4" fill="{fill}" stroke="{col}" stroke-width="1.8">'
-                   f'<title>{html.escape(name)}: {v:.1f}% [{lo:.1f}, {hi:.1f}]</title></circle>')
-svg.append("</svg>")
-legend = ('<div class="legend"><span><span class="kind" style="background:var(--accent)"></span>test: new tasks, familiar families</span>'
-          '<span><span class="kind" style="border:2px solid var(--rl);background:var(--panel)"></span>unseen families</span></div>')
-body_html = re.sub(r"<p>FIGURELEADERBOARD</p>", '<div class="figure">' + legend + "\n".join(svg) + "</div>", body_html)
+# ── figures, as inline SVG ──────────────────────────────────────────────
+#: the figures' palette (figures.py, figures/diagrams/common.tex) -> the report's CSS variables
+TOKENS = {"1f2328": "--ink", "000000": "--ink", "6a737d": "--muted", "dcdfe8": "--rule", "d0d4dc": "--rule",
+          "f4f5f8": "--tint", "ffffff": "--panel", "2a78d6": "--s1", "eb6834": "--s2", "1baf7a": "--s3",
+          "8a8fa0": "--rule-c", "6250d6": "--s4"}
+
+
+def _nearest(rgb):
+    best = min(TOKENS, key=lambda h: sum((int(h[i:i + 2], 16) - c) ** 2 for i, c in zip((0, 2, 4), rgb)))
+    d = sum((int(best[i:i + 2], 16) - c) ** 2 for i, c in zip((0, 2, 4), rgb))
+    return f"var({TOKENS[best]})" if d < 400 else None
+
+
+def tokenize(svg):
+    def hexsub(m):
+        h = m.group(1).lower()
+        return _nearest([int(h[i:i + 2], 16) for i in (0, 2, 4)]) or m.group(0)
+
+    def rgbsub(m):
+        return _nearest([round(float(x) * 2.55) for x in m.groups()]) or m.group(0)
+    svg = re.sub(r"#([0-9a-fA-F]{6})\b", hexsub, svg)
+    return re.sub(r"rgb\(([\d.]+)%,\s*([\d.]+)%,\s*([\d.]+)%\)", rgbsub, svg)
+
+
+def scope_ids(svg, prefix):
+    """Prefix every id so several inline SVGs can share one page."""
+    ids = set(re.findall(r'id="([^"]+)"', svg))
+    for i in sorted(ids, key=len, reverse=True):
+        svg = svg.replace(f'id="{i}"', f'id="{prefix}{i}"').replace(f"#{i})", f"#{prefix}{i})").replace(f'"#{i}"', f'"#{prefix}{i}"')
+    return svg
+
+
+def svg_for(path, n):
+    """path: figures/fig_x.pdf (a chart: its .svg) or figures/diagrams/x.pdf (converted)."""
+    svg_path = os.path.join(HERE, path[:-4] + ".svg")
+    if "/diagrams/" in path or not os.path.exists(svg_path):
+        out = os.path.join(tempfile.mkdtemp(), "d.svg")
+        subprocess.run(["pdftocairo", "-svg", os.path.join(HERE, path), out], check=True)
+        svg_path = out
+    svg = open(svg_path).read()
+    svg = svg[svg.index("<svg"):]
+    svg = re.sub(r'<svg([^>]*?)\swidth="[^"]*"', r"<svg\1", svg, count=1)
+    svg = re.sub(r'<svg([^>]*?)\sheight="[^"]*"', r"<svg\1", svg, count=1)
+    svg = svg.replace("<svg", '<svg class="fig" role="img"', 1)
+    return scope_ids(tokenize(svg), f"f{n}-")
+
+
+_n = [0]
+
+
+def inline(m):
+    _n[0] += 1
+    return svg_for(m.group(1), _n[0])
+
+
+body_html = re.sub(r'<img src="(figures/[^"]+\.pdf)"[^>]*/?>', inline, body_html)
+body_html = re.sub(r'<embed src="(figures/[^"]+\.pdf)"[^>]*/?>', inline, body_html)
 
 # ── house styling ───────────────────────────────────────────────────────
 body_html = body_html.replace("<table>", '<div class="table-wrap"><table class="num">').replace("</table>", "</table></div>")
@@ -196,25 +232,32 @@ h2 { margin-top: 6px; }
 figure { margin: 0; display: grid; gap: 8px; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; min-width: 0; }
 figcaption { font-size: 13px; color: var(--muted); }
 figure pre.block { font-size: 11.5px; }
+svg.fig { width: 100%; height: auto; display: block; }
+:root { --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #6250d6; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #9085e9; } }
+:root[data-theme="dark"] { --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #9085e9; }
+svg.fig text { font-family: var(--font-body); fill: var(--ink); }
 ol.refs { font-size: 14px; max-width: none; }
 math { font-size: 1.05em; }
 .displaymath, math[display="block"] { overflow-x: auto; max-width: 100%; }
 p { max-width: 72ch; }
 </style>""")
 head = src[:src.index("<style>")].replace("<title>RightSize Bench K8s</title>", "<title>RightSize Bench K8s</title>")
+_m = dict(re.findall(r"\\newcommand\{\\(\w+)\}\{([^}]*)\}", read("generated/num_main.tex")))
+FACT_TEST, FACT_UNSEEN = _m["rTestPoolDec"], _m["rUnseenSized"]
 page = f"""{head}{style}
 
 <div class="wrap">
   <header>
-    <div class="eyebrow">Union model factory · resource right-sizing · round 23 · November 2026</div>
+    <div class="eyebrow">Union model factory · resource right-sizing · round 24 · November 2026</div>
     <h1>RightSize Bench: learning Kubernetes resource requests from code</h1>
     <p class="lede">How much memory, CPU and GPU should a batch pod ask for before it runs? We measured 32,082 runs of
-    33 families of Python tasks, presented each one both as a raw Kubernetes Job and as a Flyte task, checked the labels in
-    real pods, and scored eleven kinds of approach by what their requests would cost.</p>
+    33 families of Python tasks, presented each one as a raw Kubernetes Job and as a Flyte task, checked the labels in
+    real pods, and scored each approach by what its requests cost against the cheapest request that would have run.</p>
     <span class="status">k8s-2 · 64,164 pods (32,082 runs × 2 ways to submit them) · 3 trainings</span>
     <div class="facts">
-      <span><b>6.6%</b> best regret on familiar code (Job pods)</span>
-      <span><b>39%</b> best regret on unseen families</span>
+      <span><b>{FACT_TEST}%</b> best regret on familiar code (Job pods)</span>
+      <span><b>{FACT_UNSEEN}%</b> best regret on held-out families</span>
       <span><b>~70 MiB</b> measured Flyte runtime per pod</span>
       <span><b>~480</b> real pods checked</span>
     </div>
@@ -223,7 +266,7 @@ page = f"""{head}{style}
   <section id="abstract"><h2>Abstract</h2><div class="abstractbox">{abstract_html}</div></section>
 {body_html}
   <footer>
-    <span>PDF and LaTeX source: <span class="mono">model-factory-resource-tuner/paper/</span> (<span class="mono">make</span>, <span class="mono">make arxiv</span>). Research log: <span class="mono">research_log/2026-11-08-round-23-review-real-pods.md</span>.</span>
+    <span>PDF and LaTeX source: <span class="mono">model-factory-resource-tuner/paper/</span> (<span class="mono">make</span>, <span class="mono">make arxiv</span>). Data and models: <a href="https://huggingface.co/datasets/unionai/rightsize-bench">huggingface.co/datasets/unionai/rightsize-bench</a>. Research log: <span class="mono">research_log/2026-11-10-round-24-review-release.md</span>.</span>
     <span>Reproduce: <span class="mono">flyte factory materialize rightsize-k8s-bench rt-k8sbench-leaderboard --partition release=k8s-2 --partition arm=static,rules,rules-sized,gbt-dist,gbt-dist-flyte,gbt-dist-k8s,zeroshot-27b,zeroshot-27b-json,jev-pointer,jev-pointer-flyte,jev-pointer-k8s</span></span>
   </footer>
 </div>

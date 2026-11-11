@@ -2,53 +2,41 @@
 \label{sec:background}
 
 \paragraph{Requests, limits and cgroups.}
-Each Kubernetes container declares a memory and CPU \emph{request}, which the scheduler
-reserves on a node, and a \emph{limit}, which the kubelet enforces through the
-container's cgroup~\citep{k8sresources,cgroupv2}. Under cgroup~v2, a container whose
-charged memory reaches its limit is OOM-killed. Both anonymous memory and shared memory
-(\code{shmem}) count toward that limit, while clean page cache does not, because the
-kernel can reclaim it first. A CPU limit works differently. It is enforced as a CFS
-quota, so a container that exceeds it is slowed down rather than killed. Accelerators are
-requested as whole devices on node pools that carry them. In this paper a request also
-sets the limit, which is the usual choice for batch pods because it makes scheduling and
-failures predictable.
+Each Kubernetes container declares a memory and CPU \emph{request}, which the scheduler reserves on a node,
+and a \emph{limit}, which the kubelet enforces through the container's cgroup~\citep{k8sresources,cgroupv2}.
+Under cgroup~v2, a container whose charged memory reaches its limit is OOM-killed. Anonymous memory and
+shared memory (\code{shmem}) both count toward the limit. Clean page cache does not, because the kernel can
+reclaim it first. A CPU limit is enforced as a CFS quota, so a container that exceeds it is slowed down
+instead of killed. Accelerators are requested as whole devices on node pools that carry them. In this paper a
+request also sets the limit, the usual choice for batch pods because it makes scheduling and failures
+predictable.
 
 \paragraph{How the pod spec changes a task's memory.}
-Three details of a pod spec can change how much memory a batch task needs without any
-change to its code. The first is the medium of the volume that holds its inputs. An
-\code{emptyDir} on node disk keeps files as page cache, which the kernel reclaims under
-pressure. An \code{emptyDir} with \code{medium: Memory} is a tmpfs, and every byte written
-to it is charged to memory as \code{shmem}~\citep{k8svolumes}. Staging a 2\,GiB input on
-tmpfs therefore adds 2\,GiB to the pod's need. The second detail is who fetches the
-inputs. An init container runs to completion before the main container starts and has
-its own limit, whereas a download inside the job runs in the job's container, so the
-client library's memory and threads count against the job. The third is anything else
-that shares the container, such as an orchestration runtime or a client library.
+Three details of a pod spec change how much memory a batch task needs without any change to its code. The
+first is the medium of the volume that holds its inputs. An \code{emptyDir} on node disk keeps files as page
+cache, which the kernel reclaims under pressure. An \code{emptyDir} with \code{medium: Memory} is a tmpfs, and
+every byte written to it is charged as \code{shmem}~\citep{k8svolumes}, so staging a 2\,GiB input on tmpfs adds
+2\,GiB to the pod's need. The second is who fetches the inputs. An init container runs to completion before the
+main container starts and has its own limit, while a download inside the job runs in the job's container, so
+the client library's memory counts against the job. The third is anything else that shares the container,
+such as an orchestration runtime.
 
-There is one subtlety with tmpfs. A page is charged to the cgroup of the container that
-writes it, so pages written by an init container are not charged to the main container.
-When the init container exits, though, its pages move to the pod's cgroup and still count
-against the pod's overall limit. We confirm this in real pods in
-\cref{sec:validation}.
+A tmpfs page is charged to the cgroup of the container that writes it, so pages an init container writes are
+not charged to the main container. When the init container exits, its pages move to the pod's cgroup and still
+count against the pod's limit. We confirm this in real pods in \cref{sec:validation}.
 
 \paragraph{Raw Jobs.}
-A \code{batch/v1} Job runs a pod template until it succeeds. Its \code{backoffLimit}
-says how many failed pods it will replace before giving up. Batch teams often set it to
-zero and resubmit failures by hand or from an outer scheduler. A Job has to stage its own
-inputs, either with an init container or in the job's code.
+A \code{batch/v1} Job runs a pod template until it succeeds. Its \code{backoffLimit} says how many failed pods
+it replaces before giving up; batch teams often set it to zero and resubmit failures by hand or from an outer
+scheduler. A Job stages its own inputs, with an init container or in the job's code.
 
-\paragraph{Flyte as an interface to Kubernetes.}
+\paragraph{Flyte.}
 Flyte~\citep{flyte} turns a typed Python function into a Kubernetes pod. A user writes
-\code{@env.task async def f(x: File) -> dict}, and Flyte builds the image, renders the
-pod spec, moves typed inputs and outputs through object storage, caches results by their
-inputs, retries failed attempts, and records each execution so that a long pipeline can
-resume after a node is lost. None of this changes what the function does inside the
-container. It changes the pod's edges instead. Inputs arrive through Flyte's own
-download, the container also runs Flyte's runtime, and the execution history reports the
-container's peak with that runtime included. We measure the runtime at 55\,MiB at rest,
-and a median 70\,MiB above the same workload run as a plain Job (\cref{sec:validation}).
-
-For resource sizing, then, Flyte is a convenience layer over the same pod. It costs a
-little memory in exchange for typed I/O, caching, retries and durable execution. An
-approach that can size a Kubernetes pod should be able to size a Flyte task using the
-same knowledge plus the runtime.
+\code{@env.task async def f(x: File) -> dict}, and Flyte builds the image, renders the pod spec, moves typed
+inputs and outputs through object storage, caches results by their inputs, retries failed attempts, and records
+each execution so that a long pipeline can resume after a node is lost. None of this changes what the function
+does inside the container. It changes the pod's edges: inputs arrive through Flyte's download, the container
+also runs Flyte's runtime, and the execution history reports the container's peak with that runtime included.
+We measure the runtime at 55\,MiB at rest and a median 70\,MiB above the same workload run as a plain Job
+(\cref{sec:validation}). An approach that can size a Kubernetes pod should therefore be able to size a Flyte
+task with the same knowledge plus the runtime.

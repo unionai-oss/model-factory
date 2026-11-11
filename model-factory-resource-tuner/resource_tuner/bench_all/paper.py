@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import re
 from random import Random
 
 import flyte
@@ -121,3 +122,47 @@ async def paper_file(f: flyte.io.File) -> str:
     path = await f.download()
     with open(path, "rb") as fh:
         return base64.b64encode(gzip.compress(fh.read())).decode()
+
+
+_IMPORT = re.compile(r"^\s*(?:import|from)\s+([\w.]+)", re.M)
+
+
+def code_audit(rows: list[dict]) -> dict:
+    """Round 24: how much of test is code seen in training, and what each family imports.
+
+    ``seen``: every usable test/ood Flyte run whose ``task_code`` is identical to
+    some training task's (same corpus). ``families``: tasks and distinct programs
+    per family and split. ``imports``: the modules each family's code imports, and
+    for held-out families the ones no training family imports."""
+    flyte_rows = [r for r in rows if dataset.usable(r) and dataset.platform_of(r) == "flyte"]
+    train_code: dict[str, set[str]] = {}
+    for r in flyte_rows:
+        if r["split"] == "train":
+            train_code.setdefault(r["source"], set()).add(r["task_code"])
+    seen = {r["run_id"]: r["task_code"] in train_code.get(r["source"], set())
+            for r in flyte_rows if r["split"] in ("val", "test", "ood")}
+    fam: dict[str, dict] = {}
+    imports: dict[str, set[str]] = {}
+    for r in flyte_rows:
+        k = f"{r['source']}:{r['family']}"
+        f = fam.setdefault(k, {"split": set(), "tasks": set(), "programs": set()})
+        f["split"].add(r["split"]), f["tasks"].add(r["task_id"]), f["programs"].add(r["task_code"])
+        imports.setdefault(k, set()).update(_IMPORT.findall(r["task_code"]))
+    train_fams = [k for k, f in fam.items() if "ood" not in f["split"]]
+    train_mods = set().union(*(imports[k] for k in train_fams))
+    train_top = {m.split(".")[0] for m in train_mods}
+    return {
+        "seen": seen,
+        "families": {k: {"split": sorted(f["split"]), "tasks": len(f["tasks"]), "programs": len(f["programs"])}
+                     for k, f in sorted(fam.items())},
+        "imports": {k: sorted(v) for k, v in sorted(imports.items())},
+        "new_modules": {k: sorted(imports[k] - train_mods) for k in fam if k not in train_fams},
+        "new_packages": {k: sorted({m.split(".")[0] for m in imports[k]} - train_top) for k in fam if k not in train_fams},
+    }
+
+
+@allbench_env.task(report=False)
+async def paper_audit(corpus: flyte.io.File) -> str:
+    """``code_audit`` on a release's corpus, inline: gzipped JSON, base64."""
+    rows = await read_rows(corpus)
+    return base64.b64encode(gzip.compress(json.dumps(code_audit(rows)).encode())).decode()

@@ -4,221 +4,199 @@
 \input{generated/num_pairs}
 \input{generated/num_cf}
 
-We report Job pods first, because they are the plain Kubernetes case and the one with no
-orchestrator to absorb mistakes. Flyte pods follow, and so does the comparison between
-the two. All numbers are regret in percent with 95\% task-clustered intervals, from seed 1
-unless noted.
+We report Job pods first, because they are the plain Kubernetes case, with no orchestrator to absorb mistakes.
+Flyte pods follow, and so does the comparison between the two. Numbers are regret in percent against the cheapest
+request, seed 1, with 95\% intervals clustered by task, unless noted.
 
 \subsection{Leaderboard}
 \label{sec:res-lead}
 
-\Cref{tab:leaderboard,fig:leaderboard} give the main results. On new tasks from familiar
-families, pooling the trees with a model is clearly the best approach. Pooling them with
-the decision model reaches 6.6\% on Job pods, and pooling them with the RL model and
-reading it out by argmax reaches 7.2\%. Those two are statistically tied, and both are well
-ahead of the trees on their own (11.5\%), the decision model on its own (12.6\%), and the
-rules (42.4\%). A static request costs almost twice the oracle.
+\Cref{tab:leaderboard,fig:tradeoff} give the main results. On new tasks from familiar families, the trees pooled
+with the decision model are best at \rTestPoolDec\% \ciTestPoolDec. The trees pooled with the RL model and read by
+argmax (\rTestPoolRLArg\%) cannot be separated from it (paired difference \vbTestPoolRLArg\ points
+\vbTestPoolRLArgCI). The gate (\rTestGate\%) and RL read by argmax (\rTestRLArg\%) are about two points behind.
+All four are ahead of the trees alone (\rTestTrees\%) and the decision model alone (\rTestDec\%), and far ahead of
+the rules (\rTestSized\% for rules-sized, \rTestRules\% for rules) and the zero-shot model (\rTestZS\%). A static
+request costs about twice the cheapest one.
 
-New kinds of code tell a different story. On the unseen families, every approach does
-much worse, and the order changes. The RL model (39.3\%) and our new \code{rules-sized}
-baseline (39.2\%) are tied for best, with the zero-shot model close behind on its smaller
-sample (42.8\%, with a wide interval). The pools, which led on familiar code, fall to
-50--79\%, and the trees fall to 69\%. So what works best on familiar code
-works poorly on new code, and a careful hand-written rule that reads input sizes and the
-pod spec is as good as anything we trained once the code is unfamiliar.
+On the seven held-out families every approach does worse, and the order changes. Rules-sized (\rUnseenSized\%) and
+the gate (\rUnseenGate\%) have the lowest regret, and the gate equals the decoded RL model it routes those pods to.
+The read-outs validation chose for the trained models do worse: RL read by argmax reaches \rUnseenRLArg\%, the
+decision model \rUnseenDec\%, the pools \rUnseenPoolDec--\rUnseenPoolRLArg\%, and the trees \rUnseenTrees\%. The
+zero-shot model is at \rUnseenZS\% on its smaller sample. Clustered by family, the intervals on this split are
+wide: rules-sized spans \ciFamUnseenSized\ and RL read by argmax \ciFamUnseenRLArg, and of the approaches in
+\cref{tab:leaderboard} only the static request is clearly worse than rules-sized.
 
 \begin{table}[tbp]
 \centering\small
-\caption{Regret (\%) on Job pods, with 95\% task-clustered intervals, for seed 1; regret
-on Flyte pods; dollar regret on Job pods; and the mean and range of Job regret over three
-trainings. Each split has 5,095 Job pods for test and 6,416 for unseen. Zero-shot is scored
-on a sample of about 300 runs per split, so it is not bolded.}
+\caption{Regret (\%) on Job pods for seed 1, with 95\% intervals clustered by task, and for the unseen split also
+by family; regret on Flyte pods; dollar regret on Job pods; and the mean and range of Job regret over three
+trainings. Each trained model is shown with the read-out validation chose (\cref{tab:readouts}). Bold marks the
+approaches whose paired difference from the column's best includes zero. Each split has 5,095 Job pods for test
+and 6,416 for unseen. $^\dagger$Zero-shot is scored on a sample of 130 test and 150 unseen Job pods
+(\cref{tab:zs}) and is not compared for bold.}
 \label{tab:leaderboard}
 \resizebox{\linewidth}{!}{\input{generated/tab_leaderboard}}
 \end{table}
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}
-\begin{axis}[
-  width=0.92\linewidth, height=8.2cm,
-  y dir=reverse,
-  xmin=0, xmax=125,
-  xlabel={regret on Job pods (\%)},
-  ytick={0,...,13},
-  yticklabels from table={generated/fig_leaderboard.dat}{name},
-  yticklabel style={font=\footnotesize},
-  xticklabel style={font=\footnotesize},
-  xlabel style={font=\footnotesize},
-  legend style={font=\footnotesize, at={(0.5,-0.17)}, anchor=north, draw=none, fill=none, legend columns=2, /tikz/every even column/.append style={column sep=1em}},
-  xmajorgrids, grid style={draw=black!10},
-  axis line style={draw=black!40},
-  tick style={draw=black!40},
-  enlarge y limits=0.04,
-]
-\addplot+[only marks, mark=*, mark size=2pt, color=kube,
-  error bars/.cd, x dir=both, x explicit]
-  table[x=test, y expr=\thisrow{i}-0.15, x error minus expr=\thisrow{test}-\thisrow{tlo}, x error plus expr=\thisrow{thi}-\thisrow{test}]
-  {generated/fig_leaderboard.dat};
-\addplot+[only marks, mark=o, mark size=2pt, color=flyte,
-  error bars/.cd, x dir=both, x explicit]
-  table[x=ood, y expr=\thisrow{i}+0.15, x error minus expr=\thisrow{ood}-\thisrow{olo}, x error plus expr=\thisrow{ohi}-\thisrow{ood}]
-  {generated/fig_leaderboard.dat};
-\legend{test (familiar families), unseen families}
-\end{axis}
-\end{tikzpicture}
-\caption{Regret on Job pods for seed 1, with 95\% task-clustered intervals. Approaches that
-lead on familiar code (filled) are not the ones that lead on new code (open).}
-\label{fig:leaderboard}
+\includegraphics[width=\linewidth]{figures/fig_tradeoff.pdf}
+\caption{Regret on familiar families against regret on held-out families, Job pods, seed 1 (log scales). Gray:
+static request, rules and zero-shot (hollow: scored on a sample). Blue: trees. Orange: language models. Green:
+pools and the gate. No approach is in the lower left: the approaches that lead on familiar code fall behind a
+sized rule on new code.}
+\label{fig:tradeoff}
 \end{figure}
 
-The pre-registered gate does what it was designed to do. It reaches 8.1\% on familiar code,
-in the top group though not first, and 39.3\% on new code, where it ties the best approach.
-No other trained approach comes as close to the top on both splits. On new code it does
-not beat the RL model it routes to, and it does not beat \code{rules-sized}; its value is
-that it gives up very little on familiar code to get there (\cref{sec:res-gate}).
+The gate is the only trained approach near the top on both splits, at a cost of
+\diffTestGatePoolRLArg\ points on familiar code \diffTestGatePoolRLArgCI\ against its familiar-code member and a
+saving of \diffUnseenGatePoolRLArg\ points on new code \diffUnseenGatePoolRLArgCI. It does not beat rules-sized on
+new code (\diffUnseenSizedGate\ points \diffUnseenSizedGateCI), and its members were chosen with the same held-out
+families in view (\cref{sec:res-gate}).
+
+\subsection{Seen code, new programs and new families}
+\label{sec:res-code}
+
+Most familiar-family test tasks are programs the models have seen. \codeSeenShare\% of test Job pods run code
+identical to a training task's, and differ only in input sizes and history. \Cref{tab:code} splits the test split
+in two. On the \codeNovelN{} pods with new programs, regret rises for every trained approach. The decision model
+goes from \seenDec\% to \novelDec\%. The trees pooled with the RL model and read by argmax barely move
+(\seenPoolRLArg\% to \novelPoolRLArg\%), and the gate goes from \seenGate\% to \novelGate\%. The held-out families
+are the larger step: new programs from familiar families stay within 13--35\% of the cheapest request, while every approach is at about 43\% or worse on the new
+families. Rules-sized reads only sizes and the pod spec, so it is the same on both halves.
+
+\begin{table}[tbp]
+\centering\small
+\caption{Job regret (\%) on test pods whose task code appears in training (seen) and on those whose code does
+not (new), with the unseen families for comparison, for seed 1.}
+\label{tab:code}
+\input{generated/tab_code}
+\end{table}
+
+Part of the gap between test and unseen comes from the corpus mix: GPU runs are 36\% of unseen pods and 22\% of
+test pods. \Cref{tab:corpus} in \cref{app:extra} breaks results down by corpus. The trees' weakness on new code is
+concentrated in CPU and GPU families (\cUnseenCpuTrees\% and \cUnseenGpuTrees\%), and rules-sized is strongest on the
+held-out CPU families (\cUnseenCpuSized\%).
 
 \subsection{Does a model need to see Jobs?}
 \label{sec:res-training}
 
-\Cref{tab:training} trains the trees, the decision model and the pool three ways: on both
-pod types, on Jobs alone, and on Flyte tasks alone. Two results stand out. First, the Flyte
-data does not help with Jobs. A decision model trained only on Jobs scores 13.2\% on Job
-test pods, against 12.6\% for one trained on both, a difference of 0.6 points with an
-interval that includes zero ($[-1.8, +0.7]$). The trees and the pool behave the same way.
-Second, the reverse transfer does not work. A model trained only on Flyte tasks scores
-37.3\% on Job pods, three times worse than one that has seen Jobs, and the pool built on it
-reaches 24.8\% where the both-pod-types pool reaches 6.6\%. A model trained only on Jobs
-also does worse on Flyte pods (20.5\% against 11.3\%), but by much less, because a Flyte
-task is closer to a Job with a small fixed runtime added than the other way around.
+\Cref{tab:training} trains the trees, the decision model and the pool three ways: on both pod types, on Jobs alone,
+and on Flyte tasks alone. Flyte data does not make the models better on Jobs. A decision model trained only on Jobs
+scores \rTestDecJob\% on Job test pods, against \rTestDec\% for one trained on both, a difference of
+\diffTestDecDecJob\ points \diffTestDecDecJobCI; on seed 3 the Job-only model is better. The trees and the pool
+behave the same way. The reverse transfer does not work. A model trained only on Flyte tasks scores \rTestDecFlyte\%
+on Job pods, and the pool built on it reaches \rTestPoolDecFlyte\% where the pool trained on both reaches
+\rTestPoolDec\%. A model trained only on Jobs also does worse on Flyte pods (\rFTestDecJob\% against \rFTestDec\%),
+by less, because a Flyte task is closer to a Job with a small fixed runtime added than the other way around. On the
+unseen families, the model trained on both pod types is ahead by \diffUnseenDecDecJob\ points
+\diffUnseenDecDecJobCI, which may reflect the larger number of distinct workloads it saw.
 
 \begin{table}[tbp]
 \centering\small
-\caption{What the training data includes. Regret (\%) on Job and Flyte pods, and the share
-of Job pods whose first attempt succeeds, for seed 1.}
+\caption{What the training data includes. Regret (\%) on Job and Flyte pods, and the share of Job pods whose first
+attempt succeeds, for seed 1.}
 \label{tab:training}
 \input{generated/tab_training}
 \end{table}
 
-A model trained on both pod types treats them almost the same. The paired difference in
-regret between a run's Job pod and its Flyte pod is at most 1.4 points on familiar code for
-the language models and pools (\cref{tab:gap} in \cref{app:extra}), and for the RL model it
-is indistinguishable from zero. The trees do 3.1 points better on Jobs than on Flyte tasks. On new code the decision model and its pool do
-about 5 points worse on Jobs than on Flyte tasks, while RL and the gate show no gap.
+A model trained on both pod types treats them almost the same. The paired difference between a run's Job pod and
+its Flyte pod is under two points on familiar code for every language model and pool (\cref{tab:gap}), and for the
+RL model it is indistinguishable from zero; the trees do 3.0 points better on Jobs. On new code, the decision model and
+its pool do about five points worse on Jobs than on Flyte tasks, while RL and the gate do about a point better.
 
 \paragraph{The adapter.}
-A team whose history is all Flyte tasks has no Job pods to learn from. The adapter of
-\cref{sec:methods} shifts a Flyte-trained model's memory distribution through the staging
-accounting, and with the corrected 70\,MiB runtime it now helps on every seed. It cuts the
-Flyte-only model's Job regret from 37.3\% to 28.6\% on seed 1, from 33.8\% to 22.1\% on
-seed 2 and from 37.5\% to 28.6\% on seed 3. With the 180\,MiB constant of our first release
-it made Job regret worse, which in hindsight was a symptom of that wrong constant. The
-adapter still falls well short of a model that has seen Jobs (12--14\%), though, so
-platform data matters even when the accounting is right.
+The adapter of \cref{sec:methods} shifts a Flyte-trained model's memory distribution through the staging
+accounting. The variant that reads the run's Flyte task cuts the Flyte-only model's Job regret from
+\rTestDecFlyte\% to \rTestDecAdapt\% on seed 1, from 40.1\% to 28.1\% on seed 2, and from 44.2\% to 34.9\% on seed 3.
+The variant a scheduler can deploy, which reads only the Job's prompt, does not help (44.9\%, 40.2\% and 43.4\%),
+though pooling it with Flyte-trained trees does (29.6\%, 26.1\% and 26.9\%). Either way the adapter stays well short
+of a model that has seen Jobs (17--20\%): platform data matters even when the accounting is known.
 
 \subsection{Does a model read the manifest?}
 \label{sec:res-manifest}
 
-A model could do well on Jobs for the wrong reason, for example by learning only that a
-Job's numbers run lower than a Flyte task's because a Job does not carry the runtime. We
-test this two ways.
+A model could do well on Jobs by learning only that a Job's numbers run lower than a Flyte task's, because a Job
+does not carry the runtime. We test this two ways.
 
 \paragraph{Run and Job pairs.}
-Of the \pairsN{} test pairs of a run's Flyte pod and its Job pod on CPU nodes, the memory
-label differs in only \pairsMoved\%. In \pairsUp{} pairs the Job needs more, because it
-stages its inputs on tmpfs, and in \pairsDown{} it needs less, because it has no runtime.
-With the old 180\,MiB constant, 69\% of pairs differed and almost all of those moves were
-downward, so this metric mostly measured whether a model knew about the runtime. A model
-that ignores the pod type keeps the same request for both pods; it scores 100\% on the
-pairs whose label stays the same and 0\% on the pairs whose label moves. Models trained on
-both pod types move the right way on 56--67\% of the pairs that move, and on 75--83\% of
-upward moves (\cref{tab:pairs} in \cref{app:extra}). The rules move the right way on
-25\%.
+Of the \pairsN{} test pairs of a run's Flyte pod and its Job pod on CPU nodes, the memory label differs in
+\pairsMoved\%. In \pairsUp{} pairs the Job needs more, because it stages its inputs on tmpfs, and in \pairsDown{} it
+needs less, because it has no runtime. A model that ignores the pod type keeps the same request for both pods,
+which scores 100\% on the pairs whose label stays the same and 0\% on those whose label moves. Models trained on
+both pod types move the right way on 56--67\% of the pairs that move, and on 75--83\% of upward moves
+(\cref{tab:pairs}). The rules move the right way on 25\%.
 
 \paragraph{A controlled counterfactual.}
-The pairs above still mix the effect of the manifest with the effect of the runtime. To
-isolate the manifest, we took \cfRuns{} first runs from the test and unseen splits and
-rendered each one as a Job under all four stagings, holding the task, code and inputs
-fixed (\cfRend{} pods in all). Only the manifest and the way the job fetches its inputs
-change. Because these are first runs, there is no history to give the staging away, so the
-manifest is the only evidence. Switching the volume from disk to tmpfs moves the label in
-\cfMediumMovedTest\% of test pairs and \cfMediumMovedOod\% of unseen pairs, and switching
+The pairs above mix the effect of the manifest with the effect of the runtime. To isolate the manifest, we took
+\cfRuns{} first runs from the test and unseen splits and rendered each one as a Job under all four stagings,
+holding the task, code and inputs fixed (\cfRend{} pods). Only the manifest and the way the job fetches its inputs
+change, and with no history, the manifest is the only evidence of the staging. Switching the volume from disk to
+tmpfs moves the label in \cfMediumMovedTest\% of test pairs and \cfMediumMovedOod\% of unseen pairs, and switching
 the fetcher from an init container to boto3 moves it in about a fifth.
 
-\begin{table}[tbp]
-\centering\small
-\caption{The staging counterfactual for seed 1. ``Moved, right'' is the share of pairs
-whose label moved when the volume switched from disk to tmpfs where the approach's memory
-request moved the same way. ``Unmoved, kept'' is the share of pairs whose label stayed
-put where the request stayed put too. ``Fetcher moved'' is the first measure for a switch
-from an init container to boto3.}
-\label{tab:cf}
-\input{generated/tab_cf}
-\end{table}
+\begin{figure}[tbp]
+\centering
+\includegraphics[width=\linewidth]{figures/fig_counterfactual.pdf}
+\caption{The staging counterfactual, seed 1: the same first runs rendered as Jobs with the inputs on node disk and
+on a memory-backed volume. Filled: among pairs whose label moved, the share where the request moved the same way.
+Hollow: among pairs whose label stayed, the share where the request stayed too. Static requests and rules never
+move on a first run.}
+\label{fig:counterfactual}
+\end{figure}
 
-\Cref{tab:cf} shows that the models trained on Jobs do read the manifest. When the label
-moves, the decision model, the trees, RL and the pools all move their request the right way
-on 72--78\% of familiar-code pairs and 64--78\% of unseen pairs. The Flyte-only model, which
-has never seen a manifest, does so on only 21\%. Static requests and rules never move,
-because on a first run they have nothing to go on but fixed defaults. The models are worse
-at the opposite case on new code. When the label does not move on unseen pairs, which
-mostly means the staged inputs were small, they still change their request on 57--80\% of
-them, overreacting to \code{medium: Memory}. They also pick up the fetcher less reliably
-(31--47\% on test), which makes sense since boto3's 48\,MiB only occasionally crosses a
-cell.
+The models trained on Jobs read the manifest (\cref{fig:counterfactual,tab:cf}). When the label moves, the
+decision model, the trees, RL and the pools move their request the right way on 72--78\% of familiar-code pairs and
+64--78\% of unseen pairs. The Flyte-only model, which has never seen a manifest, does so on 21\%. Static requests and
+rules never move, because on a first run they have only fixed defaults. On new code the models overreact: when the
+label does not move, which mostly means the staged inputs were small, they still change their request on 57--80\% of
+unseen pairs. They pick up the fetcher less reliably (31--47\% on test), which fits boto3's 48\,MiB only sometimes
+crossing a cell.
 
 \paragraph{The task's name.}
-Generated tasks are named after their family (for example \code{pandas-join}), and the
-name appears in both the code and the manifest. Real tasks have names too, but ours give
-away the family. We therefore re-scored the same first runs with each name replaced by a
-hash, without retraining anything (\cref{tab:names} in \cref{app:extra}). On familiar code,
-regret changes by less than a point for every trained approach except the Flyte-only
-model (+1.8). On new code it rises by 0.5--3.6 points. The models lean on the name a little
-when the code is unfamiliar, but the name is not what they rely on.
+Generated tasks are named after their family (for example \code{pandas-join}), and the name appears in the code and
+the manifest. We re-scored the counterfactual's first runs with each name replaced by a hash, without retraining
+(\cref{tab:names}). On familiar code, regret changes by less than a point for every trained approach except the
+Flyte-only model (+1.8); on new code it rises by 0.5--3.6 points. Each family also has a fixed function name and
+input schema, which this test leaves in place, so it bounds the name's effect without removing the family's
+identity from the code.
 
-\subsection{The pre-registered gate}
+\subsection{The gate}
 \label{sec:res-gate}
 
-We fixed the gate before training k8s-2, so its results are a confirmation rather than a
-fit. \Cref{tab:gate} compares its signal with the alternatives. Correcting the kNN scaling,
-which an internal review suspected was behind the near-perfect detection in our first
-release, changed nothing. The corrected distance still separates unseen families from
-validation with an AUROC of 0.999, sends every unseen pod to RL, and gives exactly the same
-requests. The held-out families really are far from the training code. Six of the seven
-import a library that no training family uses, and the remaining code and input features
-put them several times further away than any familiar pod. The detector is therefore
-easy on this benchmark, and we cannot measure it on new code that uses only familiar
-libraries. With code tokens removed, the AUROC falls to 0.67 and unseen regret rises to
-62\%.
+\Cref{tab:gate} compares the gate's signal with the alternatives. Correcting the first release's kNN scaling changed
+nothing: the corrected distance still separates unseen families from validation with an AUROC of 0.999, sends every
+unseen pod to RL, and gives exactly the same requests. The held-out families are far from the training data in code
+tokens, though only one of them imports a library no training family uses (\cref{sec:dataset}). With code tokens
+removed the AUROC falls to 0.67 and unseen regret rises to 66.4\%. The detector's job is easy on this
+benchmark, and the benchmark cannot test it on new code built from familiar tokens.
 
 \begin{table}[tbp]
 \centering\small
-\caption{Gate signals for seed 1. AUROC measures how well each signal ranks unseen pods
-above validation pods. The middle columns give the share of pods routed to the RL model,
-and the last two the gate's regret on Job pods. All gates use the 0.95 quantile except the
-disagreement gate, shown at 0.5.}
+\caption{Gate signals for seed 1. AUROC measures how well each signal ranks unseen pods above validation pods. The
+middle columns give the share of pods routed to the RL model, and the last two the gate's regret on Job pods. All
+gates use the 0.95 quantile except the disagreement gate, shown at 0.5.}
 \label{tab:gate}
 \input{generated/tab_gate}
 \end{table}
 
-Over three trainings, the gate scores 9.6\% on familiar code (8.1--12.7\%) and 37.7\% on new
-code (35.5--39.3\%). Seed 3's familiar-code number is higher because its pooled RL model,
-the gate's member for familiar code, was worse at 11.8\%. On new code the gate always equals
-the RL model, so its quality there is RL's. In paired terms on seed 1, the gate costs 1.5
-points more than the best pool on familiar code and saves 17.5 points on new code.
+Over three trainings, the gate averages \mTestGate\% on familiar code (\loTestGate--\hiTestGate\%) and
+\mUnseenGate\% on new code (\loUnseenGate--\hiUnseenGate\%). Seed 3's familiar-code number is higher because its
+familiar-code member, the pooled RL model read by argmax, was worse on that seed (17.5\%). On new code the gate always
+equals the decoded RL model, whose temperature sits at its search bound (\cref{sec:methods}); validation would have
+chosen that model's argmax read-out, which is about eight points worse on new code (\diffUnseenRLArgRL\ points
+\diffUnseenRLArgRLCI).
 
 \subsection{First runs and runs with history}
 \label{sec:res-cold}
 
-Cold starts are where the approaches differ most (\cref{tab:cold}). With history, almost
-everything trained does well on familiar code, from 1.6\% for RL read by argmax to 10.1\% for
-RL decoded, and even \code{rules-sized} reaches 11.6\%. On first runs the rules
-lose most of their advantage (66--73\%), while the pooled decision model holds at 10.8\%.
-On new code, history does most of the work. \code{rules-sized} with history reaches 13.8\%,
-which is the best of any approach, because scaling the nearest earlier run by input size is
-a strong prior when a task's runs differ only in size. Without history, no approach does
-well on new code. The best are the zero-shot model (57.7\%, on a small sample) and RL
-(61.4\%).
+First runs are where the approaches differ most (\cref{tab:cold}). With history, most trained approaches do well on
+familiar code (6--13\%), and rules-sized reaches 16.8\%. On first runs the rules lose most of their accuracy
+(72--82\%), while the pooled decision model holds at 16.4\%. On new code, history does most of the work, and
+rules-sized with history (16.9\%) is the best of any approach, because scaling the nearest earlier run by input size is a strong prior when a task's runs
+differ only in size. Without history, no approach does well on new code; the best are the zero-shot model, on its
+sample, and the gate.
 
 \begin{table}[tbp]
 \centering\small
@@ -230,28 +208,37 @@ well on new code. The best are the zero-shot model (57.7\%, on a small sample) a
 \subsection{Dollars and the price of a retry}
 \label{sec:res-sens}
 
-Mean regret counts every run equally, while dollar regret is dominated by large jobs. On
-familiar code the two agree: the pooled RL model read by argmax costs 15.7\% more than the
-oracle in dollars, and the gate 19.5\%. On new code, dollars rank the trees first (85.6\%),
-because they size the largest jobs better, even though their mean regret is among the
-worst. The gate and RL cost \$1,177 per 1,000 unseen Job runs, against \$959 for the trees,
-\$1,126 for \code{rules-sized} and \$517 for the oracle.
+Mean regret counts every pod equally, while dollar regret is dominated by large jobs. On familiar code the two
+mostly agree: the pooled RL model read by argmax costs \dTestPoolRLArg\% more than the cheapest requests in total,
+and the gate \dTestGate\%. On new code, dollars rank the trees first (\dUnseenTrees\%), because they size the largest
+jobs better even though their mean regret is among the worst. The trees cost \$\usdUnseenTrees{} per 1,000 unseen Job
+runs, against \$\usdUnseenSized{} for rules-sized, \$\usdUnseenGate{} for the gate, and \$\usdCheapUnseen{} for the
+cheapest requests.
 
-A raw Job with \code{backoffLimit: 0} does not retry; it fails, and someone resubmits it.
-That makes an OOM much more expensive than our default penalty of one oracle cost per
-retry. \Cref{tab:sens} re-scores everything with penalties of 0, 5 and 20 oracle costs.
-The pooled decision model stays best on familiar code at every penalty from 1 to 20, at
-89.4\% even when a retry costs twenty times the oracle. (With no retry penalty at all, RL read
-by argmax is best, at 1.9\%.) On new code, a larger penalty favours the
-approaches that ask for more memory. At a penalty of 5 or 20, \code{rules-sized} becomes
-clearly the best approach on unseen code (112.5\% and 387.2\%), ahead of RL and the gate
-(135.7\% and 497.1\%). For teams that run raw Jobs without retries, this is the most
-practical result in the paper. On code nobody has seen before, a rule that scales by input
-size and reads the manifest is safer than any model we trained.
+A raw Job with \code{backoffLimit: 0} does not retry: it fails, and someone resubmits it. That makes an OOM much more
+expensive than our default penalty. \Cref{fig:penalty,tab:sens} re-score every approach with penalties of 0, 5 and
+20 times the label request's cost per retry. Every approach was tuned at the default penalty of 1, so this measures
+how fixed requests hold up when failures get dearer, not how well each approach could adapt. On familiar code the
+pooled decision model has the lowest regret at every penalty from 1 to 20 (\pTwentyTestPoolDec\% at 20), though at 20
+the pooled RL model is within \sdTwentyTestPoolDecPoolRLArg{} points \sdTwentyTestPoolDecPoolRLArgCI. On new code,
+rules-sized has the lowest regret at penalties of 5 and 20 (\pFiveUnseenSized\% and \pTwentyUnseenSized\%), ahead of RL
+and the gate (\pFiveUnseenRL\% and \pTwentyUnseenGate\%). Clustered by task, that lead is clear
+(\sdTwentyUnseenSizedGate\ points \sdTwentyUnseenSizedGateCI\ at 20); clustered by the seven families, it is not
+(\sdFamTwentyUnseenSizedGateCI). For teams that run raw Jobs without retries, the evidence favours a rule that scales
+by input size and reads the manifest on code nobody has seen before, and does not rule out the trained models.
+
+\begin{figure}[tbp]
+\centering
+\includegraphics[width=\linewidth]{figures/fig_penalty.pdf}
+\caption{Job regret as an OOM retry gets more expensive, seed 1 (log scale). Every approach was tuned at a penalty
+of 1. On familiar code the trained approaches stay far ahead of rules-sized; on held-out families the lines cross,
+and rules-sized has the lowest regret once a retry costs 5 or more.}
+\label{fig:penalty}
+\end{figure}
 
 \begin{table}[tbp]
 \centering\small
-\caption{Job regret (\%) when each OOM retry costs 0, 1 (the default), 5 or 20 oracle costs.
+\caption{Job regret (\%) when each OOM retry costs 0, 1 (the default), 5 or 20 times the label request's cost.
 Higher penalties stand for a Job that fails outright and has to be resubmitted.}
 \label{tab:sens}
 \resizebox{\linewidth}{!}{\input{generated/tab_sens}}
@@ -260,20 +247,18 @@ Higher penalties stand for a Job that fails outright and has to be resubmitted.}
 \subsection{Three trainings}
 \label{sec:res-seeds}
 
-The deterministic approaches (static, both rules and the trees) give identical results on
-every seed. The trained models vary, much more on new code than on familiar code
-(\cref{tab:seeds}). On familiar code, the pooled decision model ranges from 6.6\% to 6.9\%
-and RL read by argmax from 8.2\% to 8.6\%, so the top of the familiar-code leaderboard is
-stable. The pooled RL model read by argmax is less so, ranging from 6.8\% to 11.8\%. On new
-code, the decision model ranges from 44\% to 57\% and the pooled RL model from 79\% to 111\%,
-while RL itself varies least (35.5--39.3\%). Rankings on new code within about 10 points of
-each other should therefore not be read as stable, with the exception of RL and the gate,
-which are consistently near the top.
+The static request, both rules and the trees give identical results on every seed. The trained models vary, more on
+new code than on familiar code (\cref{tab:seeds}). On familiar code the top is stable: the pooled decision model ranges
+from \loTestPoolDec\% to \hiTestPoolDec\% and RL read by argmax from \loTestRLArg\% to \hiTestRLArg\%. The pooled RL
+model read by argmax ranges from \loTestPoolRLArg\% to \hiTestPoolRLArg\%. On new code, the decision model ranges from
+\loUnseenDec\% to \hiUnseenDec\% and the pooled RL model read by argmax from \loUnseenPoolRLArg\% to
+\hiUnseenPoolRLArg\%, while the gate varies least (\loUnseenGate--\hiUnseenGate\%). Rankings on new code within about
+ten points of each other are not stable across trainings.
 
 \begin{table}[tbp]
 \centering\small
-\caption{Job regret (\%) for each of the three trainings. The deterministic approaches give
-identical results on every seed.}
+\caption{Job regret (\%) for each of the three trainings. The static request, the rules and the trees give identical
+results on every seed.}
 \label{tab:seeds}
 \input{generated/tab_seeds}
 \end{table}
@@ -281,11 +266,10 @@ identical results on every seed.}
 \subsection{Zero-shot}
 \label{sec:res-zs}
 
-With room to finish its reasoning, the 27B model answers almost every prompt, and the
-results are no longer dominated by fallbacks. It scores 48.8\% on familiar-code Job pods
-and 42.8\% on unseen ones, against 42.4\% and 49.8\% for the rules. Constraining it to the
-JSON schema makes little difference on Jobs (48.8\% and 44.4\%) but helps on Flyte tasks
-(21.8\% on familiar code). Its intervals are wide, about 30 points, because it is scored on
-a sample, so the honest summary is that a large model with no training is roughly as good
-as hand-written rules and much worse than a small model trained on the benchmark. It is,
-however, the only approach that does not get worse on new code.
+With room to finish its reasoning, the 27B model answers almost every prompt. \Cref{tab:zs} scores every approach on
+the zero-shot model's own sample, so the comparison is like for like. On familiar code the zero-shot model
+(\zsTestZS\%) is worse than the rules (\zsTestRules\% and \zsTestSized\%; paired difference with rules-sized
+\diffTestZSSized\ points \diffTestZSSizedCI) and far behind the trained models (\zsTestRLArg\% for RL read by argmax). On
+new code it is level with the best approaches on that sample (\zsUnseenZS\% against \zsUnseenSized\% for rules-sized and
+\zsUnseenGate\% for the gate), with intervals of about $\pm$15 points. Constraining it to the JSON schema makes little
+difference on Jobs and helps on Flyte tasks (\rFTestZSJ\% on familiar code).

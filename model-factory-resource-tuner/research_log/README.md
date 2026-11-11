@@ -42,6 +42,27 @@ Conventions:
 | 2026-11-08 | [round-22-k8s-twins](2026-11-06-round-22-k8s-twins.md) | **Every run gets a Kubernetes twin**: the same body as `job.py` plus a Job manifest, four stagings (init container / boto3 x disk / tmpfs), labels by exact accounting from the Flyte measurement, checked on 176 measured runs. Combined bench with twins (test n=10,190, unseen n=12,832). Trained on both platforms, K8s regret is within 1-3 points of Flyte, and the decision model moves memory with the one-line tmpfs difference in 77-81% of pairs (rules 43%). A Flyte-only model does not transfer (K8s memory right 30-40%); a staging adapter fixes accuracy but not regret. **A label-free kNN novelty gate** (pooled trees on familiar runs, rl-pointer on novel ones) scores **6.9% test / 36.8% unseen**, the best arm on each split, on two independent trainings. Its detector is perfect here only because unseen families import unseen libraries (numbers-only: AUROC 0.67) |
 
 | 2026-11-09 | [round-23-review-real-pods](2026-11-08-round-23-review-real-pods.md) | **Review, real pods, and the k8s-2 release.** ~480 real pods check the Job labels against per-container cgroups: the Flyte runtime is ~70 MiB, not the unmeasured 180 (2/3 of Flyte labels were a cell high), and k8s-1's 256Mi init containers could not hold tmpfs inputs over ~250 MiB (7% of Job rows); both fixed in k8s-2, trained 3 times. Job pods: pool x decision **6.6%** test; on unseen families RL, the pre-registered gate and a new `rules-sized` baseline tie at **~39%**, and `rules-sized` wins when an OOM costs a resubmission. Models trained on Jobs read the manifest (72-78% right on a disk-to-tmpfs counterfactual; Flyte-only 21%); Flyte rows add nothing on Jobs. Paper rewritten Kubernetes-first, as LaTeX (`paper/`) + HTML |
+| 2026-11-10 | [round-24-review-release](2026-11-10-round-24-review-release.md) | **Third review, the cheapest-request oracle, and the Hugging Face release.** Regret is now measured against the cheapest request under the cost model (the label is often a CPU cell too generous; against it, some arms had negative regret), with read-outs chosen on validation and family-clustered intervals on unseen. Job pods: pool x decision **11.7%** test; on held-out families `rules-sized` **42.7%** is as good as anything trained, and none of the leaderboard's trained arms is separable from it by family. 81% of test tasks repeat a training program (decision 14.0% seen vs 34.3% new). "Six of seven held-out families bring a new library" was false (only DuckDB). Paper and report rewritten with new figures; dataset + models staged for huggingface.co/unionai (`hub_release.py`, `docs/huggingface-release.md`) |
+
+## Standing results — round 24: k8s-2 against the cheapest request (as of 2026-11-10)
+
+The same k8s-2 trainings as round 23, re-analysed. Regret is the mean cost ratio to the
+**cheapest request under the cost model** minus 1, on **Job pods**, seed 1, each trained
+model with the read-out validation chose; 95% intervals by task (unseen also by family).
+Paper: [`paper/`](../paper/), pages: [`benchmarks/rightsize-bench-k8s.html`](../benchmarks/rightsize-bench-k8s.html),
+round: [round 24](2026-11-10-round-24-review-release.md).
+
+| approach | Job test | Job unseen (by family) | 3 seeds, test / unseen | $ per 1k Job runs, test / unseen (cheapest $276 / $513) |
+|---|---|---|---|---|
+| static | 97.8% | 120.7% [76.2, 167.6] | fixed | $797 / $1,850 |
+| rules | 49.2% | 53.3% [27.8, 84.0] | fixed | $442 / $1,138 |
+| rules-sized | 44.5% | **42.7%** [27.8, 60.4] | fixed | $439 / $1,126 |
+| gbt-dist | 16.8% | 73.8% [30.4, 132.5] | fixed | $368 / **$959** |
+| jev-pointer (decoded) | 17.9% | 51.9% [24.7, 85.3] | 18.9 / 53.6 | $393 / $1,131 |
+| rl-pointer (argmax) | 13.5% | 50.6% [22.0, 83.5] | 13.4 / 49.0 | $381 / $1,067 |
+| pool x jev-pointer (decoded) | **11.7%** [10.8, 12.7] | 61.0% [26.5, 106.6] | 11.9 / 59.9 | $359 / $1,007 |
+| pool x rl-pointer (argmax) | 12.5% | 84.1% [31.3, 150.4] | 14.0 / 94.6 | **$326** / $1,093 |
+| gate (kNN q0.95, fixed before k8s-2) | 13.4% | 42.8% [24.2, 65.1] | 15.0 / 41.1 | $337 / $1,177 |
 
 ## Standing results — round 23: Kubernetes Jobs and Flyte tasks, k8s-2 (as of 2026-11-09)
 

@@ -3,6 +3,14 @@ bootstrap CIs, paired K8s - Flyte gaps, the pair metric split by whether the
 need moved, and the cost model's sensitivity to its penalties.
 
     uv run python analyze.py <dir> <tag>   ->  <dir>/<tag>-analysis.json
+
+Round 24 (the third review): regret is measured against the cheapest request
+under the cost model (``scoring.candidate_actions``), recomputed under every
+penalty setting, instead of against the label cell; unseen-split intervals are
+also clustered by family (7 families); each approach's read-out is chosen on
+validation; every approach is scored on the zero-shot model's sample; results
+are sliced by corpus and by whether the test task's code appears in training
+(``<dir>/<run>-audit.json.gz``, from paper_audit, when present).
 """
 import gzip
 import json
@@ -38,14 +46,51 @@ def raw(rid, m, c, g):
     return o
 
 
-def cost(rid, pick, s="base"):
+def _total(rid, pick, s):
     oom, delay = SETTINGS[s]
     c, att, slow, _f, base = raw(rid, *pick[:3])
-    return c + oom * base * (att - 1) + delay * base * (slow - 1.0), base
+    return c + oom * base * (att - 1) + delay * base * (slow - 1.0)
+
+
+_cheap: dict = {}
+
+
+def cheapest(rid, s="base"):
+    """The lowest total cost over the oracle's candidate requests, under setting s
+    (every setting at once per run, without filling the ``raw`` cache)."""
+    v = _cheap.get(rid)
+    if v is None:
+        r = by_id[rid]
+        base = scoring.oracle_cost(r)
+        outs = [scoring.raw_cost(r, *a) for a in scoring.candidate_actions(r)]
+        v = _cheap[rid] = {k: min(o.cost + oom * base * (o.attempts - 1) + delay * base * (o.slowdown - 1.0)
+                                  for o in outs) for k, (oom, delay) in SETTINGS.items()}
+    return v[s]
+
+
+def cost(rid, pick, s="base"):
+    """(this request's total cost, the cheapest request's) under setting s."""
+    return _total(rid, pick, s), cheapest(rid, s)
 
 
 def cluster(r):
     return r["task_id"].split("@")[0]
+
+
+def family_cluster(r):
+    return f"{r['source']}:{r['family']}"
+
+
+AUDIT = f"{D}/{RUN}-audit.json.gz"
+try:
+    seen_code = json.load(gzip.open(AUDIT))["seen"]
+except FileNotFoundError:
+    seen_code = {}
+
+
+def code_seen(r):
+    """Whether this pod's task code (its measured run's) is identical to a training task's."""
+    return seen_code.get(r.get("twin_of") or r["run_id"])
 
 
 def boot(values, clusters):
@@ -97,6 +142,8 @@ def regret(variant, rs, s="base"):
     cl = [cluster(r) for r in rs]
     lr = np.log(np.maximum(ratios, 1e-9))
     return {"n": len(rs), "regret": [x - 1 for x in boot(ratios, cl)],
+            "regret_fam": [x - 1 for x in boot(ratios, [family_cluster(r) for r in rs])],
+            "below_cheapest": float(np.mean(np.array(ratios) < 1 - 1e-9)),
             "geo_regret": [float(np.exp(x)) - 1 for x in boot(lr, cl)],
             "capped_regret": [x - 1 for x in boot(np.minimum(ratios, 20.0), cl)],
             "first_ok": float(np.mean([raw(r["run_id"], *p[r["run_id"]][:3])[1] == 1 for r in rs])),
@@ -121,7 +168,7 @@ def paired_gap(variant, split, s="base", cpu_node=False):
 
 
 def diff(a, b, rs, s="base"):
-    """regret(a) - regret(b) on the runs both answered, clustered."""
+    """regret(a) - regret(b) on the runs both answered, clustered by task and by family."""
     pa, pb = picks[a], picks[b]
     rs = [r for r in rs if r["run_id"] in pa and r["run_id"] in pb]
     d = []
@@ -129,7 +176,10 @@ def diff(a, b, rs, s="base"):
         ca, ba = cost(r["run_id"], pa[r["run_id"]], s)
         cb, bb = cost(r["run_id"], pb[r["run_id"]], s)
         d.append(ca / ba - cb / bb)
-    return {"n": len(d), "diff": boot(d, [cluster(r) for r in rs])} if d else None
+    if not d:
+        return None
+    return {"n": len(d), "diff": boot(d, [cluster(r) for r in rs]),
+            "diff_fam": boot(d, [family_cluster(r) for r in rs])}
 
 
 def pairs(variant, split):
@@ -162,8 +212,15 @@ HEAD = [v for v in ("static", "rules", "rules-sized", "gbt-dist", "gbt-dist-flyt
                     "jev-pointer-flyte-adapt", "pool-jev-pointer-flyte-adapt", "gate-rl-pointer", "gate-knn-q95",
                     "gate-knn-raw-q95", "gate-knn-numeric-q95", "gate-js-q50") if v in picks]
 
+#: Each trained approach's two read-outs; ``selected`` keeps the one with the lower validation regret (all pods).
+READOUTS = [v for v in ("jev-pointer", "jev-pointer-k8s", "jev-pointer-flyte", "rl-pointer", "pool-jev-pointer",
+                        "pool-jev-pointer-k8s", "pool-jev-pointer-flyte", "pool-rl-pointer")
+            if v in picks and f"{v}-argmax" in picks]
+ZS = picks.get("zeroshot-27b", {})
+
 out = {"variants": HEAD, "n_rows": len(rows), "settings": SETTINGS, "table": {}, "gap": {}, "pairs": {}, "diff": {},
-       "sens": {}, "staging": {}, "cold": {}}
+       "sens": {}, "staging": {}, "cold": {}, "selected": {}, "zs_sample": {}, "corpus": {}, "code": {},
+       "audit": bool(seen_code), "sens_diff": {}}
 for v in HEAD:
     t = out["table"][v] = {}
     for split in ("val", "test", "ood"):
@@ -184,6 +241,13 @@ for v in HEAD:
                       for split in ("test", "ood") for plat in ("k8s", "flyte") for h in ("cold", "warm")}
     out["sens"][v] = {s: {split: (regret(v, subset(split, "k8s"), s) or {}).get("regret") for split in ("test", "ood")}
                       for s in SETTINGS}
+    out["zs_sample"][v] = {split: (regret(v, [r for r in subset(split, "k8s") if r["run_id"] in ZS]) or {}).get("regret")
+                           for split in ("test", "ood")}
+    out["corpus"][v] = {f"{split}/{src}": (regret(v, subset(split, "k8s", source=src)) or {}).get("regret")
+                        for split in ("test", "ood") for src in ("mem", "cpu", "gpu")}
+    if seen_code:
+        out["code"][v] = {f"test/{k}": (regret(v, [r for r in subset("test", "k8s") if code_seen(r) is want]) or {}).get("regret")
+                          for k, want in (("seen", True), ("novel", False))}
     print(v, {k: round(x["regret"][0], 4) for k, x in t.items() if k.endswith("/all")}, flush=True)
 
 for a, b in (("gate-rl-pointer", "pool-rl-pointer-argmax"), ("gate-rl-pointer", "rl-pointer"),
@@ -191,10 +255,49 @@ for a, b in (("gate-rl-pointer", "pool-rl-pointer-argmax"), ("gate-rl-pointer", 
              ("jev-pointer", "jev-pointer-flyte"), ("jev-pointer", "jev-pointer-k8s"), ("rl-pointer", "jev-pointer"),
              ("pool-rl-pointer-argmax", "pool-jev-pointer"), ("jev-pointer-flyte-adapt", "jev-pointer-flyte"),
              ("rules-sized", "rules"), ("gbt-dist", "gbt-dist-k8s"), ("jev-pointer-k8s", "jev-pointer-flyte"),
-             ("gate-rl-pointer", "pool-jev-pointer")):
+             ("gate-rl-pointer", "pool-jev-pointer"), ("rules-sized", "rl-pointer"),
+             ("rules-sized", "rl-pointer-argmax"), ("rules-sized", "gate-rl-pointer"),
+             ("pool-jev-pointer", "rl-pointer-argmax"), ("pool-jev-pointer", "gate-rl-pointer"),
+             ("pool-jev-pointer-argmax", "pool-jev-pointer"), ("rl-pointer-argmax", "rl-pointer")):
     if a in picks and b in picks:
         out["diff"][f"{a} - {b}"] = {f"{split}/{plat}": diff(a, b, subset(split, None if plat == "all" else plat))
                                      for split in ("test", "ood") for plat in ("all", "k8s", "flyte")}
+
+for v in READOUTS:
+    dec, am = out["table"][v]["val/all"]["regret"][0], out["table"][f"{v}-argmax"]["val/all"]["regret"][0]
+    out["selected"][v] = v if dec <= am else f"{v}-argmax"
+
+if seen_code:
+    t = subset("test", "k8s")
+    out["code"]["_share_seen"] = float(np.mean([bool(code_seen(r)) for r in t]))
+    out["code"]["_n"] = {"seen": sum(bool(code_seen(r)) for r in t), "novel": sum(code_seen(r) is False for r in t)}
+
+#: every leaderboard approach against the best point estimate per column (Job pods), for bolding the
+#: approaches the best cannot be separated from (paired, task-clustered; family-clustered on unseen too)
+LEAD = [v for v in ("static", "rules", "rules-sized", "gbt-dist", "jev-pointer", "jev-pointer-argmax", "rl-pointer",
+                    "rl-pointer-argmax", "pool-jev-pointer", "pool-jev-pointer-argmax", "pool-rl-pointer",
+                    "pool-rl-pointer-argmax", "gate-rl-pointer") if v in picks]
+out["vs_best"] = {}
+for split in ("test", "ood"):
+    for plat in ("k8s", "flyte"):
+        key = f"{split}/{plat}"
+        best_v = min(LEAD, key=lambda v: out["table"][v][key]["regret"][0])
+        out["vs_best"][key] = {"best": best_v, **{v: diff(v, best_v, subset(split, plat)) for v in LEAD if v != best_v}}
+
+ZS_PAIRS = [("zeroshot-27b", b) for b in ("rules", "rules-sized", "rl-pointer", "rl-pointer-argmax", "gbt-dist",
+                                          "pool-jev-pointer")]
+for a, b in ZS_PAIRS:
+    if a in picks and b in picks:
+        out["diff"][f"{a} - {b}"] = {f"{split}/k8s": diff(a, b, subset(split, "k8s")) for split in ("test", "ood")}
+
+#: the retry-penalty claims, paired (Job pods)
+SENS_PAIRS = [("rules-sized", b) for b in ("rl-pointer", "rl-pointer-argmax", "gate-rl-pointer", "pool-rl-pointer",
+                                           "gbt-dist", "zeroshot-27b-json")]
+SENS_PAIRS += [("pool-jev-pointer", b) for b in ("pool-rl-pointer-argmax", "rl-pointer-argmax", "gbt-dist")]
+for a, b in SENS_PAIRS:
+    if a in picks and b in picks:
+        out["sens_diff"][f"{a} - {b}"] = {f"{s}/{split}": diff(a, b, subset(split, "k8s"), s)
+                                          for s in SETTINGS for split in ("test", "ood")}
 
 json.dump(out, open(f"{D}/{TAG}-analysis.json", "w"), indent=1)
 print("raw evaluations", len(_raw))

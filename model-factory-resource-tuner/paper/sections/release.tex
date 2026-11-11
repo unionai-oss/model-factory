@@ -1,0 +1,41 @@
+\section{Release}
+\label{sec:release}
+
+The benchmark and the models are on the Hugging Face Hub, in the \code{unionai} organization's ``RightSize Bench''
+collection, and the code that builds and scores them is at
+\url{https://github.com/unionai-oss/model-factory}.
+
+\paragraph{The dataset} (\code{unionai/rightsize-bench}, CC-BY-4.0) has one row per pod, 64,164 in all, split into
+train, validation, test and unseen. Each row holds what an approach may read (the task code, the Job manifest, the
+input metadata, the history, and the rendered prompt), the labels as grid cells and as option text, the cheapest
+request and its cost, and the columns the cost simulator replays. Configurations give the Job and Flyte pods
+separately, the 209 tree features, the counterfactual renditions, and every reported approach's request and cost
+for each pod and seed, so a new approach can be compared with ours pod by pod. The simulator is
+\code{resource\_tuner/bench\_all/scoring.py}; it runs on the published rows unchanged.
+
+\paragraph{The models} (Apache-2.0) are the trees, in scikit-learn's \code{skops} format; the decision model and
+the RL model; and the two training-data ablations:
+\begin{itemize}
+  \item \code{unionai/rightsize-trees}
+  \item \code{unionai/rightsize-decision-qwen3-1.7b} and \code{unionai/rightsize-rl-qwen3-1.7b}
+  \item \code{unionai/rightsize-decision-qwen3-1.7b-job-only} and \code{-flyte-only}
+\end{itemize} Each decision-model repository holds
+the LoRA adapter, the pointer heads in \code{safetensors}, the calibration, and a standalone inference file
+that needs only \code{transformers} and \code{peft}; seeds 2 and 3 are branches. A unit test checks that the
+inference file reproduces the training code's scores exactly in fp32.
+
+\paragraph{Intended use.} The benchmark is for comparing ways of choosing a pod's resource request before it runs.
+It is not a model of any production cluster: the workloads are generated and short, prices are list prices, and the
+labels have the biases of \cref{sec:validation}. The models are baselines for that comparison and have not been
+tested on production workloads.
+
+\paragraph{Contamination.} The test and unseen labels are public. A model trained on them, or on this paper's
+predictions, is no longer evaluated on new tasks; this release has no private held-out set.
+
+\paragraph{Maintenance.} Every release is a tagged revision of each repository (this one is \code{k8s-2}), and
+its factory run is recorded in the project's research log. The earlier releases (RightSizeMem v2, RightSizeCPU big-1,
+RightSizeGPU big-2, and k8s-1) are described in \cref{app:runs}.
+
+\paragraph{Environment.} Runs were measured on Amazon EKS under cgroup~v2, on spot \code{c5.4xlarge} nodes for the
+CPU corpora and on the GPU shapes of \cref{tab:ladder}, with pandas 3.0.5, polars 2.0.0, DuckDB 1.5.6, PyTorch
+2.14.0 and scikit-learn 1.9.0. The inputs are synthetic and contain no personal data.
