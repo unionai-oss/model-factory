@@ -1,0 +1,22 @@
+% Shared look for the paper's diagrams (built standalone: figures/diagrams/Makefile).
+\usepackage[T1]{fontenc}
+\usepackage{newtxtext,newtxmath}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,calc,backgrounds,decorations.pathreplacing}
+\definecolor{ink}{HTML}{1F2328}
+\definecolor{muted}{HTML}{6A737D}
+\definecolor{rulec}{HTML}{D0D4DC}
+\definecolor{fillc}{HTML}{F4F5F8}
+\definecolor{sone}{HTML}{2A78D6}   % categorical slot 1: Kubernetes Job / trees
+\definecolor{stwo}{HTML}{EB6834}   % slot 2: language models
+\definecolor{sthree}{HTML}{1BAF7A} % slot 3: combinations
+\definecolor{flyte}{HTML}{6250D6}
+\tikzset{
+  >={Stealth[length=5pt,width=4pt]},
+  every node/.style={font=\small, text=ink},
+  box/.style={draw=rulec, fill=white, rounded corners=2pt, inner sep=5pt, line width=0.6pt, align=left},
+  head/.style={font=\scriptsize\bfseries\sffamily, text=muted},
+  note/.style={font=\scriptsize, text=muted, align=left},
+  flow/.style={->, draw=muted, line width=0.7pt},
+}

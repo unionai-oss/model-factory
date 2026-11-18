@@ -4,19 +4,16 @@
 \cmidrule(lr){2-3}\cmidrule(l){4-5}
 approach & first run & with history & first run & with history \\
 \midrule
-static & 98.4 & 82.5 & 131.7 & 100.8 \\
-rules & 66.1 & 24.6 & 73.3 & 29.4 \\
-rules-sized & 72.5 & 11.6 & 68.6 & \textbf{13.8} \\
-zero-shot 27B & 84.2 & 18.4 & 57.7 & 32.2 \\
-zero-shot 27B, JSON & 75.8 & 25.6 & 79.8 & 19.5 \\
-trees & 16.1 & 8.1 & 110.5 & 33.3 \\
-decision & 21.7 & 5.8 & 77.3 & 22.3 \\
-decision, argmax & 48.1 & 17.0 & 108.5 & 35.0 \\
-RL & 20.6 & 10.1 & \textbf{61.4} & 20.1 \\
-RL, argmax & 17.7 & \textbf{1.6} & 76.0 & 21.0 \\
-pool $\times$ decision & \textbf{10.8} & 3.5 & 99.4 & 19.8 \\
-pool $\times$ RL & 13.7 & 8.2 & 85.8 & 18.2 \\
-pool $\times$ RL, argmax & 13.5 & 2.5 & 140.7 & 26.2 \\
-gate (kNN, $q$ 0.95) & 14.5 & 3.4 & \textbf{61.4} & 20.1 \\
+static & 107.7 & 90.4 & 137.4 & 106.2 \\
+rules & 74.7 & 30.0 & 77.0 & 32.8 \\
+rules-sized & 81.5 & 16.8 & 72.4 & \textbf{16.9} \\
+zero-shot 27B & 98.0 & 24.6 & 59.6 & 36.1 \\
+zero-shot 27B, JSON & 88.5 & 31.8 & 81.2 & 22.9 \\
+trees & 22.0 & 12.9 & 115.5 & 37.6 \\
+decision & 27.5 & 10.7 & 81.7 & 26.1 \\
+RL, argmax & 23.2 & \textbf{6.2} & 80.5 & 24.6 \\
+pool $\times$ decision & \textbf{16.4} & 8.2 & 103.9 & 23.8 \\
+pool $\times$ RL, argmax & 19.3 & 7.4 & 145.9 & 30.6 \\
+gate & 20.3 & 8.3 & \textbf{65.2} & 23.3 \\
 \bottomrule
 \end{tabular}

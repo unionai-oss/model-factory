@@ -32,8 +32,8 @@ runtime included.
 
 \begin{table}[h]
 \centering\small
-\caption{Settings. Tuned values are seed 1's, and they were identical across the three
-seeds except where noted.}
+\caption{Settings. Tuned values are seed 1's; where a value is at the edge of the grid it was searched over, the
+grid is given.}
 \label{tab:hyper}
 \begin{tabular}{@{}llp{0.58\linewidth}@{}}
 \toprule
@@ -41,18 +41,18 @@ approach & setting & value \\
 \midrule
 static & quantiles (tuned) & memory 0.9 (3\,Gi), CPU 0.5 (1.25 cores), from \{0.5, 0.75, 0.9, 0.95\} \\
 rules & margins (tuned) & memory 1.5, CPU 1.0, GPU 1.0; first-run GPU quantile 0.5 \\
-rules-sized & cold start (tuned) & $512\,\text{MiB} + 4\times$ input MiB; margin 1.5 with history \\
-trees & quantile models & 19 per axis, $\tau=0.05\ldots0.95$; 300 rounds, lr 0.06, 31 leaves; $\theta=0.3$ \\
+rules-sized & cold start (tuned) & $512\,\text{MiB} + 4\times$ input MiB (512 is the grid's largest base); margin 1.5 with history \\
+trees & quantile models & 19 per axis, $\tau=0.05\ldots0.95$; 300 rounds, lr 0.06, 31 leaves; $\theta=0.3$ (the grid's smallest) \\
 zero-shot & generation & 27B Qwen (vLLM), temperature 0; 8,192 tokens free-form, or 256 tokens JSON-schema constrained; 16 concurrent requests \\
 decision & torso & Qwen3-1.7B, LoRA $r$ 16, $\alpha$ 32 on q, k, v, o, gate, up, down; prompt $\le$ 3,072 tokens \\
 decision & head & shared LayerNorm; per axis $W_q, W_k$: 2,048 $\to$ 256 \\
-decision & optimization & 1 epoch over 27,936 rows (2 epochs over 13,968 for single-pod-type ablations); batch 8$\times$2; AdamW $2\times10^{-4}$ (LoRA) / $10^{-3}$ (head); 5\% warm-up, cosine; CPU loss weight 0.3 \\
-decision & calibration & $T$ = 1.09 / 1.04 / 1.04 (memory / CPU / GPU); $\theta=0.3$ \\
-RL & GRPO & $K=16$, 6,000 prompts, 1 epoch, batch 8$\times$2, AdamW $3\times10^{-5}$ / $10^{-4}$, KL $\beta$ 0.05, reward cap 20 \\
-RL & calibration & $T$ = 5.0 / 5.0 / 5.0 (the search bound; seed 2's GPU: 4.13) \\
+decision & optimization & 1 epoch over 27,936 rows (2 epochs over 13,968 for single-pod-type ablations); batch 8$\times$2; AdamW $2\times10^{-4}$ (LoRA) / $10^{-3}$ (head); 5\% warm-up, cosine; the three cross-entropies summed with equal weight \\
+decision & calibration & $T$ = 1.09 / 1.04 / 1.04 (memory / CPU / GPU); seed 2: 1.14 / 1.14 / 1.09; seed 3: 1.04 / 1.09 / 1.09; $\theta=0.3$ \\
+RL & group-normalized REINFORCE & $K=16$, 6,000 prompts, 1 epoch, batch 8$\times$2, AdamW $3\times10^{-5}$ / $10^{-4}$, KL $\beta$ 0.05, reward cap 20 (fixed, not tuned) \\
+RL & calibration & $T$ = 5.0 / 5.0 / 5.0, the top of the search range $[0.3, 5]$ (seed 2's GPU: 4.13) \\
 pools & $w$ on trees (tuned) & $\times$ decision 0.5; $\times$ RL 0.6 (seed 3: 0.8); $\times$ Job-only 0.6 (seed 2: 0.4); $\times$ Flyte-only 0.4; $\theta=0.3$ \\
 gate & signal & kNN, $k=10$, Euclidean on train-standardized features; $q=0.95$ of validation \\
-cost & constants & 0.02\,h per attempt; 8 attempts; OOM and delay penalties 1; no-GPU failure 0.05\,h \\
+cost & constants & CPU node: 0.02\,h per attempt, 8 attempts; GPU node: 0.05\,h per attempt, 4 attempts; OOM and delay penalties 1 (in label-request costs); no-GPU failure 0.05\,h \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -60,8 +60,8 @@ cost & constants & 0.02\,h per attempt; 8 attempts; OOM and delay penalties 1; n
 \section{Runs}
 \label{app:runs}
 
-Every cluster run behind this paper, in project \code{resource-tuner-model-factory} on
-\code{demo.hosted.unionai.cloud}. The three corpora were built in earlier rounds:
+Every cluster run behind this paper is listed below. They ran in the project
+\code{resource-tuner-model-factory} on Union's demo cluster, \url{https://demo.hosted.unionai.cloud}. The three corpora were built in earlier rounds:
 RightSizeMem v2 (\code{rsb-v2-corpus-2}), RightSizeCPU big-1 (\code{rsc-big-1}) and
 RightSizeGPU big-2 (\code{rsg-big2-1}).
 
@@ -79,6 +79,8 @@ run & what \\
 \code{rsk-k8s-2} & k8s-2, seed 1: every approach, the counterfactual and the name test \\
 \code{rsk-k8s-2-s2}, \code{-s3} & k8s-2, seeds 2 and 3: every approach except zero-shot \\
 \code{rt-paper-k2s*} & exports of every request per pod, for the offline analysis \\
+\code{rt-paper-k2s1-audit} & code audit: which test tasks repeat a training program, and what each family imports \\
+\code{rt-hub-k8s-2-*} & staging and publishing the release to the Hugging Face Hub (\cref{sec:release}) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -107,7 +109,8 @@ share of unmoved pairs where the request also stayed the same.}
 \begin{table}[h]
 \centering\small
 \caption{Regret (\%) on the counterfactual's first runs and their real Jobs, with the
-task's own name and with a neutral one, for seed 1. No model was retrained.}
+task's own name and with a neutral one, for seed 1. No model was retrained. These pods exist only inside the
+counterfactual station, so this table's regret is measured against the label request, as the station scored it.}
 \label{tab:names}
 \input{generated/tab_names}
 \end{table}
@@ -117,4 +120,36 @@ task's own name and with a neutral one, for seed 1. No model was retrained.}
 \caption{Job regret (\%) on test CPU-node pods, by staging, for seed 1.}
 \label{tab:staging}
 \input{generated/tab_staging}
+\end{table}
+
+\begin{table}[h]
+\centering\small
+\caption{Both read-outs of each trained model, Job and Flyte regret (\%) for seed 1. Validation (Job and Flyte pods
+together) chooses the read-out the leaderboard reports.}
+\label{tab:readouts}
+\input{generated/tab_readouts}
+\end{table}
+
+\begin{table}[h]
+\centering\small
+\caption{Job regret (\%) by corpus, for seed 1.}
+\label{tab:corpus}
+\input{generated/tab_corpus}
+\end{table}
+
+\begin{table}[h]
+\centering\small
+\caption{Every approach on the zero-shot model's sample: 130 test and 150 unseen Job pods, seed 1.}
+\label{tab:zs}
+\input{generated/tab_zs}
+\end{table}
+
+\begin{table}[h]
+\centering\small
+\caption{The staging counterfactual for seed 1, as scored by the counterfactual station. ``Moved, right'': among
+pairs whose label moved when the volume switched from disk to tmpfs, the share where the memory request moved the
+same way. ``Unmoved, kept'': among pairs whose label stayed, the share where the request stayed. ``Fetcher moved'':
+the first measure for a switch from an init container to boto3.}
+\label{tab:cf}
+\resizebox{\linewidth}{!}{\input{generated/tab_cf}}
 \end{table}

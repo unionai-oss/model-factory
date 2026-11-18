@@ -9,3 +9,5 @@
 arxiv/
 arxiv.tar.gz
 main.pdf
+figures/diagrams/*.aux
+figures/diagrams/*.log

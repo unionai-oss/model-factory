@@ -1,0 +1,17 @@
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+& \multicolumn{2}{c}{test: code in training?} & \\
+\cmidrule(lr){2-3}
+approach & seen (4,135) & new (960) & unseen families \\
+\midrule
+static & 86.1 & 148.0 & 120.7 \\
+rules & 52.0 & 36.7 & 53.3 \\
+rules-sized & 44.5 & 44.4 & 42.7 \\
+trees & 15.7 & 21.4 & 73.8 \\
+decision & 14.0 & 34.3 & 51.9 \\
+RL, argmax & 11.6 & 21.8 & 50.6 \\
+pool $\times$ decision & 10.3 & 17.9 & 61.0 \\
+pool $\times$ RL, argmax & 12.4 & 13.2 & 84.1 \\
+gate & 12.6 & 16.8 & 42.8 \\
+\bottomrule
+\end{tabular}

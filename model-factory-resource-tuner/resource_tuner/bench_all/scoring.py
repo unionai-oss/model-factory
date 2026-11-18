@@ -127,6 +127,37 @@ def oracle_cost(row: dict) -> float:
     return oc
 
 
+def candidate_actions(row: dict) -> list[tuple[int, int, int]]:
+    """The requests the cheapest-request oracle searches: every memory x CPU cell
+    with no GPU for a CPU task (a GPU node's host memory and cores are not
+    modelled, so a GPU is never the right answer for one), and every GPU cell for
+    a GPU task (whose memory and CPU come with the instance)."""
+    if row["source"] == "gpu":
+        return [(0, 0, g) for g in range(grid.N_GPU)]
+    return [(m, c, grid.NO_GPU) for m in range(grid.N_MEM) for c in range(grid.N_CPU)]
+
+
+def cheapest_action(row: dict) -> tuple[int, int, int]:
+    """The request with the lowest ``cost`` (penalties included): round 24's oracle.
+
+    The label is the smallest cell that fits; it is not always the cheapest
+    request, because one CPU cell below the busiest window only throttles that
+    window. Ties go to the larger request."""
+    a = row.get("_cheapest")
+    if a is None:
+        best = None
+        for act in candidate_actions(row):
+            v = cost(row, *act).cost
+            if best is None or v < best[0] - 1e-12 or (abs(v - best[0]) <= 1e-12 and act > best[1]):
+                best = (v, act)
+        a = row["_cheapest"] = best[1]
+    return a
+
+
+def min_cost(row: dict) -> float:
+    return cost(row, *cheapest_action(row)).cost
+
+
 def cost(row: dict, m: int, c: int, g: int) -> Outcome:
     """The run's cost with the delay penalties: OOM_PENALTY x oracle per
     retry, DELAY_PENALTY x the oracle's hourly price per hour late."""
@@ -164,8 +195,10 @@ def gpu_right(row: dict, g: int) -> bool:
     return g != grid.NO_GPU and grid.device_of(g) == grid.device_of(int(row["label_gpu"]))
 
 
-def score(rows: list[dict], preds: dict[str, dict]) -> dict:
-    """`preds[run_id]` = {"mem_idx", "cpu_idx", "gpu_idx"}."""
+def score(rows: list[dict], preds: dict[str, dict], oracle: str = "label") -> dict:
+    """`preds[run_id]` = {"mem_idx", "cpu_idx", "gpu_idx"}. ``oracle``: ``"label"``
+    (the stations' scorecards) or ``"cheapest"`` (the paper's regret, round 24)."""
+    denom = min_cost if oracle == "cheapest" else oracle_cost
     ratios, costs, ocosts, first, fails = [], [], [], [], []
     m_ok, c_ok, g_ok, all_ok, need_gpu_ok, gpu_waste = [], [], [], [], [], []
     missing = 0
@@ -176,7 +209,7 @@ def score(rows: list[dict], preds: dict[str, dict]) -> dict:
             continue
         m, c, g = int(p["mem_idx"]), int(p["cpu_idx"]), int(p["gpu_idx"])
         o = cost(r, m, c, g)
-        oc = oracle_cost(r)
+        oc = denom(r)
         ratios.append(o.cost / max(oc, 1e-9)), costs.append(o.cost), ocosts.append(oc)
         first.append(o.first_ok), fails.append(o.failed)
         gr = gpu_right(r, g)

@@ -16,9 +16,9 @@ A1 = A["k2s1"]
 ROWS = [("static", "static request", "--rule-c"), ("rules", "rules", "--rule-c"),
         ("rules-sized", "rules, sized by input and manifest", "--rule-c"),
         ("zeroshot-27b", "zero-shot 27B", "--warm"), ("gbt-dist", "gradient-boosted trees", "--tree"),
-        ("jev-pointer", "decision model (1.7B)", "--accent"), ("rl-pointer", "decision model + RL", "--rl"),
+        ("jev-pointer", "decision model (1.7B)", "--accent"), ("rl-pointer-argmax", "decision model + RL (argmax)", "--rl"),
         ("pool-jev-pointer", "trees × decision model", "--pool"),
-        ("pool-rl-pointer-argmax", "trees × RL, argmax", "--pool"), ("gate-rl-pointer", "novelty gate", "--gate")]
+        ("pool-rl-pointer-argmax", "trees × RL (argmax)", "--pool"), ("gate-rl-pointer", "novelty gate", "--gate")]
 
 
 def r(v, k, m="regret"):
@@ -73,30 +73,27 @@ head = head.replace("<title>RightSize Bench K8s Abstract</title>", "<title>Right
 body = f"""
 <div class="wrap">
   <header>
-    <div class="eyebrow">Union model factory · round 23 · November 2026</div>
+    <div class="eyebrow">Union model factory · round 24 · November 2026</div>
     <h1>RightSize Bench: learning Kubernetes resource requests from code</h1>
     <span class="status">k8s-2 · 32,082 measured runs, each as a raw Job and as a Flyte task · 3 trainings</span>
   </header>
 
   <div class="abstract">
     <div class="label">Abstract</div>
-    <p>Before a batch pod runs on Kubernetes, someone has to decide how much memory and CPU it gets, and whether
-    it gets a GPU. Too little makes it fail or run slowly, and too much wastes the cluster. RightSize Bench scores
-    approaches to this decision by what their requests would cost to get each run to finish, compared with the
-    cheapest request that would have worked. It contains 32,082 measured runs of 33 families of generated Python
-    tasks that use real libraries, from pandas and DuckDB to PyTorch training and sharded language models. Every run
-    appears twice: once as a raw Kubernetes Job, with its inputs staged in one of four ways, and once as a task
-    submitted through Flyte, an AI-native interface to Kubernetes that adds typed I/O, caching, retries and durable
-    execution for about 70&nbsp;MiB of runtime per pod. We checked the labels in about 480 real pods, which found and
-    fixed two errors in our first release.</p>
-    <p>On new tasks from familiar families, pooling gradient-boosted trees with a fine-tuned 1.7B decision model
-    gives <b>{f(r("pool-jev-pointer","test/k8s")[0])}% regret on Job pods</b>
-    [{f(r("pool-jev-pointer","test/k8s")[1])}, {f(r("pool-jev-pointer","test/k8s")[2])}].
-    On task families held out of training, every approach does much worse, and the leaders change: the decision model
-    trained further with RL and a hand-written rule that scales by input size and reads the manifest tie at
-    <b>39%</b>. When an out-of-memory failure is as expensive as resubmitting a Job by hand, that rule is the best
-    approach on new code. Models trained on Jobs do read the manifest, and adding Flyte data does not make them
-    better on Jobs.</p>
+    <p>Before a batch pod runs on Kubernetes, someone has to decide how much memory and CPU it gets and whether it
+    gets a GPU. Too little makes it fail or run slowly, and too much wastes the cluster. RightSize Bench scores that
+    decision in dollars: each request is replayed against a measured run, failed attempts and throttling included,
+    and compared with the cheapest request that would have run it. It has 32,082 measured runs of 33 families of
+    generated Python tasks that use real libraries, from pandas and DuckDB to PyTorch training and sharded language
+    models. Every run appears twice, as a raw Kubernetes Job with its inputs staged in one of four ways, and as a
+    Flyte task, whose runtime we measure at about 70&nbsp;MiB per pod. We checked the labels in about 480 real pods,
+    which found two errors in our first release.</p>
+    <p>On new tasks from familiar families, gradient-boosted trees pooled with a fine-tuned 1.7B decision model come
+    within <b>{f(r("pool-jev-pointer","test/k8s")[0])}% of the cheapest request on Job pods</b>
+    [{f(r("pool-jev-pointer","test/k8s")[1])}, {f(r("pool-jev-pointer","test/k8s")[2])}]. On seven held-out
+    families every approach does much worse, and a hand-written rule that scales by input size and reads the
+    manifest (<b>{f(r("rules-sized","ood/k8s")[0])}%</b>) is as good as anything we trained. Models trained on Jobs
+    read the manifest. The dataset and the models are on the Hugging Face Hub.</p>
   </div>
 
   <section>
@@ -106,9 +103,9 @@ body = f"""
       <div class="fig-legend"><span><span class="dot" style="background:var(--ink)"></span>test: new tasks from familiar families</span>
       <span><span class="dot" style="border:2px solid var(--ink)"></span>unseen families</span></div>
       {"".join(svg)}
-      <p class="caption">Regret is a run's cost under the approach's request divided by its cost under the oracle's,
-      minus one, averaged over runs. Bars are 95% intervals that resample whole tasks. Seed 1; 5,095 test and 6,416
-      unseen Job pods. Zero-shot is scored on a sample of about 300 runs per split.</p>
+      <p class="caption">Regret is a pod's cost under the approach's request divided by the cost of the cheapest request
+      that would have run it, minus one, averaged over pods. Bars are 95% intervals that resample whole tasks. Seed 1;
+      5,095 test and 6,416 unseen Job pods. Zero-shot is scored on a sample of 130 test and 150 unseen Job pods.</p>
     </div>
     <div class="figure table-wrap"><table class="num">
       <thead><tr><th>approach</th><th>Job test</th><th>Job unseen</th><th>Flyte test</th><th>Flyte unseen</th><th>Job $ regret</th><th>3 seeds, test</th><th>3 seeds, unseen</th></tr></thead>
@@ -121,20 +118,18 @@ body = f"""
     <h2>What we found</h2>
     <ol class="findings">
       <li><span class="n">70 MiB</span><span><b>Real pods changed the labels.</b> The Flyte runtime we had assumed
-      was 180&nbsp;MiB measures about 70, and two-thirds of Flyte labels were a cell too high. Init containers in our
-      first release were too small to hold what they staged, so 7% of Job rows described pods that could not start.
-      Both are fixed in this release.</span></li>
-      <li><span class="n">3 in 4</span><span><b>Models trained on Jobs read the manifest.</b> When we change only the
-      staging volume from disk to <span class="mono">medium: Memory</span> on a first run, the trained models move their
+      was 180&nbsp;MiB measures about 70, and init containers in our first release were too small to hold what they
+      staged, so 7% of its Job rows described pods that could not start. Both are fixed in this release.</span></li>
+      <li><span class="n">3 in 4</span><span><b>Models trained on Jobs read the manifest.</b> When only the staging
+      volume changes from disk to <span class="mono">medium: Memory</span> on a first run, the trained models move their
       request the right way about three times in four. A model trained only on Flyte tasks does so about one time in
       five, and rules never do.</span></li>
-      <li><span class="n">+0.6 pt</span><span><b>Flyte data does not help with Jobs.</b> A decision model trained only on
-      Jobs is within a point of one trained on both kinds of pod, while one trained only on Flyte tasks is three times
-      worse on Jobs. An adapter that applies the staging accounting recovers a third to a half of that gap.</span></li>
-      <li><span class="n">39%</span><span><b>New code is the open problem.</b> On held-out families the best trained model
-      and a careful rule tie at 39%, and the rule wins when failures are expensive. A novelty gate fixed in advance
-      gets 8.1% on familiar code and 39.3% on new code, but its detector has an easy job here, since new families
-      bring new libraries.</span></li>
+      <li><span class="n">81%</span><span><b>Most familiar-family test tasks repeat a training program.</b> On the
+      test pods with new programs, the decision model's regret more than doubles, while the trees pooled with the RL
+      model barely move. The seven held-out families are the benchmark's test of new code.</span></li>
+      <li><span class="n">{f(r("rules-sized","ood/k8s")[0])}%</span><span><b>New families are the open problem.</b> On
+      held-out families a careful rule does as well as any trained model, and it has the lowest regret when an
+      out-of-memory failure is expensive. With seven families, intervals clustered by family are wide.</span></li>
     </ol>
   </section>
 
@@ -151,19 +146,19 @@ body = f"""
       a Flyte task's is the peak plus the 70&nbsp;MiB runtime.</dd>
       <dt>Approaches</dt><dd>A static request, two kinds of rules, gradient-boosted quantile trees, a zero-shot 27B model,
       a Qwen3-1.7B decision model with pointer heads (also trained on Jobs only and on Flyte tasks only), that model
-      trained further with GRPO against the cost, pools of the trees with each model, and a novelty gate.</dd>
+      trained further with reinforcement learning against the cost, pools of the trees with each model, and a novelty gate.</dd>
       <dt>Cost</dt><dd>Out-of-memory kills retry at double the memory, CPU throttling is replayed from the measured
       series, a too-small GPU retries one machine up, and retries and lateness add penalties. Prices are on-demand
       list prices.</dd>
-      <dt>Oracle</dt><dd>The request the measurements say is right on each axis: the smallest memory cell that holds the
-      need, the CPU cell that covers the busiest 15 seconds, and the GPU that lands on the cheapest machine the run fits.</dd>
+      <dt>Cheapest request</dt><dd>For each pod, the request on the grid with the lowest cost under the same model. It is
+      often one CPU cell below the busiest 15 seconds, because throttling that window costs less than the cores.</dd>
     </dl>
   </section>
 
   <footer>
     <div>Full report: <a href="rightsize-bench-k8s.html">RightSize Bench K8s</a>. The paper (PDF and arXiv source) is in
     <span class="mono">model-factory-resource-tuner/paper/</span>.</div>
-    <div>Research log <span class="mono">research_log/2026-11-08-round-23-review-real-pods.md</span> · runs
+    <div>Research log <span class="mono">research_log/2026-11-10-round-24-review-release.md</span> · runs
     <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2">rsk-k8s-2</a>,
     <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2-s2">-s2</a>,
     <a href="https://demo.hosted.unionai.cloud/v2/domain/development/project/resource-tuner-model-factory/runs/rsk-k8s-2-s3">-s3</a>

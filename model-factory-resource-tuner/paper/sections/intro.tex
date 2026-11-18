@@ -1,58 +1,63 @@
 \section{Introduction}
 \label{sec:intro}
 
-Every container that runs on Kubernetes asks for resources before it starts~\citep{k8sresources}.
-The numbers matter in different ways. Memory is a hard limit, so a container that
-uses more than it asked for is killed and has to be run again. CPU is a soft limit, so a
-container that wants more cores than it was given is throttled and finishes late. A GPU
-is a choice of machine: if it is too small the task runs out of device memory, if it is
-missing a GPU task fails at start, and if a CPU task gets one it pays for hardware it
-never uses. In practice engineers pick these numbers by hand, usually once and usually
-generously, and large clusters run well below what their jobs
-reserve~\citep{verma2015borg,tirmazi2020borg}.
+Every container that runs on Kubernetes asks for resources before it starts~\citep{k8sresources}, and each
+number fails differently. Memory is a hard limit: a container that uses more than it asked for is killed
+and has to run again. CPU is a soft limit: a container that wants more cores than it was given is
+throttled and finishes late. A GPU is a choice of machine. If the GPU is too small the task runs out of
+device memory, if a GPU task gets none it fails at start, and if a CPU task gets one it pays for hardware
+it never uses. Engineers usually pick these numbers by hand, once and generously, and large clusters run
+well below what their jobs reserve~\citep{verma2015borg,tirmazi2020borg}.
 
-Autoscalers that learn from usage history~\citep{rzadca2020autopilot,k8svpa} work well for
-long-running services. Batch work is harder. The first run of a batch task has no
-history, and later runs often see inputs of a different size. Still, much of what
-decides the right request is known before the pod starts. A scheduler can read the code
-the pod will run, the size and format of its inputs, the way the pod spec stages those
-inputs, and what earlier runs of the same task used. This paper asks how well different
-approaches turn that information into a request, and measures the answer in dollars.
+Autoscalers that learn from usage history~\citep{rzadca2020autopilot,k8svpa} work well for long-running
+services. Batch work is harder, because the first run of a batch task has no history and later runs often
+see inputs of a different size. Much of what decides the right request is still known before the pod
+starts. A scheduler can read the code the pod will run, the size and format of its inputs, the way the
+pod spec stages those inputs, and what earlier runs of the same task used. This paper asks how well
+different approaches turn that information into a request, and measures the answer in dollars.
 
-We treat the Kubernetes pod as the unit of work throughout. Teams submit pods in
-different ways. The most direct is a \code{batch/v1} Job, which pairs a container image
-with a manifest. Another is to write a typed Python function and let an orchestrator
-build the pod. We use Flyte~\citep{flyte} as the example of the second route. Flyte acts
-as an AI-native interface to Kubernetes: it turns a function into a pod, and adds typed
-inputs and outputs, caching, retries and durable execution along the way. In both cases
-the same user code runs in the same kind of pod. The differences are at the edges of the
-pod, in how inputs arrive, what else shares the container, and what the monitoring
-history reports. For Flyte, those conveniences cost 55--70\,MiB of runtime memory in the
-task's container, which we measure directly (\cref{sec:validation}).
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/diagrams/overview.pdf}
+\caption{What RightSize Bench measures. An approach reads what a scheduler can see before a pod starts and
+chooses a request on each axis. The benchmark replays the measured run under that request and prices the
+result, failed attempts and throttling included, against the cheapest request that would have run it.}
+\label{fig:overview}
+\end{figure}
 
-This paper makes five contributions.
+We treat the Kubernetes pod as the unit of work. Teams submit pods in different ways. The most direct is a
+\code{batch/v1} Job, a container image paired with a manifest. Another is to write a typed Python function
+and let an orchestrator build the pod. We use Flyte~\citep{flyte} as the example of the second route: it
+turns a function into a pod and adds typed inputs and outputs, caching, retries and durable execution. In
+both cases the same user code runs in the same kind of pod. What differs is how inputs arrive, what else
+shares the container, and what the monitoring history reports.
+
+The contributions are a benchmark and a first set of models trained on it (\cref{fig:overview}).
 \begin{enumerate}
-  \item We build a benchmark of the whole pod request from 32,082 measured runs of 33
-  families of generated Python tasks, covering dataframes, SQL, linear algebra,
-  classical ML, PyTorch training and inference, and sharded language models. Each run
-  has measured peak memory, CPU use at the 15-second resolution of cluster monitoring,
-  and peak GPU memory across seven machine shapes (\cref{sec:dataset}).
-  \item We present every run both as a raw Kubernetes Job and as a Flyte task. The Job
-  stages its inputs in one of four ways, and its labels follow from an explicit
-  accounting of what differs between the two pods (\cref{sec:twins}).
-  \item We check that accounting in about 480 real pods, reading each container's own
-  cgroup counters (\cref{sec:validation}). The check found two defects in our first
-  release, both now fixed. The Flyte runtime constant was 2.6 times too large, and some
-  init containers were too small to hold the inputs they staged. It also showed that the
-  standard \code{ru\_maxrss} measurement leaves about a third of labels one cell higher
-  than necessary.
-  \item We score requests with a single cost model that covers memory, CPU and GPU
-  together, and report both mean and dollar-weighted regret with task-clustered
-  confidence intervals (\cref{sec:cost}).
-  \item We compare eleven kinds of approach over three independent trainings, from static
-  requests and hand-written rules to gradient-boosted trees, a zero-shot 27B model, a
-  fine-tuned 1.7B decision model trained further with reinforcement learning, opinion
-  pools, and a pre-registered novelty gate (\cref{sec:methods,sec:results}). Two
-  controlled tests ask what the models actually read. One changes only the manifest, and
-  the other removes the task's name from its code.
+  \item \textbf{RightSize Bench.} 32,082 measured runs of 33 families of generated Python tasks covering
+  dataframes, SQL, linear algebra, classical ML, PyTorch training and inference, and sharded language models,
+  with measured peak memory, CPU use at the 15-second resolution of cluster monitoring, and peak GPU memory
+  across seven machine shapes (\cref{sec:dataset}). Every run is presented as a raw Kubernetes Job, with one
+  of four ways of staging its inputs, and as a Flyte task: 64,164 pods in all (\cref{sec:twins}).
+  \item \textbf{Labels checked in real pods.} We checked the derived Job labels in about 480 pods, reading
+  each container's own cgroup counters (\cref{sec:validation}). The check found two errors in our first
+  release: the Flyte runtime constant was 2.6 times too large, and some init containers were too small to
+  hold the inputs they staged.
+  \item \textbf{A cost-based evaluation.} One cost model covers memory, CPU and GPU together, and regret is
+  measured against the cheapest request under that model (\cref{sec:cost}). Results carry intervals
+  clustered by task and, for held-out families, by family; each approach's read-out is chosen on
+  validation; and every trained approach is trained three times.
+  \item \textbf{Baseline models.} Gradient-boosted quantile trees over 209 scheduler-visible features, and a
+  decision model that puts three pointer heads on Qwen3-1.7B so that one forward pass scores every option
+  written in the prompt, trained with cross-entropy and then with reinforcement learning against the cost
+  (\cref{sec:methods}). We compare them with static requests, two rules, a zero-shot 27B model, opinion
+  pools and a novelty gate (\cref{sec:results}).
+  \item \textbf{An open release.} The dataset, with prompts, features and every approach's requests, and the
+  trained models, with standalone inference code, are on the Hugging Face Hub, and the benchmark itself is a
+  Flyte factory that rebuilds only what changed (\cref{sec:release}).
 \end{enumerate}
+
+The models trained on Jobs read the pod spec: on first runs where only the volume medium changes, they move
+their memory request the right way about three times in four. On familiar code the best of them come within
+12--14\% of the cheapest request. On held-out families, a hand-written rule that scales earlier runs by
+input size and reads the manifest does as well as any of them.

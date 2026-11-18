@@ -1,23 +1,24 @@
 \section{Problem}
 \label{sec:problem}
 
-A \emph{run} is one execution of a task on one set of inputs, in one pod. Before the pod
-starts, an approach may look at three things. The first is the task's code as it was
-submitted: for a raw Job that means \code{job.py} and the Job manifest, and for a Flyte
-task it means the task module (\cref{sec:twins}). The second is the metadata a scheduler
-can read about this run's inputs, namely their sizes and formats and whatever the format's
-header exposes, such as the row count and schema of a Parquet file or the shape and dtype
-of a \code{.npy} array. The third is what earlier runs of the same task used: their peak
-memory, peak and mean cores, peak GPU memory and utilization, wall time and input sizes.
-These are reported the way the platform's monitoring would show them, which means the
-container's own peak for a Job and the peak including the runtime for a Flyte task.
+A \emph{run} is one execution of a task on one set of inputs, in one pod. Before the pod starts, an approach
+may look at three things. The first is the task's code as it was submitted: \code{job.py} and the Job manifest
+for a raw Job, and the task module for a Flyte task (\cref{sec:twins}). The second is the metadata a scheduler
+can read about this run's inputs: their sizes and formats and whatever the format's header exposes, such as
+the row count and schema of a Parquet file or the shape and dtype of a \code{.npy} array. The third is what
+earlier runs of the same task used: their peak memory, peak and mean cores, peak GPU memory and utilization,
+wall time and input sizes. These are reported the way the platform's monitoring would show them, which means
+the container's own peak for a Job and the peak including the runtime for a Flyte task.
 
-An approach never sees the task's family, the hidden settings it was generated with,
-which corpus it came from, or anything measured on the run itself. A unit test enforces
-this for every feature and every field of the prompt. From what it can see, the approach
-chooses a request on three axes (\cref{tab:grid}). A GPU request lands on the cheapest
-machine that can hold it (\cref{tab:ladder}). On a GPU node the host memory and cores come
-with the instance, so they are not scored.
+An approach is never given the task's family, the hidden settings it was generated with, the corpus it came
+from, or anything measured on the run itself. A unit test checks that changing those fields leaves the
+features and the prompt unchanged. The code does identify the family in practice: each task is named after its
+family, and each family's generator has a fixed function name and input schema. \Cref{sec:res-manifest}
+re-scores with neutral names.
+
+From what it can see, the approach chooses a request on three axes (\cref{tab:grid}). A GPU request lands on
+the cheapest machine that can hold it (\cref{tab:ladder}). On a GPU node the host memory and cores come with
+the instance, so they are not scored.
 
 \begin{table}[tbp]
 \centering\small
@@ -36,9 +37,8 @@ GPU    & 18 & none, or peak GPU memory 1, 1.5, 2, 3, 4, 6, 8, 10, 12, 15, 22, 32
 
 \begin{table}[tbp]
 \centering\small
-\caption{The GPU machine ladder: the cluster's GPU node pools, with on-demand
-\code{us-east-1} prices for the whole node. Usable GiB is NVML's total, rounded down.
-The A10G is never the cheapest shape for any cell.}
+\caption{The GPU machine ladder: the cluster's GPU node pools, with on-demand \code{us-east-1} prices for the
+whole node. Usable GiB is NVML's total, rounded down. The A10G is never the cheapest shape for any cell.}
 \label{tab:ladder}
 \begin{tabular}{@{}llrrr@{}}
 \toprule

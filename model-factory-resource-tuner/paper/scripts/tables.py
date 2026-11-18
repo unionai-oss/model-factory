@@ -6,6 +6,11 @@ Inputs: ``k2s{1,2,3}-analysis.json`` (``analyze.py``) and
 ``rsk-k8s-2{,-s2,-s3}-counterfactual.json.gz`` (``paper_file`` on the
 counterfactual station's output). Seed 1 gives the point estimates and
 intervals; seeds 2 and 3 give the range across trainings.
+
+Round 24: the leaderboard shows each approach with the read-out validation
+chose (``selected``); every read-out is in ``tab_readouts``. Bold marks every
+approach whose paired difference from the column's best has a 95% interval
+that includes zero. ``num_main.tex`` defines the numbers the prose quotes.
 """
 import gzip
 import json
@@ -39,9 +44,21 @@ NAME = {
     "gate-knn-raw-q95": "gate (k8s-1 kNN scale)", "gate-knn-numeric-q95": "gate (numeric kNN)",
     "gate-js-q50": "gate (disagreement)",
 }
-LEAD = ["static", "rules", "rules-sized", "zeroshot-27b", "zeroshot-27b-json", "gbt-dist", "jev-pointer",
-        "jev-pointer-argmax", "rl-pointer", "rl-pointer-argmax", "pool-jev-pointer", "pool-rl-pointer",
-        "pool-rl-pointer-argmax", "gate-rl-pointer"]
+NAME["gate-rl-pointer"] = NAME["gate-knn-q95"] = "gate"
+SEL = A1.get("selected", {})
+
+
+def sel(v):
+    return SEL.get(v, v)
+
+
+#: the leaderboard: one read-out per approach, chosen on validation
+LEAD = ["static", "rules", "rules-sized", "zeroshot-27b", "zeroshot-27b-json", "gbt-dist", sel("jev-pointer"),
+        sel("rl-pointer"), sel("pool-jev-pointer"), sel("pool-rl-pointer"), "gate-rl-pointer"]
+#: every read-out, for the tables that compare them
+LEAD_ALL = ["static", "rules", "rules-sized", "zeroshot-27b", "zeroshot-27b-json", "gbt-dist", "jev-pointer",
+            "jev-pointer-argmax", "rl-pointer", "rl-pointer-argmax", "pool-jev-pointer", "pool-jev-pointer-argmax",
+            "pool-rl-pointer", "pool-rl-pointer-argmax", "gate-rl-pointer"]
 
 
 def pct(x, d=1):
@@ -82,6 +99,19 @@ def best(rows, col):
     return rows
 
 
+def bold_inseparable(rows, variants, col, key):
+    """Bold every row whose paired difference from the column's best includes zero (task-clustered)."""
+    vb = A1.get("vs_best", {}).get(key)
+    if not vb:
+        return best(rows, col)
+    for r, v in zip(rows, variants):
+        d = vb.get(v)
+        if v == vb["best"] or (d and d["diff"][1] <= 0 <= d["diff"][2]):
+            head, _, tail = r[col].partition("\\,")
+            r[col] = "\\textbf{" + head + "}" + ("\\," + tail if tail else "")
+    return rows
+
+
 def write(name, s):
     with open(os.path.join(OUT, name), "w") as f:
         f.write(s)
@@ -99,36 +129,80 @@ def tabular(cols, head, rows, groups=None):
     return "\n".join(out)
 
 
-# ── leaderboard: Job pods first ─────────────────────────────────────────
-rows = []
+# ── leaderboard: Job pods first, one read-out per approach ──────────────
+def fam_ci(t, key):
+    x = (t or {}).get(key, {}).get("regret_fam")
+    return "---" if not x else f"{{\\scriptsize[{pct(x[1])}, {pct(x[2])}]}}"
+
+
+rows, vs = [], []
 for v in LEAD:
     if v not in A1["table"]:
         continue
     t = A1["table"][v]
-    rows.append([NAME[v], cell(t, "test/k8s"), cell(t, "ood/k8s"), cell(t, "test/flyte", ci=False),
-                 cell(t, "ood/flyte", ci=False), cell(t, "test/k8s", "dollar_regret", ci=False),
-                 cell(t, "ood/k8s", "dollar_regret", ci=False), seeds(v, "test/k8s"), seeds(v, "ood/k8s")])
-for c in (1, 2, 3, 4, 5, 6):
-    best(rows, c)
+    rows.append([NAME[v] + ("$^\\dagger$" if v.startswith("zeroshot") else ""), cell(t, "test/k8s"), cell(t, "ood/k8s"),
+                 fam_ci(t, "ood/k8s"), cell(t, "test/flyte", ci=False), cell(t, "ood/flyte", ci=False),
+                 cell(t, "test/k8s", "dollar_regret", ci=False), cell(t, "ood/k8s", "dollar_regret", ci=False),
+                 seeds(v, "test/k8s"), seeds(v, "ood/k8s")])
+    vs.append(v)
+for c, key in ((1, "test/k8s"), (2, "ood/k8s"), (4, "test/flyte"), (5, "ood/flyte")):
+    bold_inseparable(rows, vs, c, key)
 write("tab_leaderboard.tex", tabular(
-    "lrrrrrrrr",
-    ["approach", "test", "unseen", "test", "unseen", "test", "unseen", "test", "unseen"],
+    "lrrrrrrrrr",
+    ["approach", "test", "unseen", "by family", "test", "unseen", "test", "unseen", "test", "unseen"],
     rows,
-    "& \\multicolumn{2}{c}{Job pods: regret (\\%)} & \\multicolumn{2}{c}{Flyte pods} & "
+    "& \\multicolumn{3}{c}{Job pods: regret (\\%)} & \\multicolumn{2}{c}{Flyte pods} & "
     "\\multicolumn{2}{c}{Job \\$ regret} & \\multicolumn{2}{c}{Job, 3 seeds: mean (range)} \\\\\n"
-    "\\cmidrule(lr){2-3}\\cmidrule(lr){4-5}\\cmidrule(lr){6-7}\\cmidrule(l){8-9}"))
+    "\\cmidrule(lr){2-4}\\cmidrule(lr){5-6}\\cmidrule(lr){7-8}\\cmidrule(l){9-10}"))
 
-# figure data: Job-pod regret with intervals, test and unseen
-with open(os.path.join(OUT, "fig_leaderboard.dat"), "w") as f:
-    f.write("i name test tlo thi ood olo ohi\n")
-    i = 0
-    for v in LEAD:
-        if v not in A1["table"]:
+# ── every read-out, and which one validation picked ─────────────────────
+rows = []
+for base in ("jev-pointer", "jev-pointer-k8s", "rl-pointer", "pool-jev-pointer", "pool-rl-pointer"):
+    for v in (base, f"{base}-argmax"):
+        t = A1["table"].get(v)
+        if not t:
             continue
-        t, o = A1["table"][v]["test/k8s"]["regret"], A1["table"][v]["ood/k8s"]["regret"]
-        f.write(f"{i} {{{NAME[v]}}} {100*t[0]:.2f} {100*t[1]:.2f} {100*t[2]:.2f} {100*o[0]:.2f} {100*o[1]:.2f} {100*o[2]:.2f}\n")
-        i += 1
-write("fig_leaderboard_ticks.tex", ",".join("{" + NAME[v] + "}" for v in LEAD if v in A1["table"]))
+        mark = "\\checkmark" if SEL.get(base) == v else ""
+        rows.append([NAME[v], cell(t, "val/k8s", ci=False), cell(t, "test/k8s", ci=False), cell(t, "ood/k8s", ci=False),
+                     cell(t, "test/flyte", ci=False), cell(t, "ood/flyte", ci=False), mark])
+    rows.append("MID")
+write("tab_readouts.tex", tabular("lrrrrrc", ["approach", "val", "test", "unseen", "test", "unseen", "chosen"], rows[:-1],
+                                  "& \\multicolumn{3}{c}{Job pods} & \\multicolumn{2}{c}{Flyte pods} & \\\\\n"
+                                  "\\cmidrule(lr){2-4}\\cmidrule(lr){5-6}"))
+
+# ── familiar families: test tasks whose code is in training, and the rest ─
+if A1.get("code", {}).get("_n"):
+    rows = []
+    for v in LEAD:
+        c = A1["code"].get(v)
+        if not c or v.startswith("zeroshot"):
+            continue
+        rows.append([NAME[v], cell(c, "test/seen", "x", ci=False) if False else pct(c.get("test/seen")),
+                     pct(c.get("test/novel")), pct(A1["table"][v]["ood/k8s"]["regret"])])
+    n = A1["code"]["_n"]
+    write("tab_code.tex", tabular("lrrr", ["approach", f"seen ({n['seen']:,})", f"new ({n['novel']:,})", "unseen families"],
+                                  rows, "& \\multicolumn{2}{c}{test: code in training?} & \\\\\n\\cmidrule(lr){2-3}"))
+
+# ── by corpus (Job pods) ────────────────────────────────────────────────
+rows = []
+for v in LEAD:
+    c = A1["corpus"].get(v)
+    if not c or v.startswith("zeroshot"):
+        continue
+    rows.append([NAME[v]] + [pct(c.get(f"{sp}/{src}")) for sp in ("test", "ood") for src in ("mem", "cpu", "gpu")])
+write("tab_corpus.tex", tabular("lrrrrrr", ["approach", "Mem", "CPU", "GPU", "Mem", "CPU", "GPU"], rows,
+                                "& \\multicolumn{3}{c}{test} & \\multicolumn{3}{c}{unseen} \\\\\n"
+                                "\\cmidrule(lr){2-4}\\cmidrule(l){5-7}"))
+
+# ── every approach on the zero-shot model's sample ──────────────────────
+rows = []
+for v in LEAD:
+    z = A1["zs_sample"].get(v)
+    if not z or not z.get("test"):
+        continue
+    rows.append([NAME[v], pct(z["test"]), pct(z["ood"])])
+write("tab_zs.tex", tabular("lrr", ["approach", "test", "unseen"], rows))
+
 
 # ── training data: both pod types, Jobs only, Flyte only ────────────────
 FAM = [("trees", "gbt-dist", "gbt-dist-k8s", "gbt-dist-flyte"),
@@ -153,7 +227,7 @@ write("tab_training.tex", tabular(
 
 # ── platform gap: Job minus Flyte, paired ───────────────────────────────
 rows = []
-for v in LEAD + ["jev-pointer-k8s", "jev-pointer-flyte"]:
+for v in LEAD_ALL + ["jev-pointer-k8s", "jev-pointer-flyte"]:
     g = A1["gap"].get(v) or {}
     if not g.get("test"):
         continue
@@ -224,7 +298,7 @@ write("tab_staging.tex", tabular("lrrrr", ["approach", "init-disk", "init-tmpfs"
 
 # ── seeds ───────────────────────────────────────────────────────────────
 rows = []
-for v in LEAD + ["jev-pointer-k8s", "jev-pointer-flyte", "gbt-dist-k8s", "gbt-dist-flyte"]:
+for v in LEAD_ALL + ["jev-pointer-k8s", "jev-pointer-flyte", "gbt-dist-k8s", "gbt-dist-flyte"]:
     xs = {s: a["table"].get(v) for s, a in A.items()}
     if sum(1 for x in xs.values() if x) < 2:
         continue
@@ -296,3 +370,96 @@ for label, sig, v in GATES:
 write("tab_gate.tex", tabular("lrrrrr", ["signal", "AUROC", "test", "unseen", "test", "unseen"], rows,
                               "&& \\multicolumn{2}{c}{sent to RL (\\%)} & \\multicolumn{2}{c}{Job regret (\\%)} \\\\\n"
                               "\\cmidrule(lr){3-4}\\cmidrule(l){5-6}"))
+
+# ── the numbers the prose quotes (round 24) ─────────────────────────────
+KEY = {"static": "Static", "rules": "Rules", "rules-sized": "Sized", "gbt-dist": "Trees", "gbt-dist-k8s": "TreesJob",
+       "gbt-dist-flyte": "TreesFlyte", "zeroshot-27b": "ZS", "zeroshot-27b-json": "ZSJ", "jev-pointer": "Dec",
+       "jev-pointer-argmax": "DecArg", "jev-pointer-k8s": "DecJob", "jev-pointer-flyte": "DecFlyte",
+       "jev-pointer-flyte-adapt": "DecAdapt", "rl-pointer": "RL", "rl-pointer-argmax": "RLArg",
+       "pool-jev-pointer": "PoolDec", "pool-jev-pointer-argmax": "PoolDecArg", "pool-jev-pointer-k8s": "PoolDecJob",
+       "pool-jev-pointer-flyte": "PoolDecFlyte", "pool-rl-pointer": "PoolRL", "pool-rl-pointer-argmax": "PoolRLArg",
+       "gate-rl-pointer": "Gate"}
+SPLITKEY = {"test/k8s": "Test", "ood/k8s": "Unseen", "test/flyte": "FTest", "ood/flyte": "FUnseen", "val/k8s": "Val"}
+lines = []
+
+
+_defined = set()
+
+
+def mac(name, val):
+    if name in _defined:  # e.g. usdCheap*, the same for every approach
+        return
+    _defined.add(name)
+    lines.append(f"\\newcommand{{\\{name}}}{{{val}}}")
+
+
+for v, k in KEY.items():
+    t = A1["table"].get(v)
+    if not t:
+        continue
+    for sk, sn in SPLITKEY.items():
+        if sk in t:
+            x = t[sk]["regret"]
+            mac(f"r{sn}{k}", pct(x))
+            mac(f"ci{sn}{k}", f"[{pct(x[1])}, {pct(x[2])}]")
+    if "ood/k8s" in t:
+        x = t["ood/k8s"]["regret_fam"]
+        mac(f"ciFamUnseen{k}", f"[{pct(x[1])}, {pct(x[2])}]")
+    for sk, sn in (("test/k8s", "Test"), ("ood/k8s", "Unseen")):
+        xs = [a["table"][v][sk]["regret"][0] for a in A.values() if v in a["table"] and sk in a["table"][v]]
+        if len(xs) == 3:
+            mac(f"m{sn}{k}", pct(np.mean(xs)))
+            mac(f"lo{sn}{k}", pct(min(xs)))
+            mac(f"hi{sn}{k}", pct(max(xs)))
+        if sk in t:
+            mac(f"d{sn}{k}", pct(t[sk]["dollar_regret"]))
+            mac(f"usd{sn}{k}", f"{t[sk]['cost_per_1k']:,.0f}")
+            mac(f"usdCheap{sn}", f"{t[sk]['oracle_per_1k']:,.0f}")
+    for sp, sn in (("test", "Test"), ("ood", "Unseen")):
+        for s_, pn in (("oom0", "Zero"), ("oom5", "Five"), ("oom20", "Twenty")):
+            x = (A1["sens"].get(v) or {}).get(s_, {}).get(sp)
+            if x:
+                mac(f"p{pn}{sn}{k}", pct(x))
+    z = A1.get("zs_sample", {}).get(v)
+    if z and z.get("test"):
+        mac(f"zsTest{k}", pct(z["test"])), mac(f"zsUnseen{k}", pct(z["ood"]))
+    c = A1.get("code", {}).get(v)
+    if c and c.get("test/novel"):
+        mac(f"seen{k}", pct(c["test/seen"])), mac(f"novel{k}", pct(c["test/novel"]))
+    c = A1.get("corpus", {}).get(v)
+    for sp, sn in (("test", "Test"), ("ood", "Unseen")):
+        for src, cn in (("mem", "Mem"), ("cpu", "Cpu"), ("gpu", "Gpu")):
+            if c and c.get(f"{sp}/{src}"):
+                mac(f"c{sn}{cn}{k}", pct(c[f"{sp}/{src}"]))
+
+
+def dmac(name, d, fam=False):
+    x = d["diff_fam" if fam else "diff"]
+    mac(name, f"{100*x[0]:+.1f}"), mac(name + "CI", f"[{100*x[1]:+.1f}, {100*x[2]:+.1f}]")
+
+
+for k, d in A1["diff"].items():
+    a, b = (KEY.get(z) for z in k.split(" - "))
+    if not a or not b:
+        continue
+    for sk, sn in (("test/k8s", "Test"), ("ood/k8s", "Unseen")):
+        if d.get(sk):
+            dmac(f"diff{sn}{a}{b}", d[sk])
+            if sn == "Unseen" and "diff_fam" in d[sk]:
+                dmac(f"diffFam{sn}{a}{b}", d[sk], fam=True)
+for k, d in A1.get("sens_diff", {}).items():
+    a, b = (KEY.get(z) for z in k.split(" - "))
+    for s_, pn in (("oom5", "Five"), ("oom20", "Twenty")):
+        for sp, sn in (("test", "Test"), ("ood", "Unseen")):
+            x = d.get(f"{s_}/{sp}")
+            if x and a and b:
+                dmac(f"sd{pn}{sn}{a}{b}", x), dmac(f"sdFam{pn}{sn}{a}{b}", x, fam=True)
+for key, sn in (("test/k8s", "Test"), ("ood/k8s", "Unseen")):
+    vb = A1.get("vs_best", {}).get(key, {})
+    for v, d in vb.items():
+        if v != "best" and d and KEY.get(v):
+            dmac(f"vb{sn}{KEY[v]}", d), dmac(f"vbFam{sn}{KEY[v]}", d, fam=True)
+if A1.get("code", {}).get("_n"):
+    mac("codeSeenShare", pct(A1["code"]["_share_seen"], 0))
+    mac("codeSeenN", f"{A1['code']['_n']['seen']:,}"), mac("codeNovelN", f"{A1['code']['_n']['novel']:,}")
+write("num_main.tex", "\n".join(lines) + "\n")

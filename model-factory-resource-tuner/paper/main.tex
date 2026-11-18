@@ -16,8 +16,6 @@
 \usepackage{enumitem}
 \usepackage{listings}
 \usepackage[section]{placeins}
-\usepackage{pgfplots}
-\pgfplotsset{compat=1.18}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage[hidelinks]{hyperref}
 \usepackage[capitalise,noabbrev]{cleveref}
@@ -52,9 +50,11 @@
 \newcommand{\ci}[2]{\,[#1,\,#2]}
 
 \title{RightSize Bench: Learning Kubernetes Resource Requests from Code\\[2pt]
-\large Sizing the pod before it runs, through a raw Job or an AI-native interface}
+\large Sizing a pod before it runs, submitted as a raw Job or through Flyte}
 \author{Niels Bantilan\\ Union.ai\\ \texttt{niels@union.ai}}
 \date{November 2026}
+
+\input{generated/num_main}
 
 \begin{document}
 \maketitle
@@ -71,6 +71,7 @@
 \input{sections/methods}
 \input{sections/setup}
 \input{sections/results}
+\input{sections/release}
 \input{sections/discussion}
 
 \bibliographystyle{plainnat}

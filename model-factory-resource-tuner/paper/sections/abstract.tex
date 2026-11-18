@@ -1,25 +1,21 @@
 \begin{abstract}
-Before a batch pod runs on Kubernetes, someone has to decide how much memory and CPU it
-gets, and whether it gets a GPU. Too little makes it fail or run slowly, and too much
-wastes the cluster. We present RightSize Bench, which scores approaches to this decision
-by the dollars it takes to get each run to finish, compared with the cheapest request
-that would have worked. The benchmark contains 32,082 measured runs of 33 families of generated
-Python tasks that use real libraries, from dataframes and SQL to PyTorch training and
-sharded language models. Each run appears twice, once as a raw Kubernetes Job, with its inputs staged in
-one of four ways, and once as a task submitted through Flyte, an AI-native interface to
-Kubernetes that adds typed I/O, caching, retries and durable execution at a measured cost
-of about 70\,MiB per pod. We validated the labels in about 480 real pods, which exposed and
-fixed two errors in our first release.
+Before a batch pod runs on Kubernetes, someone has to decide how much memory and CPU it gets and whether
+it gets a GPU. Too little makes it fail or run slowly, and too much wastes the cluster. We present
+RightSize Bench, a benchmark that scores this decision in dollars: each request is replayed against a
+measured run, failed attempts and throttling included, and compared with the cheapest request that would
+have run it. The benchmark has 32,082 measured runs of 33 families of generated Python tasks that use real
+libraries, from dataframes and SQL to PyTorch training and sharded language models. Every run appears
+twice, as a raw Kubernetes Job whose inputs are staged in one of four ways, and as a task submitted
+through Flyte, an orchestrator whose runtime we measure at about 70\,MiB per pod. We checked the Job labels
+in about 480 real pods, which found two errors in our first release.
 
-We compare static requests, two kinds of rules, gradient-boosted trees, a zero-shot 27B
-model, a fine-tuned 1.7B decision model further trained with reinforcement learning
-against the cost, opinion pools that combine the trees with each language model, and a
-pre-registered novelty gate, over three independent trainings. On new tasks from familiar
-families, the pool of trees and the decision model has 6.6\% mean regret on Job pods
-[5.6, 7.6] (dollar regret 27.6\%). On held-out families, the RL model and a rule that
-scales by input size and reads the manifest tie at 39\%. When an out-of-memory failure
-costs as much as resubmitting a Job by hand, that rule is the best approach on new code.
-Models trained on Jobs read the manifest: when only the volume medium changes, they move
-their request the right way about three times in four. Adding Flyte data does not improve
-them on Jobs, and a model trained only on Flyte tasks transfers poorly to Jobs.
+We release the benchmark with a set of baseline models: gradient-boosted quantile trees, and a 1.7B
+decision model whose pointer heads score the request options written in its prompt, trained with
+cross-entropy and then with reinforcement learning against the cost. On new tasks from familiar families,
+the trees pooled with the decision model come within \rTestPoolDec\% of the cheapest request on Job pods,
+against \rTestSized\% for a rule that scales earlier runs by input size and reads the pod spec, and
+\rTestZS\% for a zero-shot 27B model. On seven held-out families every approach does much worse, and the
+rule (\rUnseenSized\%) is as good as anything we trained. Models trained on Jobs move their memory request
+with the volume medium in the manifest about three times in four. \codeSeenShare\% of the test tasks share
+their exact code with a training task, so the held-out families are the benchmark's test of new code.
 \end{abstract}
